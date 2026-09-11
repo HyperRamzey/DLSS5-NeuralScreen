@@ -191,6 +191,8 @@ class OverlayMenu:
             "window_mode": False,
             "monitor": "0",
             "monitors": [],
+            "gpu": "0",
+            "gpus": [],
             "autostart": False,
             "windows": [],
             "window_current": "",
@@ -484,13 +486,22 @@ class OverlayMenu:
                                      "labels": list(labels or options)}))
             cy += ctrl_h + gap
 
-        def toggle(key: str, label: str, on: bool) -> None:
+        def toggle(key: str, label: str, on: bool, hint: str = "") -> None:
             nonlocal cy
+            extra = {"label": label}
+            hint_h = 0
+            if hint:
+                extra["hint"] = hint
+                # Multi-line hints: the Spout2 toggle explains two capture
+                # paths and does not fit one line at 1440p. The block is
+                # measured with the real font height.
+                line_h = self._small_font.get_height() + self._u(4)
+                hint_h = self._u(8) + (str(hint).count("\n") + 1) * line_h
             items.append(Item("toggle", key,
-                              pygame.Rect(pad, cy, inner_w, ctrl_h),
+                              pygame.Rect(pad, cy, inner_w, ctrl_h + hint_h),
                               value=1.0 if on else 0.0,
-                              extra={"label": label}))
-            cy += ctrl_h + gap
+                              extra=extra))
+            cy += ctrl_h + hint_h + gap
 
         # The windows page: the full list of capturable windows, one row per
         # window. Hovering a row highlights the real window's outline on the
@@ -522,6 +533,13 @@ class OverlayMenu:
             if monitors:
                 choice("monitor", s.get("monitor", "Monitor"),
                        str(self.state.get("monitor", "0")), monitors)
+            # The card the network and the capture run on. Shown only when
+            # there is something to choose: on one card the row would be a
+            # control that cannot do anything.
+            gpus = self.state.get("gpus") or []
+            if len(gpus) > 1:
+                choice("gpu", s.get("gpu", "GPU"),
+                       str(self.state.get("gpu", gpus[0])), gpus)
             # The screenshot folder: a plain button that opens the folder
             # picker (issue #20). The current value is shown as the caption
             # so the user sees what is configured.
@@ -534,13 +552,22 @@ class OverlayMenu:
                               extra={"label": label}))
             cy += ctrl_h + gap
 
+            # Recording: everything about what leaves the program besides
+            # the screen itself. Spout2 (off by default) publishes the
+            # processed picture for external recorders; the recording
+            # indicator is a display preference of the same subject.
+            section(s["sec_recording"])
+            toggle("spout", s.get("spout", "Spout2 output (OBS)"),
+                   bool(self.state.get("spout")),
+                   hint=s.get("spout_hint", ""))
+            toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
+                   bool(self.state.get("rec_indicator", True)))
+
             section(s["sec_behaviour"])
             toggle("open_on_start", s["open_on_start"],
                    bool(self.state.get("open_on_start")))
             toggle("autostart", s.get("autostart", "Autostart with Windows"),
                    bool(self.state.get("autostart")))
-            toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
-                   bool(self.state.get("rec_indicator", True)))
 
             section(s["sec_hotkeys"])
             # The remapping fields. The captions on the buttons come from these
@@ -592,30 +619,12 @@ class OverlayMenu:
             hk_nr = self.hotkeys.get("toggle", "")
             toggle("nr", f"{s['nr_on'] if nr_on else s['nr_off']}   {hk_nr}".rstrip(),
                    nr_on)
-            choice("profile", s["profile"], str(self.state.get("profile", "")),
-                   list(self.state.get("profiles") or []))
-            params = self.state.get("params") or {}
-            for key in PARAM_KEYS:
-                lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
-                val = float(params.get(key, 0.0))
-                slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}")
-            # Save / Delete preset: the user presets live in the same list
-            # as the built-in profiles. Delete is only offered while a user
-            # preset is active - the built-in profiles are not deletable.
-            bgap = self._u(BTN_GAP)
-            bw = (inner_w - bgap) // 2
-            for idx, (key, label) in enumerate((
-                    ("save_preset", s["save_preset"]),
-                    ("delete_preset", s["delete_preset"]))):
-                items.append(Item("button", key,
-                                  pygame.Rect(pad + idx * (bw + bgap),
-                                              cy, bw, act_h),
-                                  extra={"label": label,
-                                         "filled": False,
-                                         "disabled": key == "delete_preset"
-                                         and not self.state.get("preset_active")}))
-            cy += act_h + self._u(8)
 
+            # The resolution the network runs at sits right under the
+            # DLSS 5 switch, not in a section of its own further down:
+            # it is the one control that trades quality for frames, and
+            # users did not connect it with the network at all (user
+            # report, 11.09).
             section(s["sec_resolution"])
             # One slider, not a toggle plus a slider. The two used to be
             # separate, and with the toggle off the slider still moved, still
@@ -640,6 +649,33 @@ class OverlayMenu:
             lo = float(self.state.get("work_scale_min", 0.1))
             slider("nr_res", lo, cap + 0.05, pos, s["nr_res"],
                    hint=s["nr_res_hint"], value_text=value_text)
+
+            # The profile and the four effect sliders are their own subject -
+            # what the picture looks like, not how hard the network works.
+            section(s["sec_effect"])
+            choice("profile", s["profile"], str(self.state.get("profile", "")),
+                   list(self.state.get("profiles") or []))
+            params = self.state.get("params") or {}
+            for key in PARAM_KEYS:
+                lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
+                val = float(params.get(key, 0.0))
+                slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}")
+            # Save / Delete preset: the user presets live in the same list
+            # as the built-in profiles. Delete is only offered while a user
+            # preset is active - the built-in profiles are not deletable.
+            bgap = self._u(BTN_GAP)
+            bw = (inner_w - bgap) // 2
+            for idx, (key, label) in enumerate((
+                    ("save_preset", s["save_preset"]),
+                    ("delete_preset", s["delete_preset"]))):
+                items.append(Item("button", key,
+                                  pygame.Rect(pad + idx * (bw + bgap),
+                                              cy, bw, act_h),
+                                  extra={"label": label,
+                                         "filled": False,
+                                         "disabled": key == "delete_preset"
+                                         and not self.state.get("preset_active")}))
+            cy += act_h + self._u(8)
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))
@@ -1090,6 +1126,8 @@ class OverlayMenu:
             return [("theme", value)]
         if key == "monitor":
             return [("monitor", value)]
+        if key == "gpu":
+            return [("gpu", value)]
         if key == "window":
             return [("window", value)]
         return []
@@ -1163,8 +1201,16 @@ class OverlayMenu:
             if opt.rect.collidepoint(pos):
                 return opt
         for item in self.items:
-            if item.rect.collidepoint(pos):
-                return item
+            if not item.rect.collidepoint(pos):
+                continue
+            # A hint under a toggle is a caption, not a hit target:
+            # clicking it must not flip the switch (the Spout2 toggle
+            # restarts the worker - a stray click on the explanation
+            # would freeze the screen for seconds).
+            if item.kind == "toggle" and item.extra.get("hint") and \
+                    pos[1] > item.rect.y + self._u(CTRL_H):
+                continue
+            return item
         return None
 
     def inside(self, pos: tuple[int, int]) -> bool:
@@ -1416,6 +1462,11 @@ class OverlayMenu:
         on = item.value > 0.5
         size = self._u(20)
         box = pygame.Rect(item.rect.x, item.rect.centery - size // 2, size, size)
+        # A hint grows the row; the box and the label stay on the first
+        # line - only the hint is pushed under them.
+        hint = item.extra.get("hint")
+        if hint:
+            box.y = item.rect.y + (self._u(CTRL_H) - size) // 2
         pygame.draw.rect(surface, _rgb(self.c["accent"] if on else self.c["surface"]), box,
                          border_radius=self._u(4))
         if not on:
@@ -1428,7 +1479,14 @@ class OverlayMenu:
                            _rgb(self.c["text"] if on else self.c["muted"]),
                            item.rect.right - box.right - self._u(12))
         surface.blit(label, (box.right + self._u(12),
-                             item.rect.centery - label.get_height() // 2))
+                             box.y + (box.h - label.get_height()) // 2))
+        if hint:
+            y = box.bottom + self._u(8)
+            for line in str(hint).split("\n"):
+                img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
+                                 item.rect.w)
+                surface.blit(img, (item.rect.x, y))
+                y += self._small_font.get_height() + self._u(4)
 
     def _draw_slider(self, surface, item: Item, s: dict) -> None:
         label_h = item.extra.get("label_h", self._u(LABEL_H))

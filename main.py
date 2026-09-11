@@ -100,8 +100,9 @@ from paths import BASE_DIR, NATIVE_DIR, WORKER_EXE  # noqa: F401
 from protocol import SharedFrameBuffer, _negotiate_shm  # noqa: F401
 from pipeline import (_drain_stderr, restart_worker,  # noqa: F401
                       shutdown_worker, start_worker)
-from startup import (LOG_PATH, _apply_nr_dll,  # noqa: F401
-                     _init_logging, _log_environment)
+from startup import (LOG_PATH, _apply_gpu_env,  # noqa: F401
+                     _apply_nr_dll, _apply_spout_env, _init_logging,
+                     _log_environment)
 from settings_io import (DEFAULT_LANG, PRESET_KEYS,  # noqa: F401
                          SKIN_MIN, load_config, load_presets,
                          resolve_params)
@@ -217,6 +218,8 @@ class _Pipeline:
         "display",
         "follow_pos",
         "follow_resize",
+        "follow_size",
+        "mon_resize",
         "frame_index",
         "gpu_ok",
         "gray_active",
@@ -450,6 +453,11 @@ def main() -> int:
                     pipeline.switch_window(st, 0)
                     continue
                 pipeline.follow_window(st)
+            elif st.frame_index % 30 == 0:
+                # Not in window mode: watch the monitor instead. Every
+                # 30 frames - a mode change is not a per-frame event and
+                # the query walks the monitor list.
+                pipeline.follow_monitor(st)
             if st.want_dda and not st.dda_mode and not st.dda_attempted:
                 if st.window_hwnd is not None:
                     # The channel module opens channels; deciding that the

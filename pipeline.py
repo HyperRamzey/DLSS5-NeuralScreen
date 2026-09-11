@@ -31,7 +31,8 @@ import numpy as np
 
 import channels
 import settings_io
-from capture import (ScreenCapture, devicename_for_output_idx,
+from capture import (ScreenCapture, _refresh_dxcam_factory,
+                     devicename_for_output_idx, monitor_size,
                      resolve_output_idx)
 from display import Display
 from guides import TemporalGuideGenerator
@@ -418,6 +419,13 @@ def switch_window(st, hwnd: int) -> None:
     # enter_switch_mode is idempotent and covers the rebuild too.
     st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
     if hwnd:
+        # A minimised window has nothing to capture: WGC would answer with
+        # the last size it had and then go silent. The list offers them
+        # (a menu showing one of five open programs reads as broken), so
+        # picking one restores it first and lets the frame arrive.
+        if ctypes.windll.user32.IsIconic(ctypes.c_void_p(hwnd)):
+            ctypes.windll.user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
+            time.sleep(0.25)  # the window has to be drawn before it is measured
         try:
             aw, ah = channels.probe_window_capture(st, hwnd)
         except Exception as exc:
@@ -459,7 +467,112 @@ def switch_window(st, hwnd: int) -> None:
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
     st.follow_pos = None        # a fresh overlay starts at (0,0)
     st.follow_resize = None
+    # The window size this pipeline was built for, as WE measure it. It is
+    # NOT st.width/height: that is the size the WORKER's capture reported,
+    # and on Windows 10 the two are different numbers for the same window
+    # (see follow_window).
+    rect = window_frame_rect(hwnd) if hwnd else None
+    st.follow_size = rect[2:] if rect else None
     rebuild_pipeline(st, note)
+
+
+def apply_spout(st, enabled: bool) -> None:
+    """Toggle the Spout2 bridge: the worker must be restarted.
+
+    The bridge is initialised once inside the worker process
+    (SpoutBridgeInit reads NS_SPOUT at startup) - there is no protocol
+    message for it, so the only way in or out is a fresh worker. The
+    same path the monitor switch takes: teardown, set the environment,
+    rebuild. The picture size does not change, so the overlay, the
+    menu and the capture source survive.
+    """
+    st.cfg["spout"] = bool(enabled)
+    os.environ["NS_SPOUT"] = "1" if enabled else "0"
+    settings_io.save_menu_layout(st)
+    print(f"[main] Spout2 output: {'on' if enabled else 'off'} - restarting the worker")
+    teardown_pipeline(st)
+    rebuild_pipeline(st, UI_STRINGS[st.lang].get(
+        "spout_on" if enabled else "spout_off",
+        "Spout2 output ON" if enabled else "Spout2 output OFF"))
+
+
+def follow_monitor(st) -> None:
+    """Rebuild when the desktop resolution changes under a running pipeline.
+
+    Everything downstream of the size is built once: the worker's NGX
+    feature, the shared memory, the overlay window. Nothing was watching
+    the monitor itself, so switching the desktop from 1440p to 4K left the
+    program processing a 2560x1440 island in the corner of a 4K screen,
+    with the overlay unable to grow past its old bounds (user report).
+
+    st.capture.resolution is no help - it is what the monitor was when the
+    capture session opened. The size is asked of Windows directly, and the
+    rebuild waits half a second for it to settle: a mode change goes
+    through intermediate sizes, and rebuilding on each one would mean
+    several worker restarts for one switch.
+
+    Window mode is not affected: there the frame follows the window, and
+    follow_window already owns that.
+    """
+    if st.window_hwnd is not None or st.worker_failed or not st.running:
+        return
+    size = monitor_size(st.capture.devicename)
+    if size is None or size == (st.width, st.height):
+        st.mon_resize = None
+        return
+    now = time.monotonic()
+    if st.mon_resize is None or st.mon_resize[0] != size:
+        st.mon_resize = (size, now)
+        return
+    if now - st.mon_resize[1] < 0.5:
+        return
+    st.mon_resize = None
+    print(f"[main] the monitor is now {size[0]}x{size[1]} "
+          f"(was {st.width}x{st.height}) - rebuilding the pipeline")
+    teardown_pipeline(st)
+    # The dxcam factory caches the outputs it enumerated at import, and a
+    # mode change is exactly what makes that cache wrong - a fresh capture
+    # built on it would come back at the old size.
+    try:
+        st.capture.close()
+    except Exception:
+        pass
+    _refresh_dxcam_factory()
+    try:
+        st.capture = ScreenCapture(monitor_idx=st.monitor)
+    except Exception as exc:
+        print(f"[main] the capture did not survive the mode change: {exc}",
+              file=sys.stderr)
+        st.capture = ScreenCapture(monitor_idx=0)
+        st.monitor = st.capture.monitor_idx
+    st.width, st.height = st.capture.resolution
+    st.mon_w, st.mon_h = st.width, st.height
+    st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
+    rebuild_pipeline(st, f"{st.width}x{st.height}")
+
+
+def apply_gpu(st, index: int) -> None:
+    """Run the worker on another card: a restart, like the Spout toggle.
+
+    The adapter is chosen before the D3D12 device exists, so there is no
+    way to move a running worker - NS_GPU is read once at process start.
+    The frame size does not change, so the overlay, the menu and the
+    capture source survive the restart.
+
+    Both the network and the capture move together: the captured frame
+    reaches D3D12 through an NT-shared texture, and a shared handle does
+    not cross adapters. Choosing a card that drives no display therefore
+    fails in the worker, with the reason in the log, rather than showing
+    a black picture.
+    """
+    if int(index) == int(st.cfg.get("gpu", 0)):
+        return
+    st.cfg["gpu"] = int(index)
+    os.environ["NS_GPU"] = str(int(index))
+    settings_io.save_menu_layout(st)
+    print(f"[main] GPU: adapter {index} - restarting the worker")
+    teardown_pipeline(st)
+    rebuild_pipeline(st, UI_STRINGS[st.lang].get("gpu_switched", "GPU switched"))
 
 
 def follow_window(st) -> None:
@@ -510,7 +623,19 @@ def follow_window(st) -> None:
     # changed 0% of what an outside capture saw.
     if moved or st.frame_index % 30 == 0:
         st.display.raise_topmost()
-    if (w, h) != (st.width, st.height):
+    # Against the size WE measured when the pipeline was built - not
+    # against st.width/height, which is what the worker's capture
+    # reported. On Windows 10 those are two different numbers for one
+    # window: WGC hands back the GetWindowRect size, including the
+    # invisible resize border, while this is the DWM extended frame.
+    # A user's log (issue #30) showed capture 1354x853 against frame
+    # 1340x846 - 14 and 7 pixels of border - so the comparison was never
+    # equal, the pipeline rebuilt every half second, and the screen blinked
+    # once every two seconds until window mode was turned off. On Windows 11
+    # the two agree, which is why it never showed up here.
+    if st.follow_size is None:
+        st.follow_size = (w, h)
+    if (w, h) != st.follow_size:
         now = time.monotonic()
         if st.follow_resize is None or st.follow_resize[0] != (w, h):
             st.follow_resize = ((w, h), now)

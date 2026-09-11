@@ -23,7 +23,7 @@ actually doing.*
 
 ## What you need
 
-- **Windows 11**
+- **Windows 11**, or Windows 10 - reported working, see the limitations
 - **An NVIDIA RTX card.** What works, honestly:
 
   | Cards | Status |
@@ -153,13 +153,14 @@ Screenshots open a **Save As** dialog; pick a folder once with
 every time.
 
 **Record the processed picture externally:**
-- **OBS (recommended):** launch with `NS_SPOUT=1` (environment variable,
-  e.g. `set NS_SPOUT=1` then `NeuralScreen.exe`). The worker publishes the
-  output as a Spout2 shared texture - add a **Spout2 Capture** source in OBS
-  (free plugin) and record. Works in full-screen mode too. Off by default.
+- **OBS (recommended):** turn on **Spout2 output (OBS)** in the settings
+  (RECORDING section). The worker publishes the output as a Spout2 shared
+  texture - add a **Spout2 Capture** source in OBS (free plugin) and record
+  in AV1 / HEVC / H.264 through NVENC, in any mode. Off by default.
 - **NVIDIA App / OBS display capture:** use one-window mode - pick the
   window in the menu (or point at it and press **Num5**), record, then
-  switch back to **Fullscreen** when done. In this mode the overlay is
+  switch back to **Fullscreen** when done. The NVIDIA App has no Spout
+  input, so this is its only path. In this mode the overlay is
   visible to screen capture; in full-screen mode it hides (the program
   captures the screen itself, and a visible overlay would feed on itself).
 
@@ -187,8 +188,8 @@ second per frame; a press may feel lost.
 ## Known limitations
 
 - **True fullscreen games** cannot have the overlay drawn over them — a Windows rule. Borderless or windowed only.
-- **The window list** shows every visible window; Num5 takes the one under the cursor. **A second monitor** works but was not tested with a window between them.
 - **HDR displays** are not supported: switch to SDR (Win+Alt+B).
+- **Windows 10, two NVIDIA cards and a second monitor are experimental** — built or fixed from user logs, none of it tested on the development machine (Windows 11, one card, one monitor); the overlay is drawn on the primary monitor. Reports welcome.
 - **Pipeline latency** is 40–60 ms — fine interactively, not competitively; **processing resolution is capped at 2560×1440** (the network refuses 4K), output is always your full native resolution.
 - **The bundled `nvngx_dlssnr.dll` is the leaked 310.8.0 runtime carrying sm_75/86/89/120 kernels (RTX 20-50)** — see License below.
 

@@ -175,6 +175,11 @@ def apply_menu_action(st, action: tuple) -> None:
         st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
         settings_io.save_menu_layout(st)
         print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
+    elif kind == "toggle" and action[1] == "spout":
+        # The Spout2 bridge: the worker reads NS_SPOUT only at startup,
+        # so the toggle goes through a worker restart (pipeline.apply_spout
+        # owns the whole path, including the config write).
+        pipeline.apply_spout(st, not bool(st.cfg.get("spout", False)))
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])
@@ -227,6 +232,15 @@ def apply_menu_action(st, action: tuple) -> None:
         # (overlay_ui); here we only remember it for config.json -
         # settings_io.save_menu_layout(st) runs on menu close and on exit.
         print(f"[main] menu theme -> {action[1]}")
+    elif kind == "gpu":
+        # The value arrives as "N: NVIDIA GeForce ..." - the index is the
+        # identity here (it is what NS_GPU takes), the name is the label.
+        try:
+            index = int(str(action[1]).split(":")[0])
+        except (ValueError, IndexError):
+            print(f"[main] invalid GPU: {action[1]!r}", file=sys.stderr)
+            return
+        pipeline.apply_gpu(st, index)
     elif kind == "monitor":
         # The value arrives as "N: WxH (\\\\.\\DISPLAY1)" - the
         # devicename is the identity, the index is only a label.

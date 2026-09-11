@@ -109,6 +109,43 @@ def _apply_gpu_env(cfg: dict) -> None:
         os.environ["NS_GPU"] = str(int(gpu))
 
 
+def _apply_hdr_env(cfg: dict) -> None:
+    """The HDR mode the worker runs in, through the environment.
+
+    NS_HDR is read once per worker process (the feature is created with
+    or without the IsHDR flag before the first frame), so the value is
+    in the environment before the first launch and reapplied on every
+    restart - the same contract as NS_SPOUT/NS_GPU.
+
+    cfg 'hdr': -1/absent = auto (the DisplayConfig probe on the captured
+    monitor - the per-monitor answer the registry cannot give); 0 =
+    forced SDR (the pipeline of today, bit for bit); 1 = forced HDR (the
+    escape hatch for a probe that misreads a desktop). Auto is the
+    default: an HDR desktop gets the HDR pipeline, an SDR desktop never
+    sees a behavior change.
+
+    NS_HDR_PAPER_WHITE carries the nits that linear 1.0 maps to (the OS
+    answer when there is one, else the BT.2408 reference white) - the
+    exposure solver's input. Always a real number, set once here.
+    """
+    import hdr as _hdr
+
+    mode = cfg.get("hdr", -1)
+    if mode is None:
+        mode = -1
+    mode = int(mode)
+    if mode == 1:
+        on = True
+    elif mode == 0:
+        on = False
+    else:
+        # Auto: the monitor being captured, not the registry - a mixed
+        # SDR+HDR desktop has one answer per screen.
+        on = _hdr.enabled_for(None)
+    os.environ["NS_HDR"] = "1" if on else "0"
+    os.environ["NS_HDR_PAPER_WHITE"] = f"{_hdr.paper_white_nits(None):.1f}"
+
+
 def _log_environment(cfg: dict) -> None:
     """Print the environment header into the log: version, OS, HDR, driver.
 
@@ -229,6 +266,9 @@ def configure(st) -> None:
     _apply_spout_env(st.cfg)
     # The same for the card: NS_GPU is read once per worker process.
     _apply_gpu_env(st.cfg)
+    # And the HDR mode: NS_HDR/NS_HDR_PAPER_WHITE are read once per worker
+    # process, before the feature is created.
+    _apply_hdr_env(st.cfg)
     st.lang = str(st.cfg["lang"])
 
     # The output resolution comes FROM THE REAL MONITOR, not from a stale

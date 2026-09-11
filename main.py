@@ -555,7 +555,9 @@ def main() -> int:
                            motion_small=st.motion_small,
                            no_color=bool(st.dda_mode),
                            bypass=bypass,
-                           split=st.split_pos)
+                           split=st.split_pos,
+                           hdr=bool(getattr(st, "hdr", False)),
+                           paper_white=float(os.environ.get("NS_HDR_PAPER_WHITE", "203")))
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1

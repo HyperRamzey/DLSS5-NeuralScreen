@@ -249,7 +249,12 @@ def rebuild_pipeline(st, note: str) -> None:
     menu_was_open = st.display.menu.visible
     full_w = st.width if (st.work_w != st.width or st.work_h != st.height) else 0
     full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
-    st.shm = SharedFrameBuffer(st.width, st.height)
+    # The HDR mode was resolved once at startup (_apply_hdr_env) and rides
+    # the environment; the worker reads NS_HDR at process start, so the SHM
+    # slot and the worker always agree on the pixel width (4 or 8 B/px).
+    import os as _os
+    st.hdr = _os.environ.get("NS_HDR") == "1"
+    st.shm = SharedFrameBuffer(st.width, st.height, hdr=st.hdr)
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
         st.params, st.work_w, st.work_h, st.warmup, full_w, full_h, st.shm)
     # The window and the menu are rebuilt, keeping the user settings.

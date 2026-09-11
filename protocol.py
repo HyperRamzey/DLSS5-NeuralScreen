@@ -40,10 +40,18 @@ class SharedFrameBuffer:
     """Shared memory for the worker's input frame (the SHMI command).
 
     The layout is fixed and does NOT depend on work_scale:
-        [0 .. color_capacity)                - RGBA8 full-res
+        [0 .. color_capacity)                - colour, RGBA8 (SDR) or float16 (HDR)
         [color_capacity .. +motion_capacity) - motion float16 work-res
     The motion offset is constant, so a resolution change (RNSZ) needs no
     renegotiation of SHMI - only the used length changes.
+
+    HDR: when the desktop is HDR the colour slot carries scRGB linear light
+    in float16 (8 B/px - anything above SDR white would clip in RGBA8). The
+    format is decided once at negotiation: hdr=True sizes the colour slot
+    for 8 B/px and frames are placed with put_f16(); the worker is told by
+    SHM_FLAG_F16 at SHMI time and reads the same bytes. An SDR buffer
+    refuses a float16 frame (a capacity mismatch is a protocol desync,
+    not a degraded picture).
 
     INVARIANT: there is one slot. Frame N+1 must not be placed until the
     worker has returned the result for frame N, otherwise we overwrite the
@@ -52,8 +60,11 @@ class SharedFrameBuffer:
     """
 
     def __init__(self, full_w: int, full_h: int,
-                 max_work_w: int = WORK_MAX_W, max_work_h: int = WORK_MAX_H):
-        self.color_capacity = full_w * full_h * 4
+                 max_work_w: int = WORK_MAX_W, max_work_h: int = WORK_MAX_H,
+                 hdr: bool = False):
+        self.hdr = bool(hdr)
+        self.bytes_per_pixel = 8 if hdr else 4
+        self.color_capacity = full_w * full_h * self.bytes_per_pixel
         self.motion_capacity = max_work_w * max_work_h * 4
         self.size = self.color_capacity + self.motion_capacity
         # The section name: ASCII, unique per process - the worker opens it
@@ -186,6 +197,29 @@ class SharedFrameBuffer:
         off = self.color_capacity
         np.copyto(self._buf[off:off + mv.nbytes], mv)
 
+    def put_f16(self, frame: np.ndarray, motion: np.ndarray) -> None:
+        """Put an HDR frame (scRGB float16, HxWx4) into the mapping.
+
+        Same slot, same invariant as put(); only the pixel width differs
+        (8 B/px - the buffer was sized for it at negotiation). A float16
+        frame into an SDR-negotiated buffer is refused rather than
+        truncated: the worker would read half a frame as a whole one.
+        """
+        if frame.dtype != np.float16:
+            raise ValueError(f"put_f16 wants float16, got {frame.dtype}")
+        color = frame.reshape(-1).view(np.uint8)
+        if color.nbytes > self.color_capacity:
+            raise ValueError(f"a float16 frame of {color.nbytes} B does not "
+                             f"fit into {self.color_capacity} B of shared "
+                             "memory - was the buffer negotiated for HDR?")
+        mv = motion.reshape(-1).view(np.uint8)
+        if mv.nbytes > self.motion_capacity:
+            raise ValueError(f"motion of {mv.nbytes} B does not fit into "
+                             f"{self.motion_capacity} B of shared memory")
+        np.copyto(self._buf[:color.nbytes], color)
+        off = self.color_capacity
+        np.copyto(self._buf[off:off + mv.nbytes], mv)
+
     def close(self) -> None:
         self.negotiated = False
         self.close_gray()
@@ -205,9 +239,24 @@ def _negotiate_shm(worker: subprocess.Popen, reader: "WorkerReader",
     """
     shm.negotiated = False
     try:
+        # The float16 colour slot (HDR) rides ONLY when the worker advertises
+        # the capability - the C++ host sets NS_HDR_F16_CAPABLE=1 in its
+        # HELLO environment contract when its FP16 path is built. Sending
+        # 8 B/px to a worker that reads 4 would desync the stream silently
+        # (seen in testing: the worker crawls at ~1 FPS reading half frames).
+        # Until then the buffer is RGBA8 even on an HDR desktop and the
+        # conversion is not applied - the SDR pipeline stays bit-identical.
+        f16_capable = os.environ.get("NS_HDR_F16_CAPABLE") == "1"
+        if shm.hdr and not f16_capable:
+            shm.hdr = False
+            shm.bytes_per_pixel = 4
+            shm.color_capacity = (shm.color_capacity // 2)
+            print("[main] HDR desktop, but this worker has no float16 path - "
+                  "staying on the SDR pipeline", file=sys.stderr)
+        shm_flags = SHM_FLAG_F16 if shm.hdr else 0
         worker.stdin.write(struct.pack(
-            SHM_FMT, SHM_MAGIC, shm.color_capacity, shm.motion_capacity, 0, 0,
-            shm.name.encode("ascii")))
+            SHM_FMT, SHM_MAGIC, shm.color_capacity, shm.motion_capacity,
+            shm_flags, 0, shm.name.encode("ascii")))
         worker.stdin.flush()
         reader.wait_sack(timeout)
         shm.negotiated = True
@@ -241,6 +290,7 @@ SHM_ACK_MAGIC = 0x4B434153  # 'SACK'
 SHM_FMT = "<4Iq64s"         # magic, color_bytes, motion_bytes, flags, pts, name (88 bytes)
 SHM_ACK_FMT = "<4Iq"        # magic, ok, reserved0, reserved1, pts (24 bytes)
 FRAME_FLAG_SHM = 0x1         # a bit in the reserved field of the frame header
+SHM_FLAG_F16 = 0x2            # the colour slot carries float16 (8 B/px), agreed at SHMI
 FRAME_FLAG_WANT_PIXELS = 0x2  # return the pixels even in window mode (for a screenshot)
 FRAME_FLAG_MOTION_SMALL = 0x4  # motion field at flow resolution, upscaled by the worker
 FRAME_FLAG_SPLIT = 0x20        # before/after wipe; position in the high 16 bits of reserved
@@ -325,7 +375,8 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                shm: "SharedFrameBuffer | None" = None,
                want_pixels: bool = False, motion_small: bool = False,
                no_color: bool = False, bypass: bool = False,
-               split: float = 0.0) -> None:
+               split: float = 0.0, hdr: bool = False,
+               paper_white: float = 203.0) -> None:
     """Send a frame to the worker.
 
     With shared memory agreed, only the 24-byte header with the
@@ -333,6 +384,10 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
     mapping. Otherwise it is the old path: header + RGBA8 + motion float16
     sent inline through the pipe.
 
+    hdr: the frame is converted to float16 scRGB linear light first (the
+    SHM slot was negotiated with SHM_FLAG_F16 for 8 B/px; the pipe path
+    sends the converted bytes the same way). The conversion is a no-op skip
+    for the DDA path - the worker captures HDR itself there.
     no_color (DDA mode): the worker takes the colour itself from Desktop
     Duplication - only motion goes down the pipe, rgba is ignored.
     bypass (NR OFF): the worker skips NGX and shows the raw capture - the
@@ -356,14 +411,21 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
         worker.stdin.write(motion.tobytes())
         worker.stdin.flush()
         return
+    color = rgba
+    if hdr and os.environ.get("NS_HDR_F16_CAPABLE") == "1":
+        from hdr_convert import rgba8_to_scrgb_f16
+        color = rgba8_to_scrgb_f16(rgba, paper_white)
     if shm is not None and shm.negotiated:
-        shm.put(rgba, motion)
+        if hdr:
+            shm.put_f16(color, motion)
+        else:
+            shm.put(rgba, motion)
         worker.stdin.write(struct.pack(FRAME_FMT, FRAME_MAGIC, index, int(reset),
                                        FRAME_FLAG_SHM | flags, pts))
         worker.stdin.flush()
         return
     worker.stdin.write(struct.pack(FRAME_FMT, FRAME_MAGIC, index, int(reset), flags, pts))
-    worker.stdin.write(rgba.tobytes())
+    worker.stdin.write(color.tobytes())
     worker.stdin.write(motion.tobytes())
     worker.stdin.flush()
 

@@ -177,6 +177,12 @@ struct Host
     bool                 ngx_inited;
     NVSDK_NGX_Parameter *params;
     NVSDK_NGX_Handle    *feature;
+    // The multipass cascade (Phase C1): up to three feature handles, one
+    // per pass - each keeps its OWN history, which is the whole point
+    // (a two-pass cascade roughly doubles the effective history length).
+    // h.feature stays the pass-1 handle (single-pass code paths are
+    // untouched); features[1]/[2] exist only when NS_NR_PASSES > 1.
+    NVSDK_NGX_Handle    *features[3] = { nullptr, nullptr, nullptr };
 
     ID3D12Resource *tex[FEED_SLOTS];
     UINT            width, height;
@@ -982,6 +988,9 @@ static bool InitNgx()
 // The definition sits below g_video_options (the wire options struct it
 // reads); this declaration lets the create path use it.
 static UINT NrPresetHint();
+// How many NR evaluates run per frame (Phase C1); defined next to
+// NrPresetHint, below the video options.
+static UINT NrPassesRequested();
 
 static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, UINT full_w = 0, UINT full_h = 0)
 {
@@ -1018,13 +1027,39 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
         AbortCommands();
         // NGX may have partially written *OutHandle before the fault; never trust it.
         h.feature = nullptr;
+        h.features[0] = h.features[1] = h.features[2] = nullptr;
         Log("[host] CreateFeature raised 0x%08X (caught; nothing submitted)", ccode);
         return false;
     }
     const UINT64 v = EndCommands();
     if (!WaitFenceValue(h.fence, v, 30000)) { Log("[pure] feature create did not complete"); return false; }
     if (NVSDK_NGX_FAILED(rf) || h.feature == nullptr)
-    { Log("[pure] direct feature 18 create failed 0x%08X (%s)", rf, NgxResultName(rf)); h.feature = nullptr; return false; }
+    { Log("[pure] direct feature 18 create failed 0x%08X (%s)", rf, NgxResultName(rf)); h.feature = nullptr; h.features[0] = h.features[1] = h.features[2] = nullptr; return false; }
+    h.features[0] = h.feature;   // the cascade bookkeeping (pass 1 = the single handle)
+    // The multipass cascade (Phase C1): pass k gets its OWN feature handle
+    // - own history. The same create params apply (the preset hint, the
+    // sizes); a pass-2/3 create failure is not fatal: the cascade runs one
+    // pass shorter, loud in the log (the frame still flows).
+    const UINT passes = NrPassesRequested();
+    for (UINT p = 1; p < passes && p < 3; ++p)
+    {
+        NVSDK_NGX_Result rp = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
+        DWORD pcode = 0;
+        NVSDK_NGX_Handle *extra = nullptr;
+        if (!BeginCommands()) break;
+        __try { rp = g_nr_create(h.list, NVSDK_NGX_Feature_Reserved18, h.params, &extra); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { pcode = GetExceptionCode(); }
+        if (pcode != 0) { AbortCommands(); Log("[pure] cascade pass %u create raised 0x%08X", p + 1, pcode); break; }
+        const UINT64 v2 = EndCommands();
+        if (!WaitFenceValue(h.fence, v2, 30000)) { Log("[pure] cascade pass %u create did not complete", p + 1); break; }
+        if (NVSDK_NGX_FAILED(rp) || extra == nullptr)
+        { Log("[pure] cascade pass %u create failed 0x%08X (%s) - running %u pass(es)",
+              p + 1, rp, NgxResultName(rp), p); break; }
+        h.features[p] = extra;
+    }
+    const UINT live_passes = 1 + (h.features[1] != nullptr ? 1 : 0) + (h.features[2] != nullptr ? 1 : 0);
+    if (live_passes > 1)
+        Log("[pure] NR cascade: %u passes (own history each)", live_passes);
     Log("[pure] direct feature 18 ready: %ux%u%s preset=%u result=0x%08X", w, h_,
         upscale ? " (upscaling full->work->full)" : "", NrPresetHint(), rf);
     return true;
@@ -1123,9 +1158,21 @@ static int RunTest()
         {
             Log("[host] warm-up: re-creating the feature once");
             NVSDK_NGX_Handle *old = h.feature;
+            NVSDK_NGX_Handle *old2 = h.features[1], *old3 = h.features[2];
             h.feature = nullptr;
-            if (!CreateFeature(W, H, flags, &rf)) { h.feature = old; Log("[host] keeping the previous feature"); }
-            else SafeReleaseFeature(old);
+            h.features[0] = h.features[1] = h.features[2] = nullptr;
+            if (!CreateFeature(W, H, flags, &rf))
+            {
+                h.feature = old; h.features[0] = old;
+                h.features[1] = old2; h.features[2] = old3;
+                Log("[host] keeping the previous feature");
+            }
+            else
+            {
+                SafeReleaseFeature(old);
+                SafeReleaseFeature(old2);
+                SafeReleaseFeature(old3);
+            }
         }
     }
     Log("[host] --test finished: %d/300 evaluates succeeded", good);
@@ -1422,6 +1469,11 @@ struct VideoState
     UINT nr_w = 0, nr_h = 0;
     ID3D12Resource *nr_in = nullptr;    // NON_PIXEL_SHADER_RESOURCE at rest
     ID3D12Resource *nr_out = nullptr;   // UNORDERED_ACCESS at rest
+    // The cascade intermediate (Phase C1): pass k's Output, pass k+1's
+    // Color. Same size/format as nr_in/nr_out; exists only when the
+    // multipass cascade is live (NS_NR_PASSES > 1) - the single-pass
+    // pipeline never touches it.
+    ID3D12Resource *nr_mid = nullptr;
     // Matched residual composite: instead of stretching nr_out up to full
     // size, compose native + (nr_out_up - nr_in_up) * strength. The native
     // frame stays the 1:1 anchor, so text and edges keep full sharpness
@@ -1496,6 +1548,25 @@ static UINT NrPresetHint()
     }
     if (gated > 0) hint = gated;
     return static_cast<UINT>(hint);
+}
+
+// How many NR evaluates run per frame (Phase C1). 1 (the default) keeps
+// the single-pass pipeline bit for bit; 2-3 run the cascade - each pass
+// has its own feature handle and therefore its own history. Read once
+// per worker process (create-time state, the NS_NR_SMALL contract),
+// clamped to 1..3 (VRAM and latency scale linearly with the count).
+static UINT NrPassesRequested()
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        char buf[8] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_NR_PASSES", buf, sizeof(buf));
+        cached = (got > 0 && got < sizeof(buf)) ? atoi(buf) : 1;
+        if (cached < 1) cached = 1;
+        if (cached > 3) cached = 3;
+    }
+    return static_cast<UINT>(cached);
 }
 
 // Shared input frame (SHMI). Read-only view of the client's named section:
@@ -2152,6 +2223,28 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
             else
                 Log("[nr] network runs at %ux%u, scaled back to %ux%u",
                     v.nr_w, v.nr_h, cw, ch);
+        }
+    }
+    // The cascade intermediate (Phase C1): pass k's Output, pass k+1's
+    // Color - the same network resolution as nr_in/nr_out (work-res in
+    // nr_small mode, full-res otherwise). Created only when the cascade
+    // is live; a failure degrades the run to single-pass (loud, not
+    // fatal - the frame still flows).
+    if (NrPassesRequested() > 1)
+    {
+        D3D12_RESOURCE_DESC md = td;
+        md.Width = v.nr_small ? v.nr_w : cw;
+        md.Height = v.nr_small ? v.nr_h : ch;
+        if (SUCCEEDED(h.dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &md,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+                __uuidof(ID3D12Resource), reinterpret_cast<void **>(&v.nr_mid))))
+            Log("[nr] cascade intermediate ready (%ux%u, %u passes)",
+                (UINT)md.Width, (UINT)md.Height, NrPassesRequested());
+        else
+        {
+            v.nr_mid = nullptr;
+            Log("[nr] cascade intermediate failed - running single pass");
+            h.features[1] = h.features[2] = nullptr;   // degrade cleanly
         }
     }
 
@@ -4109,11 +4202,56 @@ static bool EvaluateVideo(VideoState &v, int reset)
     h.params->Set("DLSSNR.UICorrection", g_video_options.ui_correction);
     h.params->Set("DLSS.Pre.Exposure", 1.0f);
     h.params->Set("DLSS.Exposure.Scale", g_pw_exposure);
+    // The multipass cascade (Phase C1): pass 1 runs exactly as before
+    // (same first feature, same params - the single-pass path is
+    // bit-identical). Pass k+1 reads pass k's Output through nr_mid:
+    // at rest the mid sits in SRV; the chain is
+    //   SRV -> (pass k writes it as UAV) -> UAV->SRV barrier -> pass k+1 reads
+    // and after the LAST pass the final writer is the real result
+    // (nr_out/output), so the mid ends the frame back in SRV - its
+    // at-rest state, ready for the next frame. Reset cascades: every
+    // pass sees the SAME reset frame, so the histories start together.
+    // One fence after the last pass (the evaluates queue back to back;
+    // the GPU pipelines them).
+    const UINT passes = 1 + (h.features[1] != nullptr && v.nr_mid != nullptr ? 1 : 0)
+                         + (h.features[2] != nullptr && v.nr_mid != nullptr ? 1 : 0);
     DWORD code = 0;
     NVSDK_NGX_Result result = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
-    __try { result = g_nr_evaluate(h.list, h.feature, h.params, nullptr); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { code = GetExceptionCode(); }
+    ID3D12Resource *pass_color = nr_color;
+    for (UINT p = 0; p < passes; ++p)
+    {
+        const bool last = (p + 1 == passes);
+        ID3D12Resource *pass_out = last ? nr_result : v.nr_mid;
+        if (p > 0)
+        {
+            // The mid was flipped to SRV right after pass p-1 wrote it.
+            h.params->Set("DLSSNR.Color", v.nr_mid);
+        }
+        h.params->Set("DLSSNR.Output", pass_out);
+        if (!last)
+        {
+            // The mid enters UAV for THIS pass's write. At rest it is
+            // SRV (created that way, restored after every frame).
+            D3D12_RESOURCE_BARRIER mid_to_uav = Transition(
+                v.nr_mid, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            h.list->ResourceBarrier(1, &mid_to_uav);
+        }
+        __try { result = g_nr_evaluate(h.list, h.features[p], h.params, nullptr); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { code = GetExceptionCode(); }
+        if (code != 0) break;
+        if (!last)
+        {
+            // mid: UAV (just written) -> SRV (the next pass reads it).
+            D3D12_RESOURCE_BARRIER mid_to_srv = Transition(
+                v.nr_mid, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            h.list->ResourceBarrier(1, &mid_to_srv);
+        }
+    }
     g_last_eval_result = static_cast<uint32_t>(result);
+    if (passes > 1 && code == 0 && PhaseEnabled())
+        Log("[video] pass chain evaluated (%u passes)", passes);
     if (code != 0) { AbortCommands(); Log("[pure] direct evaluate exception 0x%08X", code); return false; }
     if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
     if (v.nr_small)
@@ -4509,6 +4647,7 @@ static void ReleaseVideoTextures(VideoState &v)
     g_res_out_bound = g_res_dst_bound = nullptr;
     if (v.nr_in != nullptr) { v.nr_in->Release(); v.nr_in = nullptr; }
     if (v.nr_out != nullptr) { v.nr_out->Release(); v.nr_out = nullptr; }
+    if (v.nr_mid != nullptr) { v.nr_mid->Release(); v.nr_mid = nullptr; }
     v.nr_small = false;
     v.inputs_ready = false;
     // The capture flag says "the current frame is already in v.color" -
@@ -4630,8 +4769,16 @@ static int RunVideo()
     { Log("[video] invalid stream header (magic=0x%08X)", vh.magic); return 2; }
     const bool upscale = (vh.magic == VIDEO_MAGIC_EXT) && vh.full_w > 0 && vh.full_h > 0 &&
                          (vh.full_w != vh.width || vh.full_h != vh.height);
-    if (upscale && (vh.full_w < vh.width || vh.full_h < vh.height || vh.full_w > 7680 || vh.full_h > 4320))
+    // Supersampling (Phase C2): work > full is allowed up to the network
+    // cap (WORK_MAX 2560x1440 - NGX goes silent beyond it). The old check
+    // rejected full < work outright; the nr_small path scales colour UP
+    // into nr_in and the result back DOWN - both directions exist. A
+    // full frame beyond 4K stays invalid either way.
+    if (upscale && (vh.full_w > 7680 || vh.full_h > 4320))
     { Log("[video] invalid full-res size %ux%u", vh.full_w, vh.full_h); return 2; }
+    if (upscale && (vh.width > 2560 || vh.height > 1440) &&
+        (vh.width > vh.full_w || vh.height > vh.full_h))
+    { Log("[video] supersample work size %ux%u exceeds the network cap", vh.width, vh.height); return 2; }
     g_video_options = vh;
     const bool live = g_live_force || (vh.frame_count == 0);
     std::string full_note;
@@ -4727,10 +4874,20 @@ static int RunVideo()
             }
             const bool rup = rc.full_w > 0 && rc.full_h > 0 &&
                              (rc.full_w != rc.width || rc.full_h != rc.height);
-            if (rup && (rc.full_w < rc.width || rc.full_h < rc.height ||
-                        rc.full_w > 7680 || rc.full_h > 4320))
+            // Supersampling (Phase C2): work > full allowed to the network
+            // cap; the stream-start rule applies here too.
+            if (rup && (rc.full_w > 7680 || rc.full_h > 4320))
             {
                 Log("[video] RNSZ rejected: invalid full size %ux%u", rc.full_w, rc.full_h);
+                VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0xBAD00005u, 0u, fh.pts };
+                if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
+                continue;
+            }
+            if (rup && (rc.width > 2560 || rc.height > 1440) &&
+                (rc.width > rc.full_w || rc.height > rc.full_h))
+            {
+                Log("[video] RNSZ rejected: supersample work %ux%u exceeds the network cap",
+                    rc.width, rc.height);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0xBAD00005u, 0u, fh.pts };
                 if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
                 continue;
@@ -4752,7 +4909,9 @@ static int RunVideo()
                 continue;
             }
             // 2. Release the old feature and textures.
-            SafeReleaseFeature(h.feature);
+            for (int i = 0; i < 3; ++i)
+                if (h.features[i] != nullptr)
+                { SafeReleaseFeature(h.features[i]); h.features[i] = nullptr; }
             h.feature = nullptr;
             ReleaseVideoTextures(v);
             // 3. New options (profile/params travel with the command).
@@ -5068,6 +5227,9 @@ static void CleanupVideoNgx()
         h.feature = nullptr;
         Log("[video] feature released");
     }
+    for (int i = 1; i < 3; ++i)
+        if (h.features[i] != nullptr)
+        { SafeReleaseFeature(h.features[i]); h.features[i] = nullptr; }
     if (h.params != nullptr)
     {
         NVSDK_NGX_D3D12_DestroyParameters(h.params);
@@ -5167,7 +5329,9 @@ static int Serve(DWORD game_pid)
                 b.color_fmt, b.output_fmt, b.hdr, b.depth_inverted);
 
             // Tear down the old set.
-            SafeReleaseFeature(h.feature);
+            for (int i = 0; i < 3; ++i)
+                if (h.features[i] != nullptr)
+                { SafeReleaseFeature(h.features[i]); h.features[i] = nullptr; }
             h.feature = nullptr;
             for (int i = 0; i < FEED_SLOTS; ++i)
                 if (h.tex[i] != nullptr) { h.tex[i]->Release(); h.tex[i] = nullptr; }
@@ -5274,10 +5438,22 @@ static int Serve(DWORD game_pid)
                     Log("[host] warm-up: re-creating the feature once");
                     WaitFenceValue(h.fence, h.fence_value, 2000);
                     NVSDK_NGX_Handle *old = h.feature;
+                    NVSDK_NGX_Handle *old2 = h.features[1], *old3 = h.features[2];
                     h.feature = nullptr;
+                    h.features[0] = h.features[1] = h.features[2] = nullptr;
                     NVSDK_NGX_Result rr = NVSDK_NGX_Result_Fail;
-                    if (CreateFeature(h.width, h.height, flags_active, &rr)) SafeReleaseFeature(old);
-                    else { h.feature = old; Log("[host] keeping the previous feature"); }
+                    if (CreateFeature(h.width, h.height, flags_active, &rr))
+                    {
+                        SafeReleaseFeature(old);
+                        SafeReleaseFeature(old2);
+                        SafeReleaseFeature(old3);
+                    }
+                    else
+                    {
+                        h.feature = old; h.features[0] = old;
+                        h.features[1] = old2; h.features[2] = old3;
+                        Log("[host] keeping the previous feature");
+                    }
                 }
             }
             else

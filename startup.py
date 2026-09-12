@@ -87,6 +87,29 @@ def _apply_nr_dll(cfg: dict) -> None:
         os.environ["NS_NR_DLL"] = str(cfg["nr_dll"])
 
 
+def _apply_passes_env(cfg: dict) -> None:
+    """How many NR evaluates run per frame, through the environment.
+
+    NS_NR_PASSES (Phase C1): the multipass cascade - each pass keeps its
+    OWN history (own feature handle), so a two-pass cascade roughly
+    doubles the effective history length. The knob is create-time state
+    (the feature set is built at stream start), the same once-per-worker
+    contract as NS_NR_SMALL; a mid-run change needs the RNSZ re-create,
+    which already re-sends everything create-time.
+
+    cfg 'nr_passes': 1 (default, absent key) keeps today's single-pass
+    pipeline bit for bit; 2-3 run the cascade. Out-of-range values
+    clamp to 1..3 rather than refusing to run, and a value that is not
+    a number (hand-edited config) falls back to 1.
+    """
+    try:
+        passes = int(cfg.get("nr_passes", 1))
+    except (TypeError, ValueError):
+        passes = 1
+    passes = max(1, min(3, passes))
+    os.environ["NS_NR_PASSES"] = str(passes)
+
+
 def _apply_spout_env(cfg: dict) -> None:
     """The Spout2 bridge flag reaches the worker through the environment.
 
@@ -377,9 +400,10 @@ def configure(st) -> None:
         f"resolution {st.width}x{st.height}, monitor {st.monitor}"
     )
     print(f"[main] NGX parameters: {st.params}")
+    _cap_w, _cap_h = _work_size(st.width, st.height, st.work_scale)
     print(
         f"[main] work_scale {st.work_scale:.2f} (NGX resolution "
-        f"{int(st.width * st.work_scale)}x{int(st.height * st.work_scale)})"
+        f"{_cap_w}x{_cap_h})"
     )
 
     st.worker: subprocess.Popen | None = None

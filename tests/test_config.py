@@ -20,6 +20,7 @@ sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
 from main import DEFAULT_LANG, PROFILES, WORK_SCALE_MAX, WORK_SCALE_MIN, load_config, resolve_params  # noqa: E402
+from settings_io import _work_size  # noqa: E402
 
 GOOD = {
     "monitor": 0, "width": 3840, "height": 2160, "fullscreen": True,
@@ -86,6 +87,22 @@ def main() -> int:
                 failures.append(f"work_scale {raw!r} -> {cfg['work_scale']}, want {want}")
         finally:
             p.unlink()
+
+    # 4b. The work size itself (Phase C2 supersampling): scale > 1 runs
+    #     the network above the frame (capped at WORK_MAX 2560x1440);
+    #     scale <= 1 keeps the old arithmetic exactly - work never
+    #     exceeds the frame there.
+    for w, h, s, want_w, want_h in (
+        (1920, 1080, 0.5, 960, 540),      # downscale: unchanged
+        (1920, 1080, 1.0, 1920, 1080),    # 1:1: the frame itself
+        (1920, 1080, 1.5, 2560, 1440),    # supersample, at the cap
+        (1920, 1080, 2.0, 2560, 1440),    # 2x: capped by WORK_MAX
+        (1280, 720, 1.5, 1920, 1080),     # supersample under the cap
+    ):
+        got_w, got_h = _work_size(w, h, s)
+        if (got_w, got_h) != (want_w, want_h):
+            failures.append(f"_work_size({w},{h},{s}) -> {got_w}x{got_h}, "
+                            f"want {want_w}x{want_h}")
 
     # 5. Unknown lang falls back to the default.
     p = write_cfg(dict(GOOD, lang="klingon"))

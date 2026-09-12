@@ -39,8 +39,18 @@ def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
 
     And a downscale rounds DOWN, never up: the work resolution must never
     exceed the frame it came from.
+
+    Supersampling (Phase C2): scale > 1 runs the network ABOVE the frame
+    (up to WORK_SCALE_MAX 2.0 and the WORK_MAX cap) - the nr_small path
+    scales colour up, the network runs supersampled, the result comes
+    back down. At scale == 1.0 the answer is still the frame itself,
+    bit for bit.
     """
-    if scale >= 1.0:
+    if scale > 1.0:
+        # Supersample: work above the frame, capped by the network limit.
+        w = max(64, int(width * scale) // 2 * 2)
+        h = max(64, int(height * scale) // 2 * 2)
+    elif scale == 1.0:
         w, h = int(width), int(height)
     else:
         w = max(64, int(width * scale) // 2 * 2)
@@ -49,7 +59,9 @@ def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
         k = min(WORK_MAX_W / w, WORK_MAX_H / h)
         w = max(64, int(w * k) // 2 * 2)
         h = max(64, int(h * k) // 2 * 2)
-    return min(w, int(width)), min(h, int(height))
+    if scale <= 1.0:
+        return min(w, int(width)), min(h, int(height))
+    return w, h
 
 
 def hotkey_labels(bindings: dict) -> dict:
@@ -74,7 +86,7 @@ PRESET_NAME_PREFIX = "Preset"
 WORK_SCALE_STEP = 0.05
 
 
-WORK_SCALE_MAX = 1.0
+WORK_SCALE_MAX = 2.0   # supersampling (Phase C2): the network may run at up to 2x the frame
 
 
 def _next_preset_name(presets: dict) -> str:
@@ -359,8 +371,14 @@ def work_scale_cap(st) -> float:
     Rounded down to the slider's own step so the value is reachable:
     a cap the slider cannot land on exactly would leave the top of the
     range doing nothing, which is the whole thing being fixed here.
+
+    Supersampling (Phase C2): the range no longer stops at 1.0 - the
+    network may run above the frame, so the cap is WORK_MAX relative to
+    the frame (e.g. 2560/1664 ~= 1.5 on this desktop), still within
+    WORK_SCALE_MAX 2.0. _work_size applies the same WORK_MAX, so the
+    slider top and the actual work size agree.
     """
-    raw = min(1.0, WORK_MAX_W / max(1, st.width), WORK_MAX_H / max(1, st.height))
+    raw = min(WORK_SCALE_MAX, WORK_MAX_W / max(1, st.width), WORK_MAX_H / max(1, st.height))
     return max(0.35, int(raw / 0.05) * 0.05)
 
 

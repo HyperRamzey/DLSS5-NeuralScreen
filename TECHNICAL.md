@@ -262,6 +262,27 @@ SDR-only worker is re-offered an SDR-sized slot before any frame
 flows — the half-frame/whole-frame stream desync that once crawled at
 1.4 FPS is structurally impossible.
 
+## Coexistence with Lossless Scaling
+
+NeuralScreen and Lossless Scaling can run on the same desktop at the
+same time. The two do not compete for the capture: LS captures a game
+**window** through Windows Graphics Capture while NeuralScreen captures
+the **desktop** through Desktop Duplication — different sessions,
+different DXGI paths, neither refuses when the other is up (measured:
+6544 frames at 43–45 FPS with the real LosslessScaling.exe running
+alongside).
+
+The shared resource is the z-order: both present topmost overlays, and
+LS re-asserts topmost when it starts scaling. NeuralScreen's answer is
+the existing `ReassertPresentTopmost` — every 300 frames the present
+window checks whether something else took its top band and re-asserts
+itself (the HUD, `pygame`, is allowed to stay above the picture; a
+top-level window of a foreign app is not). Verified by an automated
+mimic test (`tests/test_ls_coexistence.py`): a topmost layered
+WS_POPUP window — LS's present-overlay shape — raised above the
+picture neither stops the frames, restarts the worker, breaks the DDA
+session, nor demotes NeuralScreen's window.
+
 ## Performance
 
 Measured on RTX 5070 Ti, 4K desktop, `work_scale` 0.5 (1920×1080), pipeline

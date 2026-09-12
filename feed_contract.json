@@ -1,0 +1,24 @@
+{
+  "contract": "NeuralScreen feed",
+  "version": 1,
+  "description": "The OUTS shared-memory section: the processed frame a third-party consumer (OBS via Spout2, a ReShade add-on, a recorder) can attach to. The section identifies itself by a marker header so a consumer never guesses from the name.",
+  "section": {
+    "naming": "NeuralScreenOut_<pid>_<suffix> (the name changes on every open; discover via the worker's stdout protocol or the config)",
+    "layout_v1": {
+      "offset_0": "uint64 seqlock - odd while the worker writes, even when the frame is complete (torn-frame detection)",
+      "offset_8": "uint32 magic = 0x5246534E ('NSFR', little-endian)",
+      "offset_12": "uint32 schema_version = 1",
+      "offset_16": "uint32 width",
+      "offset_20": "uint32 height",
+      "offset_24": "uint32 pixel_format = 0 (RGBA8, sRGB bytes)",
+      "offset_28": "uint32 reserved = 0",
+      "offset_32": "width * height * 4 bytes - the frame, row-major, top-down, RGBA order"
+    },
+    "tearing": "Copy under the seqlock: read seq (must be even), copy, re-read seq; if it changed or went odd, retry (a few times), then skip the frame.",
+    "compatibility": "The marker and the frame are written under ONE seqlock, so a consumer that checks the sequence never sees a torn header. Version bumps change the header's version field first; a consumer that does not know the version must not read past offset 12."
+  },
+  "channels": {
+    "outs_shm": "the OUTS section above (frames out)",
+    "spout2": "the same pixels published as a Spout2 shared texture (set 'spout' in config.json or RECORDING -> Spout2 output) - OBS's Spout2 Capture plugin consumes it directly"
+  }
+}

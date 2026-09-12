@@ -28,6 +28,7 @@ import queue
 import subprocess
 import sys
 import threading
+from pathlib import Path   # the pending_shot annotation (L615) names it
 
 import numpy as np
 

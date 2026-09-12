@@ -264,6 +264,34 @@ SDR-only worker is re-offered an SDR-sized slot before any frame
 flows — the half-frame/whole-frame stream desync that once crawled at
 1.4 FPS is structurally impossible.
 
+## The feed contract (OUTS schema, Phase E1)
+
+The OUTS section is what a third party can attach to: OBS through its
+Spout2 Capture source (the same pixels the Spout2 bridge publishes), a
+ReShade add-on, a recorder. The section identifies itself - a consumer
+never guesses from the name.
+
+Layout v1 (`feed_contract.json` carries the same text):
+
+| Offset | Size | Content |
+| --- | --- | --- |
+| 0 | 8 | `uint64` seqlock - odd while the worker writes, even when the frame is complete |
+| 8 | 4 | `uint32` magic `0x5246534E` ("NSFR", little-endian) |
+| 12 | 4 | `uint32` schema version (1) |
+| 16 | 4 | `uint32` width |
+| 20 | 4 | `uint32` height |
+| 24 | 4 | `uint32` pixel format (0 = RGBA8, sRGB bytes) |
+| 28 | 4 | `uint32` reserved (0) |
+| 32 | w*h*4 | the frame, row-major, top-down, RGBA |
+
+The marker and the frame are written under ONE seqlock, so a consumer
+that checks the sequence never sees a torn header. A version the
+consumer does not know: do not read past offset 12.
+
+Tearing: copy under the seqlock - read the sequence (must be even),
+copy, re-read; changed or odd means torn, retry a few times, then skip
+the frame.
+
 ## Coexistence with Lossless Scaling
 
 NeuralScreen and Lossless Scaling can run on the same desktop at the

@@ -114,17 +114,21 @@ class SharedFrameBuffer:
 
         The name changes on every open - just like gray: the worker holds the
         old handle and CreateFileMapping with the same name would return the
-        old section, at its old size. The first 8 bytes are a seqlock written
-        by the worker (odd while writing, even when done).
+        old section, at its old size. Feed contract v1 (Phase E1): the first
+        8 bytes are a seqlock written by the worker (odd while writing, even
+        when done), then a 24-byte marker header - magic 'NSFR', schema
+        version 1, width, height, pixel format - then the frame at offset 32.
+        A third-party consumer can attach to the section and identify the
+        stream from the marker instead of guessing from the name.
         """
         if self._out_mm is not None and self.out_w == w and self.out_h == h:
             return
         self.close_out()
         self.out_w, self.out_h = w, h
-        self.out_bytes = w * h * 4 + 8  # + seqlock
+        self.out_bytes = w * h * 4 + 32  # seqlock (8) + marker header (24)
         self.out_name = f"NeuralScreenOut_{os.getpid()}_{uuid.uuid4().hex[:6]}"
         self._out_mm = mmap.mmap(-1, self.out_bytes, tagname=self.out_name)
-        self._out_buf = np.ndarray((h, w, 4), dtype=np.uint8, buffer=self._out_mm, offset=8)
+        self._out_buf = np.ndarray((h, w, 4), dtype=np.uint8, buffer=self._out_mm, offset=32)
 
     def read_out(self) -> np.ndarray | None:
         """A copy of the frame from the section, guarded by the seqlock.

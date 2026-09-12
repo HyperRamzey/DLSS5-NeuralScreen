@@ -3103,11 +3103,19 @@ static bool EnsureGrayPipeline()
 
 // Open the reverse client mapping (GRAY). w/h is the luminance size (320x180).
 // --- OUTS: the section for the returned pixels ---------------------------
-// Layout: [0..8) uint64 seqlock (odd while writing, even when done),
-//         [8..8+size) the RGBA8 frame.
+// Layout (feed contract v1, Phase E1): [0..8) uint64 seqlock (odd while
+// writing, even when done), [8..32) the marker header - magic 'NSFR'
+// (NeuralScreen FRame), schema version 1, width, height, pixel format enum
+// (0 = RGBA8 sRGB) - and [32..32+size) the frame. The marker is what a
+// THIRD-PARTY consumer attaches to: the section identifies itself, its
+// version and its geometry, without guessing from the name.
+static constexpr uint32_t FEED_MAGIC      = 0x5246534Eu;   // "NSFR"
+static constexpr uint32_t FEED_VERSION    = 1u;
+static constexpr uint32_t FEED_FMT_RGBA8   = 0u;            // sDR bytes
 static HANDLE g_out_file;
 static BYTE  *g_out_map;
 static size_t g_out_bytes;
+static uint32_t g_out_w = 0, g_out_h = 0;   // the marker's geometry (Phase E1)
 static uint64_t g_out_seq;
 
 static void CloseOut()
@@ -3123,7 +3131,11 @@ static bool OpenOut(const VideoOutCmd &oc)
     if (oc.width == 0 || oc.height == 0) { Log("[outs] off"); return true; }
     char name[64] = {};
     memcpy(name, oc.name, sizeof(name) - 1);
-    const size_t need = static_cast<size_t>(oc.width) * oc.height * 4 + 8; // + seqlock
+    // The feed contract v1 (Phase E1): seqlock (8) + marker header (24)
+    // + the frame. An old-sized section (frame + 8 only) is REFUSED -
+    // writing the marker would run past its end; the client re-creates
+    // the section at the new size.
+    const size_t need = static_cast<size_t>(oc.width) * oc.height * 4 + 32;
     g_out_file = OpenFileMappingA(FILE_MAP_WRITE, FALSE, name);
     if (g_out_file == nullptr)
     { Log("[outs] OpenFileMapping('%s') failed %lu", name, GetLastError()); return false; }
@@ -3144,12 +3156,14 @@ static bool OpenOut(const VideoOutCmd &oc)
                             ? static_cast<size_t>(mbi.RegionSize) : 0u;
     if (have < need)
     {
-        Log("[outs] section '%s' is %zu bytes, need %zu - ignoring", name, have, need);
+        Log("[outs] section '%s' is %zu bytes, need %zu (feed contract v1: "
+            "+32 header) - ignoring", name, have, need);
         CloseOut();
         return false;
     }
     g_out_bytes = need;
-    Log("[outs] pixels will go into '%s', %zu bytes", name, need);
+    g_out_w = oc.width; g_out_h = oc.height;
+    Log("[outs] pixels will go into '%s', %zu bytes (feed contract v1)", name, need);
     return true;
 }
 
@@ -3162,12 +3176,20 @@ static bool DeliverPixels(const std::vector<BYTE> &output, uint32_t index,
                           int64_t pts)
 {
     if (g_out_map != nullptr && !output.empty()
-        && output.size() + 8 == g_out_bytes)
+        && output.size() + 32 == g_out_bytes)
     {
         uint64_t seq = ++g_out_seq;
         if ((seq & 1) == 0) ++seq;          // make it odd: writing
         memcpy(g_out_map, &seq, sizeof(seq));
-        memcpy(g_out_map + 8, output.data(), output.size());
+        // The feed-contract marker (Phase E1): magic, version, geometry,
+        // format - written under the same seqlock as the frame, so a
+        // consumer that checks the sequence never sees a torn header.
+        const uint32_t marker[6] = { FEED_MAGIC, FEED_VERSION,
+                                     static_cast<uint32_t>(g_out_w),
+                                     static_cast<uint32_t>(g_out_h),
+                                     FEED_FMT_RGBA8, 0u };
+        memcpy(g_out_map + 8, marker, sizeof(marker));
+        memcpy(g_out_map + 32, output.data(), output.size());
         ++seq;                              // even: done
         memcpy(g_out_map, &seq, sizeof(seq));
         VideoResultHeader out = { OUT_MAGIC, index, 1u, OUT_BYTES_IN_SHM,

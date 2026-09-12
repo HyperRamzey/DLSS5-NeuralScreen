@@ -95,10 +95,11 @@ def main() -> int:
                          float(params["skin_structure"]), 0, 0)
 
     name = f"NeuralScreenTestOut_{os.getpid()}_{uuid.uuid4().hex[:6]}"
-    # The layout matches main.py: a seqlock in the first 8 bytes, then the
-    # frame. The worker refuses a section with no room for both.
-    mm = mmap.mmap(-1, W * H * 4 + 8, tagname=name)
-    view = np.ndarray((H, W, 4), dtype=np.uint8, buffer=mm, offset=8)
+    # The layout matches main.py (feed contract v1): a seqlock in the first
+    # 8 bytes, the 24-byte marker header (magic/version/geometry), then the
+    # frame at offset 32. The worker refuses a section with no room for all.
+    mm = mmap.mmap(-1, W * H * 4 + 32, tagname=name)
+    view = np.ndarray((H, W, 4), dtype=np.uint8, buffer=mm, offset=32)
 
     worker = subprocess.Popen([str(WORKER_EXE), "--live"],
                               cwd=str(WORKER_EXE.parent),
@@ -141,7 +142,25 @@ def main() -> int:
         print(f"with OUTS: the pixels arrived through {src}")
         if src != "shm":
             failures.append("after the handshake the pixels still go down the pipe")
-        elif pipe_px is not None:
+        else:
+            # 3b. The feed-contract marker (Phase E1): magic 'NSFR', schema
+            #     version 1, the geometry, format 0 (RGBA8) - a third-party
+            #     consumer identifies the stream from the header alone.
+            fmagic, fver, fw, fh, ffmt, _rsv = struct.unpack(
+                "<6I", mm[8:32])
+            print(f"feed marker: magic=0x{fmagic:08X} version={fver} "
+                  f"geometry={fw}x{fh} format={ffmt}")
+            if fmagic != 0x5246534E:
+                failures.append(f"feed marker magic 0x{fmagic:08X}, want "
+                                "0x5246534E ('NSFR')")
+            if fver != 1:
+                failures.append(f"feed marker version {fver}, want 1")
+            if (fw, fh) != (W, H):
+                failures.append(f"feed marker geometry {fw}x{fh}, want "
+                                f"{W}x{H}")
+            if ffmt != 0:
+                failures.append(f"feed marker format {ffmt}, want 0 (RGBA8)")
+        if src == "shm" and pipe_px is not None:
             same = bool(np.array_equal(shm_px, pipe_px))
             diff = int((shm_px != pipe_px).sum())
             print(f"match with the pipe frame: "

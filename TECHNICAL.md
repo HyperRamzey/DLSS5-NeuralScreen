@@ -2,7 +2,7 @@
 
 How it works, what was measured, and why the decisions went the way
 they did. For installing and using the program see
-[README.md](../README.md).
+[README.md](README.md).
 
 Every number here was measured on this machine - RTX 5070 Ti, driver
 616.56, Windows 11 - and says so where it matters. Where an earlier

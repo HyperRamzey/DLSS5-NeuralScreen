@@ -232,19 +232,22 @@ def readme_consistency():
     import re
 
     docs = {
+        # The keys name where the files really live: each doc's links are
+        # resolved from its own directory below. These two moved from docs/
+        # to the root - the old keys kept resolving them against docs/.
         "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
         "README.ru.md": (ROOT / "README.ru.md").read_text(encoding="utf-8"),
-        "docs/TECHNICAL.md": (ROOT / "TECHNICAL.md").read_text(encoding="utf-8"),
-        "docs/TECHNICAL.ru.md": (ROOT / "TECHNICAL.ru.md").read_text(encoding="utf-8"),
+        "TECHNICAL.md": (ROOT / "TECHNICAL.md").read_text(encoding="utf-8"),
+        "TECHNICAL.ru.md": (ROOT / "TECHNICAL.ru.md").read_text(encoding="utf-8"),
     }
     for name in ("README.md", "README.ru.md"):
         n = len(docs[name].splitlines())
         if n > 200:
             return False, f"{name} is {n} lines - it drifted back into a manual"
     # The Russian needle is the content of a translated doc and stays Russian.
-    if "On by default" not in docs["docs/TECHNICAL.md"]:
+    if "On by default" not in docs["TECHNICAL.md"]:
         return False, "TECHNICAL.md lost the spoof default"
-    if "Включено по умолчанию" not in docs["docs/TECHNICAL.ru.md"]:
+    if "Включено по умолчанию" not in docs["TECHNICAL.ru.md"]:
         return False, "TECHNICAL.ru.md lost the spoof default"
 
     # Every relative link and image must resolve, in both directions.

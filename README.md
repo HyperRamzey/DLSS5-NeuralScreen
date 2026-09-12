@@ -141,14 +141,14 @@ cursor, and the overlay only shows that one. Borderless fixes it.
 
 **Everything is too bright and the sliders do nothing.** HDR is on for that
 display. Turn it off (Win+Alt+B), or try **HDR compatibility** in the settings,
-under CAPTURE — it is experimental; see [HDR setup](docs/HDR.md).
+under CAPTURE — it is experimental; see [HDR setup](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
 
 **A key does nothing.** Something else claimed it; reassign it in the menu.
 
 ## Known limitations
 
 - **True fullscreen games** cannot have an overlay drawn over them — borderless or windowed only.
-- **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](docs/HDR.md).
+- **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
 - **Windows 10, two NVIDIA cards and a rotated display are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
 

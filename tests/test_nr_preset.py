@@ -26,7 +26,10 @@ Checked without a GPU (pure client-side contract):
 * every PROFILES entry carries a preset in 0..13;
 * the header the client sends carries the profile's preset;
 * send_resize (RNSZ) carries the profile's preset too - a live switch
-  re-applies it through the options copy.
+  re-applies it through the options copy;
+* the version-gate boundary: an NR runtime older than 310.5.0 gates the
+  L/M hints (fallback to K), 310.5.0 and newer pass - pinned against
+  the real version-read used for the bundled DLL.
 """
 
 import struct
@@ -220,6 +223,46 @@ def main() -> int:
         worker.stdin.close() if worker.stdin else None
         worker.wait(timeout=5)
 
+    # 5. The version gate boundary (Phase A1): the L/M hints need an NR
+    #    runtime >= 310.5.0. The exact comparison the host runs, pinned
+    #    at its boundary, plus the real version-read against the bundled
+    #    DLL (310.8.2.0 ships with the app - it must PASS the gate).
+    def gated(major: int, minor: int) -> bool:
+        return major < 310 or (major == 310 and minor < 5)
+
+    if not gated(310, 4):
+        failures.append("310.4.0 must gate the L/M hints")
+    if gated(310, 5):
+        failures.append("310.5.0 must pass the L/M hints")
+    if gated(310, 8):
+        failures.append("310.8.2 (the bundled runtime) must pass the gate")
+
+    import ctypes
+
+    ver = ctypes.windll.version
+    GetFileVersionInfoSizeW = ver.GetFileVersionInfoSizeW
+    GetFileVersionInfoW = ver.GetFileVersionInfoW
+    VerQueryValueW = ver.VerQueryValueW
+    dll = str(Path(BASE) / "native" / "nvngx_dlssnr.dll")
+    size = GetFileVersionInfoSizeW(dll, None)
+    if size > 0:
+        data = ctypes.create_string_buffer(size)
+        GetFileVersionInfoW(dll, 0, size, data)
+        buf = ctypes.c_void_p()
+        buflen = ctypes.c_uint()
+        if VerQueryValueW(data, "\\", ctypes.byref(buf), ctypes.byref(buflen)) \
+                and buflen.value >= 16:
+            fixed = ctypes.string_at(buf.value, buflen.value)
+            ms, _ls = struct.unpack("II", fixed[8:16])
+            major, minor = ms >> 16, ms & 0xFFFF
+            if (major, minor) < (310, 5):
+                failures.append(f"the bundled runtime {major}.{minor} "
+                                "predates L/M - the gate would fire")
+        else:
+            failures.append("could not read the bundled DLL version info")
+    else:
+        failures.append("the bundled DLL has no version resource")
+
     print("=" * 60)
     if failures:
         for f in failures:
@@ -227,7 +270,8 @@ def main() -> int:
         return 1
     print(
         "OK: the NR preset hint travels the wire (header + RNSZ), "
-        "profiles carry SDK-range presets"
+        "profiles carry SDK-range presets, the version gate reads "
+        "the bundled runtime"
     )
     return 0
 

@@ -1437,6 +1437,13 @@ static bool g_live_force = false;   // --live: treat the stream as unbounded eve
 // The NR preset hint (declared above, defined here - it reads the wire
 // options struct). Wire preset first (the per-profile choice, live on
 // RNSZ), NS_NR_PRESET as the static escape hatch, clamped to 0..13.
+//
+// The version gate (Phase A1): presets L (12) and M (13) need an NR
+// runtime DLL >= 310.5.0 - older ones reject the create outright (the
+// ShortFuse availability check, FillCreationParams @0x18004ECF0). The
+// loaded DLL's file version answers; when it predates L/M the hint
+// falls back to K (11, the recommended transformer) with a loud log
+// line instead of a dead feature.
 static UINT NrPresetHint()
 {
     UINT from_wire = g_video_options.preset;
@@ -1451,6 +1458,43 @@ static UINT NrPresetHint()
     int hint = (from_wire != 0) ? static_cast<int>(from_wire) : cached_env;
     if (hint < 0) hint = 0;
     if (hint > 13) hint = 13;   // NVSDK_NGX_DLSS_Hint_Render_Preset_M
+    // The version gate: L/M on a pre-310.5 runtime -> K with a log line.
+    static int gated = -1;
+    if (gated < 0)
+    {
+        gated = 0;
+        if (hint >= 12 && g_nr_module != nullptr)
+        {
+            char dll_path[MAX_PATH] = {};
+            if (GetModuleFileNameA(g_nr_module, dll_path, MAX_PATH) > 0)
+            {
+                DWORD handle = 0;
+                const DWORD size = GetFileVersionInfoSizeA(dll_path, &handle);
+                if (size > 0)
+                {
+                    std::vector<BYTE> vi(size);
+                    if (GetFileVersionInfoA(dll_path, handle, size, vi.data()))
+                    {
+                        void *fi = nullptr; UINT fi_len = 0;
+                        if (VerQueryValueA(vi.data(), "\\", &fi, &fi_len) && fi_len >= 16)
+                        {
+                            const DWORD ms = reinterpret_cast<const DWORD *>(fi)[2];
+                            const WORD major = HIWORD(ms), minor = LOWORD(ms);
+                            // 310.5.0: major 310, minor 5
+                            if (major < 310 || (major == 310 && minor < 5))
+                            {
+                                Log("[pure] NR preset %d needs runtime >= 310.5.0 "
+                                    "(loaded %u.%u) - falling back to K (11)",
+                                    hint, major, minor);
+                                gated = 11;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (gated > 0) hint = gated;
     return static_cast<UINT>(hint);
 }
 

@@ -266,11 +266,11 @@ def rebuild_pipeline(st, note: str) -> None:
     on them, resetting the per-worker flags so the main loop
     negotiates DDA1/WGCW, GRAY, OUTS and the window again.
     """
-    # Freeze the last picture with a spinner before the old worker
+    # Freeze the last picture under the veil before the old worker
     # dies: the rebuild takes ~1 s (new worker, NGX warm-up) and the
     # bare desktop would flash underneath (user: mode-switch flashes).
-    # The overlay spans the whole monitor even when the next mode is
-    # one window - no bare desktop at the edges of the spinner.
+    # The veil spans the whole monitor even when the next mode is
+    # one window - no bare desktop at its edges.
     st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
     menu_was_open = st.display.menu.visible
     full_w = st.width if (st.work_w != st.width or st.work_h != st.height) else 0
@@ -713,6 +713,14 @@ def follow_window(st) -> None:
     """
     if st.window_hwnd is None:
         return
+    # The mode-switch veil owns the layer until the first frame of the new
+    # pipeline arrives: it spans the whole monitor, and moving or resizing
+    # it now slides the veil off the desktop - the bare desktop showed
+    # along the top and left edges and the mark drifted with it (the
+    # reported window-mode switch glitch). switch_window resets follow_pos,
+    # so the position re-syncs on the first frame after the veil is down.
+    if getattr(st.display, "is_switch_active", None) and st.display.is_switch_active():
+        return
     # The worker is dead: the overlay must stay hidden (issue #3) -
     # nothing would fill it, and showing it covers the desktop with
     # a black window.
@@ -829,6 +837,12 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
             print(f"[main] RNSZ did not go through ({exc}) - full worker restart",
                   file=sys.stderr)
     if not applied:
+        # The worker process is going down and a fresh one warms up for
+        # seconds - the same full-screen veil the mode switches raise (user:
+        # every long switch gets the veil and the mark, never a bare
+        # desktop). The RNSZ path above is fast and keeps the picture, so
+        # it does not raise one.
+        st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
         st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
             st.worker, st.params, new_w, new_h, RESTART_WARMUP,
             new_full_w, new_full_h, st.worker_stop, st.shm)

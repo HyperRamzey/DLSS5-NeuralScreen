@@ -967,20 +967,21 @@ static bool InitNgx()
 
 // The NR model is chosen by a hint when the feature is created. It was 0
 // (default) and never questioned; in the related Ray Reconstruction the
-// numbers hold different transformer models with different costs. The value
-// comes from NS_NR_PRESET so it can be swept without a rebuild.
-static UINT NrPresetHint()
-{
-    static int cached = -1;
-    if (cached < 0)
-    {
-        char buf[16] = {};
-        const DWORD got = GetEnvironmentVariableA("NS_NR_PRESET", buf, sizeof(buf));
-        cached = (got > 0 && got < sizeof(buf)) ? atoi(buf) : 0;
-        if (cached < 0) cached = 0;
-    }
-    return static_cast<UINT>(cached);
-}
+// numbers hold different transformer models with different costs.
+//
+// Two sources, in priority order (Phase A2):
+//   1. The WIRE field - the header's `preset` (g_video_options.preset),
+//      which the profile table sets per profile and RNSZ re-sends on a
+//      live re-create. This is the per-profile choice.
+//   2. NS_NR_PRESET - the static escape hatch (a sweep without touching
+//      the profiles), kept for streams that send preset=0 (Default).
+// The hint is clamped to the SDK enum range 0..13 (Default..Preset M);
+// anything else would be a silent driver-side fallback, and a wrong
+// number here changes which transformer network runs - loud beats
+// quiet (logged once per create).
+// The definition sits below g_video_options (the wire options struct it
+// reads); this declaration lets the create path use it.
+static UINT NrPresetHint();
 
 static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, UINT full_w = 0, UINT full_h = 0)
 {
@@ -1432,6 +1433,26 @@ struct VideoState
 static VideoHeader g_video_options = {};
 static uint32_t g_last_eval_result = 0;
 static bool g_live_force = false;   // --live: treat the stream as unbounded even with frame_count > 0
+
+// The NR preset hint (declared above, defined here - it reads the wire
+// options struct). Wire preset first (the per-profile choice, live on
+// RNSZ), NS_NR_PRESET as the static escape hatch, clamped to 0..13.
+static UINT NrPresetHint()
+{
+    UINT from_wire = g_video_options.preset;
+    static int cached_env = -1;
+    if (cached_env < 0)
+    {
+        char buf[16] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_NR_PRESET", buf, sizeof(buf));
+        cached_env = (got > 0 && got < sizeof(buf)) ? atoi(buf) : 0;
+        if (cached_env < 0) cached_env = 0;
+    }
+    int hint = (from_wire != 0) ? static_cast<int>(from_wire) : cached_env;
+    if (hint < 0) hint = 0;
+    if (hint > 13) hint = 13;   // NVSDK_NGX_DLSS_Hint_Render_Preset_M
+    return static_cast<UINT>(hint);
+}
 
 // Shared input frame (SHMI). Read-only view of the client's named section:
 // the frame is uploaded to the GPU straight from here, so the payload never
@@ -4588,6 +4609,11 @@ static int RunVideo()
         Log("[video] HDR pipeline: FP16 scRGB, IsHDR, paper white %.0f nits",
             static_cast<double>(PaperWhiteNits()));
     }
+    // The NR preset hint at create time (wire field first, NS_NR_PRESET as
+    // the escape hatch) - tagged [pure] so it echoes to NeuralScreen.log
+    // through the drain filter with the other create diagnostics (Phase
+    // A2 acceptance: the log line shows the preset).
+    Log("[pure] NR preset hint %u (wire %u)", NrPresetHint(), vh.preset);
     NVSDK_NGX_Result create_result = NVSDK_NGX_Result_Fail;
     // In nr_small mode the feature is created at the work resolution and told
     // nothing about the screen: it is handed a work-sized frame and returns a

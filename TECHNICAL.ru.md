@@ -128,7 +128,7 @@ recv                    17.5        31.6           24.5 мс
 | `warmup` | прогревочные кадры NGX при старте |
 | `work_scale` | 0.1–1.0, разрешение работы сети относительно экрана. Действует только при включённом `nr_small` |
 | `nr_small` | обрабатывать в пониженном разрешении и ложить результат на нативный кадр: быстрее, резко (residual composite). По умолчанию `false` |
-| `profile` | `Faithful`, `Natural`, `Strong / Cinematic`, `Extreme / Overdrive` |
+| `profile` | `Faithful`, `Natural`, `Strong / Cinematic`, `Extreme / Overdrive`. Каждый профиль несёт NR-preset hint (какую transformer-сеть NGX строит): Natural/Faithful = 0 (Default), Strong/Extreme = 2. Hint идёт в заголовке потока и применяется при каждом создании фичи, вживую на `RNSZ`. `NS_NR_PRESET` (окружение) переопределяет, когда профиль шлёт 0. Встроенный `nvngx_dlssnr.dll` 310.8.SF-v2 содержит только сеть #1 — старшие пресеты требуют более новый рантайм; лог создания показывает применённый hint |
 | `intensity`, `local_tone`, `local_structure`, `skin_structure` | `null` = взять из профиля |
 | `lang` | `ru` / `en` |
 | `worker_present` | воркер показывает кадр в своём окне (`false` — вывод через pygame) |

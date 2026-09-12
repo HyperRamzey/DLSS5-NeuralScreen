@@ -134,7 +134,7 @@ not.
 | `warmup` | NGX warmup frames at start |
 | `work_scale` | 0.1–1.0, the resolution the network runs at, relative to the screen. Only has an effect with `nr_small` on |
 | `nr_small` | process at a reduced resolution and compose the result onto the native frame: faster, sharp (the residual composite). Default `false` |
-| `profile` | `Faithful`, `Natural`, `Strong / Cinematic`, `Extreme / Overdrive` |
+| `profile` | `Faithful`, `Natural`, `Strong / Cinematic`, `Extreme / Overdrive`. Each profile carries an NR preset hint (the transformer network NGX builds the feature against): Natural/Faithful = 0 (Default), Strong/Extreme = 2. The hint travels the stream header and is applied at every feature create, live on `RNSZ`. `NS_NR_PRESET` (env) overrides when the profile sends 0. The bundled `nvngx_dlssnr.dll` 310.8.SF-v2 ships network #1 only, so higher presets need a newer runtime DLL - the create log line says which hint was applied |
 | `intensity`, `local_tone`, `local_structure`, `skin_structure` | `null` = take from profile |
 | `lang` | `ru` / `en` |
 | `worker_present` | worker shows the frame in its own window (`false` — pygame output) |

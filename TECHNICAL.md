@@ -51,28 +51,28 @@ half a second for the new size to settle first. A move only moves the windows.
 `Num0` starts/stops recording of the **NR-processed frame** into
 `recordings/neuralscreen-<timestamp>.mp4`:
 
-- AV1 NVENC hardware encoding at your desktop resolution, **60 fps**,
+* AV1 NVENC hardware encoding at your desktop resolution, **60 fps**,
   quality-targeted VBR (`cq 16`, ~64 Mbps in practice, ceiling 250 Mbps),
   preset p6 + tune hq, sRGB/BT.709 color tags (metadata written both on the
   stream and on every frame — players render colors identical to the screen).
-- The bitrate is a **ceiling, not a target**: on fast motion the encoder is
+* The bitrate is a **ceiling, not a target**: on fast motion the encoder is
   allowed to spend more instead of dropping quality to hit a fixed number.
   Raising quality costs no encoding time — that is dominated by the colour
   conversion, not by the preset (measured: 1.6–1.7 s per 3 s of video at
   every setting tried).
-- Recording runs at **60 fps** because the pipeline delivers ~55 frames per
+* Recording runs at **60 fps** because the pipeline delivers ~55 frames per
   second. The previous 30 fps time base could not represent them: frames were
   squeezed into half as many ticks, which is what made fast motion fall apart
   regardless of bitrate.
-- **Only the open menu is burned into the recording** — nothing else. Our
+* **Only the open menu is burned into the recording** — nothing else. Our
   own layer is hidden from external capture, so anything that must reach the
   file is drawn onto the frame before encoding. The same applies to
   screenshots. The HUD panel and the watermark used to be burned in as well;
   they are gone from the screen, and in a file they read as someone else's
   caption.
-- Recording works in both NR ON and NR OFF (bypass) modes; the file duration
+* Recording works in both NR ON and NR OFF (bypass) modes; the file duration
   matches real time (PTS is built from the wall clock).
-- **External recorders see the picture through Spout2** (off by default,
+* **External recorders see the picture through Spout2** (off by default,
   toggled in the settings): the worker publishes its output as a Spout2
   shared texture, so OBS with the Spout2 Capture plugin records the
   processed picture in full-screen mode too — where `WDA_EXCLUDEFROMCAPTURE`
@@ -80,7 +80,7 @@ half a second for the new size to settle first. A move only moves the windows.
   input; its path is one-window mode, which drops the WDA flag. The bridge
   is initialised once per worker process (`NS_SPOUT`), so toggling it
   restarts the worker.
-- **System audio is recorded as a second track**: WASAPI loopback ("what you
+* **System audio is recorded as a second track**: WASAPI loopback ("what you
   hear") from the default playback device, AAC 192 kbit/s stereo at the
   endpoint's own rate. No virtual cable, no microphone. Turn it off with
   `"record_audio": false` in `config.json`. A machine without a playback
@@ -107,13 +107,13 @@ worker frame        17.4      24.1           21.3 ms
 
 Two costs, neither of them the bitrate:
 
-- **19.9 ms of RGBA→yuv420p on the CPU** plus the nvenc submit, inside the
+* **19.9 ms of RGBA→yuv420p on the CPU** plus the nvenc submit, inside the
   capture loop. Encoding now runs in its own thread behind a 4-slot queue;
   the loop only computes the PTS and hands the frame over. On a full queue
   the frame is dropped rather than stalling the loop — the user is looking at
   the screen, not at the file, and a gap does not shift timing because the
   PTS comes from the clock.
-- **~7 ms of pushing 33 MB down the pipe.** The `OUTS` channel hands the
+* **~7 ms of pushing 33 MB down the pipe.** The `OUTS` channel hands the
   worker a named section to write pixels into instead. The copy out of the
   section happens on the reader thread; a copy is unavoidable because the
   section has one slot and the worker overwrites it next frame, while a
@@ -127,7 +127,7 @@ not.
 ## config.json
 
 | Field | Meaning |
-|---|---|
+| --- | --- |
 | `monitor` | monitor index for capture |
 | `width`, `height` | output resolution (**actual monitor resolution is used automatically when config is stale**) |
 | `fullscreen` | borderless fullscreen window |
@@ -155,7 +155,7 @@ overlay window.
 They talk over stdin/stdout with a binary protocol:
 
 | Message | Purpose |
-|---|---|
+| --- | --- |
 | `D5V3` | stream header: sizes, profile, NR parameters |
 | `SHMI` / `SACK` | shared-memory section name for the input frame |
 | `WNDO` / `WACK` | raise/close the worker's output window |
@@ -196,14 +196,71 @@ AV1 NVENC.
 
 Two constraints that look like quirks but are mandatory:
 
-- **The worker binary must be named `nvngx.dll`.** NGX Core returns
+* **The worker binary must be named `nvngx.dll`.** NGX Core returns
   `FAIL_PlatformError` on `Init_Ext` for any other process name. Verified
   experimentally.
-- **Work resolution is capped at 2560×1440.** At 4K the feature 18 goes
+* **Work resolution is capped at 2560×1440.** At 4K the feature 18 goes
   silent: the worker hangs on frame zero in both legacy and upscale modes.
 
 Scale changes go through `RNSZ` (~60 ms, the worker recreates the NGX
 feature in-process). If `RNSZ` fails — fall back to a full worker restart.
+
+## True 10-bit HDR (NS_HDR)
+
+`hdr` in config.json: `-1` (default) auto-resolves per run, `0` forces
+SDR (the old pipeline bit for bit), `1` forces HDR. Auto reads the
+**captured monitor** through the DisplayConfig probe
+(`hdr.enabled_for`) — a mixed SDR+HDR desktop has one answer per screen,
+and the pipeline follows the screen that is actually captured. The
+resolved mode travels to the worker as `NS_HDR=1/0` in the environment
+(the same once-per-restart contract as `NS_GPU`), with
+`NS_HDR_PAPER_WHITE` carrying the OS's SDR-content-brightness answer
+(the `SDR_WHITE_LEVEL` query; the BT.2408 reference white, 203 nits,
+when the OS stays silent — this Insider build returns raw 0 while HDR
+is engaged).
+
+With HDR on the whole colour path runs **FP16 scRGB**
+(`R16G16B16A16_FLOAT`): capture → `v.color` → NGX (created with the
+`IsHDR` flag) → output texture → the present swapchain, which gets
+`SetColorSpace1(RGB_FULL_G10_NONE_P709)`. scRGB is a linear-light space
+where **1.0 is 80 nits**; the OS composites SDR white at the
+paper-white level, so SDR content sits at `paper_white/80` (≈2.54 at
+203 nits) and real highlights run above it.
+
+**The capture converter.** Desktop Duplication delivers whatever DWM
+composites — BGRA8 on an SDR desktop, FP16 on an HDR one — and
+(measured on this Insider build) the format can flip **mid-session**
+while the DisplayConfig probe keeps answering the same. The DDA
+swizzle is therefore a converter, not a copier: the destination
+follows the *pipeline* format, the SRV follows the *captured* format,
+and the shader reconciles the pair (sRGB decode × paper white going
+up, the exact inverse coming down, passthrough when they match). The
+Python-side capture does the same conversion (`hdr_convert.py`) so the
+SHM and DDA paths stay pixel-identical; the readback tonemap
+(`×80/paper_white`, clip, sRGB encode) keeps every SDR consumer —
+OUTS pixels, recordings, screenshots — byte-compatible without
+touching the HDR on-screen path.
+
+**The luminance channel stays SDR-normalized.** The gray kernel writes
+`value × 80/paper_white` in HDR, so the optical flow and the adaptive
+exposure solver see the same 0..255 scale they were tuned on, on both
+paths.
+
+**Which output DDA duplicates** is named by `NS_MONITOR` (the captured
+monitor's GDI devicename, e.g. `\\.\DISPLAY2`). The old code hardcoded
+`EnumOutputs(0)` — on a multi-monitor desktop that silently captured
+the wrong screen, and when the two differed in HDR state the captured
+format desynced from the pipeline ('capture 87 vs pipeline 10', every
+frame refused). Unset, the worker falls back to output 0 as before.
+A monitor switch is a full pipeline restart and reapplies the
+environment.
+
+The float16 SHM transport is negotiated at `SHMI` time: the client
+offers the f16 slot (`SHM_FLAG_F16`), the worker answers with its
+capabilities in `SACK.reserved0` (`SHM_CAP_F16`), and an old
+SDR-only worker is re-offered an SDR-sized slot before any frame
+flows — the half-frame/whole-frame stream desync that once crawled at
+1.4 FPS is structurally impossible.
 
 ## Performance
 
@@ -348,7 +405,6 @@ shadows ever misbehave - a delta that is linear in code is not linear in
 light, and the error is largest in the darkest pixels. Moving the composite to
 linear would change the look of every scene, so it is a deliberate choice, not
 an oversight.
-
 
 ## Before / after wipe
 

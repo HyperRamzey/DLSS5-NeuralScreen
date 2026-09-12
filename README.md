@@ -188,7 +188,7 @@ second per frame; a press may feel lost.
 ## Known limitations
 
 - **True fullscreen games** cannot have the overlay drawn over them — a Windows rule. Borderless or windowed only.
-- **HDR displays** are not supported: switch to SDR (Win+Alt+B).
+- **True 10-bit HDR** — on an HDR desktop the pipeline runs FP16 scRGB end to end, capture to output (`NS_HDR=1`, auto by default; `hdr` in config.json: `-1` auto / `0` force SDR / `1` force HDR). Pixel readback, recordings and screenshots stay SDR-compatible through the tonemap on the way back.
 - **Windows 10, two NVIDIA cards and a second monitor are experimental** — built or fixed from user logs, none of it tested on the development machine (Windows 11, one card, one monitor); the overlay is drawn on the primary monitor. Reports welcome.
 - **Pipeline latency** is 40–60 ms — fine interactively, not competitively; **processing resolution is capped at 2560×1440** (the network refuses 4K), output is always your full native resolution.
 - **The bundled `nvngx_dlssnr.dll` is the leaked 310.8.0 runtime carrying sm_75/86/89/120 kernels (RTX 20-50)** — see License below.

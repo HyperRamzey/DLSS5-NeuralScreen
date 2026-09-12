@@ -8,12 +8,13 @@ wrong-pixels bug the Feeder's hdr_bridge exists to prevent.
 
 Checked:
 * the conversion is a pure function of (frame, paper_white_nits);
-* mid-grey sRGB (0.5 linear) lands at 80/203 of linear 1.0 by construction
-  (SDR white 80 nits / paper white 203 nits);
-* pure white (255) maps to exactly 80/paper_white;
+* mid-grey (0.5 linear) lands at half of SDR white's scRGB position -
+  white maps to paper_white/80, and the EOTF is the whole point;
+* pure white (255) maps to paper_white/80 (scRGB 1.0 = 80 nits;
 * output is float16, same HxWx4, alpha untouched at 1.0;
 * the SDR path is untouched (no conversion when the mode is off).
 """
+
 import sys
 from pathlib import Path
 
@@ -34,8 +35,11 @@ def main() -> int:
     if out.shape != (4, 8, 4) or out.dtype != np.float16:
         failures.append(f"shape/dtype: {out.shape} {out.dtype}")
 
-    # 2. White maps to 80/203 in linear scRGB (SDR white over paper white).
-    want = 80.0 / 203.0
+    # 2. White maps to 203/80 in linear scRGB: scRGB 1.0 is 80 nits,
+    #    and the OS composites SDR white at the paper-white level
+    #    (203 nits) - the value DWM itself writes for SDR white in a
+    #    native FP16 capture.
+    want = 203.0 / 80.0
     got = float(out[0, 0, 0])
     if abs(got - want) > 0.002:
         failures.append(f"white maps to {got:.4f}, want {want:.4f}")
@@ -46,8 +50,10 @@ def main() -> int:
     lin_half = np.full((1, 1, 4), 188, dtype=np.uint8)
     outl = rgba8_to_scrgb_f16(lin_half, 203.0)
     if abs(float(outl[0, 0, 0]) - 0.5 * want) > 0.01:
-        failures.append(f"linear mid-grey maps to {float(outl[0, 0, 0]):.4f}, "
-                        f"want ~{0.5 * want:.4f}")
+        failures.append(
+            f"linear mid-grey maps to {float(outl[0, 0, 0]):.4f}, "
+            f"want ~{0.5 * want:.4f}"
+        )
 
     # 5. The linearization is real sRGB (not naive pow2.2): byte 109
     #    must land at ~0.153 linear, not 0.427/2.2-gamma ~0.166.

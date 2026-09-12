@@ -225,6 +225,7 @@ class _Pipeline:
         "gray_active",
         "guide_fails",
         "guides",
+        "hdr",           # the resolved HDR mode (true 10-bit FP16 scRGB pipeline)
         "height",
         "hotkey_bindings",
         "hotkeys",

@@ -984,9 +984,10 @@ static UINT NrPresetHint()
 
 static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, UINT full_w = 0, UINT full_h = 0)
 {
-    (void)flags;
-    // New mode: the client sends full-res frames (full_w x full_h) and the feature
-    // itself downsamples to the work resolution (w x h_), runs NR, and upsamples back.
+    // The create flags (IsHDR / DepthInverted / ...) travel with the create
+    // call - they tell NGX what kind of frames it is being handed. IsHDR is
+    // what keeps the FP16 scRGB pipeline from being clamped to SDR
+    // assumptions inside the network.
     const bool upscale = (full_w > 0 && full_h > 0 && (full_w != w || full_h != h_));
     h.params->Reset();
     h.params->Set("CreationNodeMask", 1u);
@@ -1002,7 +1003,7 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
     h.params->Set("DLSSNR.Scale", upscale ? static_cast<float>(w) / static_cast<float>(full_w) : 1.0f);
     h.params->Set("DLSSNR.ScalingRatio", upscale ? static_cast<float>(w) / static_cast<float>(full_w) : 1.0f);
     h.params->Set("DLSSNR.Hint.Render.Preset", NrPresetHint());
-    h.params->Set("DLSS.Feature.Create.Flags", 0u);
+    h.params->Set("DLSS.Feature.Create.Flags", static_cast<uint32_t>(flags));
 
     if (!BeginCommands()) return false;
     DWORD ccode = 0;
@@ -1143,6 +1144,8 @@ static constexpr uint32_t RESIZE_MAGIC    = 0x5A534E52u; // "RNSZ" -- reconfigur
 static constexpr uint32_t RESIZE_ACK_MAGIC = 0x4B434152u; // "RACK" -- worker -> client reply to RNSZ
 static constexpr uint32_t SHM_MAGIC     = 0x494D4853u; // "SHMI" -- client -> worker: frame payload lives in shared memory
 static constexpr uint32_t SHM_ACK_MAGIC = 0x4B434153u; // "SACK" -- worker -> client reply to SHMI
+static constexpr uint32_t SHM_FLAG_F16  = 0x2u;       // SHMI: the colour slot is float16 scRGB (8 B/px)
+static constexpr uint32_t SHM_CAP_F16   = 0x2u;       // SACK reserved0: this worker takes float16 frames
 static constexpr uint32_t WINDOW_MAGIC     = 0x4F444E57u; // "WNDO" -- client -> worker: present results yourself
 static constexpr uint32_t WINDOW_ACK_MAGIC = 0x4B434157u; // "WACK" -- worker -> client reply to WNDO
 static constexpr uint32_t MOTION_MAGIC     = 0x53544F4Du; // "MOTS" -- client -> worker: motion arrives at this reduced size
@@ -1400,6 +1403,7 @@ struct VideoState
     UINT out_rows = 0;
     UINT64 out_row_size = 0;
     bool inputs_ready = false;
+    bool hdr = false;              // the whole pipeline runs FP16 scRGB (NS_HDR=1)
 
     // NS_NR_SMALL=1: run Neural Rendering on a smaller frame than the screen.
     //
@@ -1443,6 +1447,62 @@ static void CloseSharedInput()
     if (g_shm_handle != nullptr) { CloseHandle(g_shm_handle); g_shm_handle = nullptr; }
     g_shm_bytes = 0;
     g_shm_motion_off = 0;
+}
+
+// ---------------------------------------------------------------------------
+// HDR mode (true 10-bit). Defined here, above every consumer: the present
+// path (OpenPresent) is the first user.
+// ---------------------------------------------------------------------------
+// NS_HDR: run the pipeline in true 10-bit HDR - the desktop duplication
+// hands DWM-composited FP16 scRGB natively on an HDR desktop (measured:
+// legacy DuplicateOutput -> R16G16B16A16_FLOAT, values far above 1.0;
+// DuplicateOutput1 answers DXGI_ERROR_UNSUPPORTED on this build). The
+// client resolves the mode once at startup (DisplayConfig probe) and puts
+// it in the environment - the same once-per-worker contract as NS_NR_SMALL.
+static bool HdrRequested()
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        char buf[8] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_HDR", buf, sizeof(buf));
+        cached = (got > 0 && got < sizeof(buf) && buf[0] == '1') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+// NS_HDR_PAPER_WHITE: the SDR white level in nits - how bright the OS
+// composites SDR content on the HDR desktop (the OS answer, else the
+// BT.2408 reference white). The pipeline's FP16 is scRGB, where linear
+// 1.0 is always 80 nits; SDR content sits at PW/80, and both the
+// exposure normalization and the SDR readback tonemap scale through
+// this one number.
+static float PaperWhiteNits()
+{
+    static float cached = -1.0f;
+    if (cached < 0.0f)
+    {
+        char buf[16] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_HDR_PAPER_WHITE", buf, sizeof(buf));
+        const float v = (got > 0 && got < sizeof(buf)) ? static_cast<float>(atof(buf)) : 0.0f;
+        cached = (v > 0.0f) ? v : 203.0f;   // BT.2408 reference white
+    }
+    return cached;
+}
+
+// The pixel format of the whole video pipeline. SDR (the default, NS_HDR
+// unset/0) stays R8G8B8A8_UNORM bit for bit; HDR runs FP16 scRGB end to end:
+// capture (DDA/WGC both yield it natively) -> color/output textures -> NGX
+// (IsHDR) -> present (FP16 swapchain + G10/P709). The motion field is
+// untouched - it is flow, not colour.
+static DXGI_FORMAT ColorFormat()
+{
+    return HdrRequested() ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+}
+
+static UINT ColorBpp()
+{
+    return HdrRequested() ? 8u : 4u;
 }
 
 // ---------------------------------------------------------------------------
@@ -1606,7 +1666,14 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     DXGI_SWAP_CHAIN_DESC1 sd = {};
     sd.Width       = width;
     sd.Height      = height;
-    sd.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;   // must match VideoState::output for CopyResource
+    // True 10-bit HDR: the overlay swapchain is FP16 scRGB with the G10/P709
+    // colorspace, so the network's linear output reaches the screen without
+    // an SDR clamp (verified on this machine: CreateSwapChainForHwnd accepts
+    // R16G16B16A16_FLOAT on an HDR desktop and SetColorSpace1(G10/P709)
+    // returns S_OK). SDR stays exactly as before - R8G8B8A8, no colorspace
+    // call. The format MUST match VideoState::output or the CopyResource in
+    // PresentResult/PresentBypass device-removes.
+    sd.Format      = ColorFormat();
     sd.SampleDesc.Count = 1;
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.BufferCount = 2;
@@ -1629,6 +1696,13 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     {
         Log("[present] IDXGISwapChain3 unavailable 0x%08X", hr);
         ClosePresent(); return false;
+    }
+    if (HdrRequested())
+    {
+        // The colorspace call is what makes DWM composite the FP16 buffer as
+        // scRGB rather than treating the values as 8-bit-ish garbage.
+        const HRESULT cshr = g_present_swap->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
+        Log("[present] HDR colorspace G10/P709 -> 0x%08X", (UINT)cshr);
     }
     // Click-through. The order follows the working recipe from display.py:
     // style -> SetLayeredWindowAttributes -> SWP_FRAMECHANGED. Neither
@@ -1949,6 +2023,9 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
     v.w = w; v.hgt = hgt;
     v.full_w = full_w; v.full_h = full_h;
     v.upscale = (full_w > 0 && full_h > 0 && (full_w != w || full_h != hgt));
+    v.hdr = HdrRequested();
+    const DXGI_FORMAT cfmt = ColorFormat();
+    const UINT cbpp = ColorBpp();
     // Only worth doing when the work resolution is actually smaller: at
     // work == full there is nothing to scale and the two extra passes would
     // be pure loss.
@@ -1963,7 +2040,7 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
     v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
     const UINT cw = v.upscale ? full_w : w;   // color texture: full-res in upscale mode
     const UINT ch = v.upscale ? full_h : hgt;
-    if (!CreateVideoTex(v.color, cw, ch, DXGI_FORMAT_R8G8B8A8_UNORM, cw * 4) ||
+    if (!CreateVideoTex(v.color, cw, ch, cfmt, cw * cbpp) ||
         // ALLOW_UNORDERED_ACCESS: the motion field upscale shader writes into it
         !CreateVideoTex(v.mv, w, hgt, DXGI_FORMAT_R16G16_FLOAT, w * 4,
                         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
@@ -1974,7 +2051,7 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
     D3D12_RESOURCE_DESC td = {};
     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     td.Width = cw; td.Height = ch; td.DepthOrArraySize = 1; td.MipLevels = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+    td.Format = cfmt; td.SampleDesc.Count = 1;
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     if (FAILED(h.dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td,
@@ -2443,14 +2520,14 @@ static void BindScale4Descriptors(ID3D12Resource *src, ID3D12Resource *dst, UINT
     cpu.ptr += static_cast<SIZE_T>(slot) * 2 * stride;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.Format = src->GetDesc().Format;   // RGBA8 or FP16 scRGB - follows the resource
     sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
     h.dev->CreateShaderResourceView(src, &sd, cpu);
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-    ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    ud.Format = dst->GetDesc().Format;
     ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     cpu.ptr += stride;
     h.dev->CreateUnorderedAccessView(dst, nullptr, &ud, cpu);
@@ -2498,7 +2575,7 @@ static void BindResidualDescriptors(ID3D12Resource *native, ID3D12Resource *nr_i
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_residual_heap->GetCPUDescriptorHandleForHeapStart();
 
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.Format = native->GetDesc().Format;   // RGBA8 or FP16 scRGB - follows the resource
     sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
@@ -2510,7 +2587,7 @@ static void BindResidualDescriptors(ID3D12Resource *native, ID3D12Resource *nr_i
     }
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-    ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    ud.Format = dst->GetDesc().Format;
     ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     h.dev->CreateUnorderedAccessView(dst, nullptr, &ud, cpu);
 
@@ -2668,9 +2745,28 @@ static void CloseDda()
 static ID3D12RootSignature  *g_dda_rs = nullptr;
 static ID3D12PipelineState  *g_dda_pso = nullptr;
 static ID3D12DescriptorHeap *g_dda_heap = nullptr;
+// The conversion the DDA swizzle applies, as one number the shader reads
+// from its constants buffer. BGRA8 and FP16 scRGB are the only pair DWM
+// ever delivers (measured on this machine: the format flips between the
+// two as the desktop's HDR state changes, even while the DisplayConfig
+// probe keeps answering HDR ON - an Insider-build quirk). The pipeline
+// format follows the RESOLVED HDR MODE (NS_HDR), the capture format
+// follows DWM - this pass is what reconciles the two, so a mid-session
+// flip can never desync the pipeline again.
+//   0 = passthrough (capture == pipeline format)
+//   1 = BGRA8 capture  -> FP16 pipeline: sRGB decode, then scale by
+//       80/paper_white so SDR white lands where the OS composites it
+//       (the exact inverse of the client's rgba8_to_scrgb_f16).
+//   2 = FP16 capture   -> BGRA8 pipeline: scale by paper_white/80 (SDR
+//       white back to 1.0), clip, sRGB encode (the readback path's
+//       inverse).
+static UINT g_dda_convert = 0;
+static float g_dda_paper_white = 203.0f;
+static bool g_dda_cvt_logged = false;   // the conversion line logs once, not per frame
 static const char kDdaSwizzleHlsl[] =
     "Texture2D<float4>   gSrc : register(t0);\n"
     "RWTexture2D<float4> gDst : register(u0);\n"
+    "cbuffer DDACvt : register(b0) { uint gMode; float gPw; uint2 gPad; };\n"
     "[numthreads(8, 8, 1)]\n"
     "void CSMain(uint3 id : SV_DispatchThreadID)\n"
     "{\n"
@@ -2680,6 +2776,19 @@ static const char kDdaSwizzleHlsl[] =
     // A B8G8R8A8 SRV is already decoded by HLSL into RGBA semantics with the
     // right components: c.r = red, c.b = blue. No swap may be done here -
     // float4(c.b,...) gave swapped channels (a double swap).
+    "    if (gMode == 1)\n"
+    "    {\n"
+    "        // SDR bytes -> linear\n"
+    "        c.rgb = (c.rgb <= 0.04045) ? c.rgb / 12.92 : pow(abs(c.rgb) / 1.055 + 0.055 / 1.055, 2.4);\n"
+    "        c.rgb *= gPw / 80.0;\n"   // SDR white -> the OS scRGB position
+    "    }\n"
+    "    else if (gMode == 2)\n"
+    "    {\n"
+    "        c.rgb *= 80.0 / gPw;\n"   // SDR white back to 1.0
+    "        c.rgb = clamp(c.rgb, 0.0, 1.0);\n"
+    "        // linear -> SDR bytes\n"
+    "        c.rgb = (c.rgb <= 0.0031308) ? c.rgb * 12.92 : 1.055 * pow(c.rgb, 1.0 / 2.4) - 0.055;\n"
+    "    }\n"
     "    gDst[id.xy] = c;\n"
     "}\n";
 
@@ -2690,7 +2799,7 @@ static bool EnsureDdaSwizzle()
     HRESULT hr = D3DCompile(kDdaSwizzleHlsl, sizeof(kDdaSwizzleHlsl) - 1, "dda-swizzle.hlsl",
                             nullptr, nullptr, "CSMain", "cs_5_0", 0, 0, &code, &err);
     if (FAILED(hr)) { Log("[dda] swizzle compile failed: %s", err ? (char *)err->GetBufferPointer() : "?"); return false; }
-    D3D12_ROOT_PARAMETER prm[2] = {};
+    D3D12_ROOT_PARAMETER prm[3] = {};
     D3D12_DESCRIPTOR_RANGE r0 = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0 };
     D3D12_DESCRIPTOR_RANGE r1 = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0 };
     prm[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -2699,8 +2808,15 @@ static bool EnsureDdaSwizzle()
     prm[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     prm[1].DescriptorTable.NumDescriptorRanges = 1; prm[1].DescriptorTable.pDescriptorRanges = &r1;
     prm[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // The conversion constants (mode + paper white): a root CBV - no
+    // descriptor heap entry, no per-frame copy beyond the 16 bytes.
+    prm[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    prm[2].Constants.Num32BitValues = 4;   // mode, pw, pad, pad
+    prm[2].Constants.ShaderRegister = 0;
+    prm[2].Constants.RegisterSpace = 0;
+    prm[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     D3D12_ROOT_SIGNATURE_DESC rsd = {};
-    rsd.NumParameters = 2; rsd.pParameters = prm;
+    rsd.NumParameters = 3; rsd.pParameters = prm;
     ID3DBlob *sig = nullptr;
     if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)))
     { Log("[dda] RS serialize failed"); return false; }
@@ -2726,17 +2842,26 @@ static bool EnsureDdaSwizzle()
     return true;
 }
 
-static void BindDdaDescriptors(ID3D12Resource *src)
+static void BindDdaDescriptors(ID3D12Resource *src, DXGI_FORMAT src_fmt)
 {
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_dda_heap->GetCPUDescriptorHandleForHeapStart();
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    // The SRV type follows the CAPTURED resource: BGRA8 or FP16 scRGB,
+    // whatever DWM hands over this session (measured: the format flips
+    // between the two as the desktop HDR state changes). A B8G8R8A8 view
+    // on an R16G16B16A16 resource (the old hardcode) reads 32-bit pixels
+    // out of 64-bit data.
+    sd.Format = src_fmt; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
     h.dev->CreateShaderResourceView(src, &sd, cpu);
     D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-    ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM; ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    // The UAV follows the PIPELINE format (g_dda_dst was created in it):
+    // the swizzle is a converter, not a copier - the shader's gMode
+    // reconciles whatever the capture delivered with what the pipeline
+    // expects, so a mid-session DWM format flip can never desync it.
+    ud.Format = g_dda_dst->GetDesc().Format; ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     cpu.ptr += stride;
     h.dev->CreateUnorderedAccessView(g_dda_dst, nullptr, &ud, cpu);
 }
@@ -2752,7 +2877,7 @@ static ID3D12PipelineState  *g_gray_pso = nullptr;
 static const char kGrayHlsl[] =
     "Texture2D<float4>   gSrc : register(t0);\n"
     "RWTexture2D<float>  gDst : register(u0);\n"
-    "cbuffer Sizes : register(b0) { uint gSrcW; uint gSrcH; uint gDstW; uint gDstH; };\n"
+    "cbuffer Sizes : register(b0) { uint gSrcW; uint gSrcH; uint gDstW; uint gDstH; float gPwScale; };\n"
     "[numthreads(8, 8, 1)]\n"
     "void CSMain(uint3 id : SV_DispatchThreadID)\n"
     "{\n"
@@ -2768,7 +2893,14 @@ static const char kGrayHlsl[] =
     "            float4 c = gSrc.Load(int3(x, y, 0));\n"
     "            sum += dot(c.rgb, float3(0.299f, 0.587f, 0.114f));\n"
     "        }\n"
-    "    gDst[id.xy] = sum / (float)((x1 - x0) * (y1 - y0));\n"
+    // The luminance channel's contract is "SDR-normalized bytes" (0..255
+    // with SDR white at 255) on BOTH paths: the optical flow and the
+    // exposure solver were tuned on that scale. In the FP16 HDR pipeline
+    // the pixels are scRGB (1.0 = 80 nits), where SDR white sits at
+    // paper_white/80 (e.g. 2.54) - without the gPwScale divide everything
+    // above 31% would clamp to 255 and the flow/exposure would see a
+    // blown-out frame. SDR passes 1.0 and the divide is a no-op.
+    "    gDst[id.xy] = (sum / (float)((x1 - x0) * (y1 - y0))) * gPwScale;\n"
     "}\n";
 
 static bool EnsureGrayPipeline()
@@ -2782,7 +2914,7 @@ static bool EnsureGrayPipeline()
     D3D12_DESCRIPTOR_RANGE r1 = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0 };
     D3D12_ROOT_PARAMETER prm[3] = {};
     prm[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    prm[0].Constants.Num32BitValues = 4; prm[0].Constants.ShaderRegister = 0;
+    prm[0].Constants.Num32BitValues = 5; prm[0].Constants.ShaderRegister = 0;
     prm[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     prm[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     prm[1].DescriptorTable.NumDescriptorRanges = 1; prm[1].DescriptorTable.pDescriptorRanges = &r0;
@@ -2961,7 +3093,10 @@ static bool AreaToGray()
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_dda_heap->GetCPUDescriptorHandleForHeapStart();
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    // The SRV follows the captured resource's format (BGRA8 on SDR desktops,
+    // FP16 scRGB on HDR ones). A hardcoded 32-bit view on an FP16 resource
+    // reads 64-bit data as 32-bit pixels - undefined (review finding F1).
+    sd.Format = g_dda_dst->GetDesc().Format; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
     h.dev->CreateShaderResourceView(g_dda_dst, &sd, cpu);
@@ -2973,8 +3108,13 @@ static bool AreaToGray()
     h.list->SetDescriptorHeaps(1, heaps);
     h.list->SetComputeRootSignature(g_gray_rs);
     h.list->SetPipelineState(g_gray_pso);
-    const UINT sizes[4] = { g_dda_w, g_dda_h, g_gray_w, g_gray_h };
-    h.list->SetComputeRoot32BitConstants(0, 4, sizes, 0);
+    // gPwScale: 80/paper_white in the HDR pipeline (SDR white back to
+    // byte scale), 1.0 on SDR - the gray channel's contract stays
+    // "SDR-normalized bytes" on both paths.
+    const float pw_scale = HdrRequested() ? 80.0f / PaperWhiteNits() : 1.0f;
+    const UINT sizes[5] = { g_dda_w, g_dda_h, g_gray_w, g_gray_h,
+                            *reinterpret_cast<const UINT *>(&pw_scale) };
+    h.list->SetComputeRoot32BitConstants(0, 5, sizes, 0);
     D3D12_GPU_DESCRIPTOR_HANDLE g0 = g_dda_heap->GetGPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE g1 = g0; g1.ptr += stride;
     h.list->SetComputeRootDescriptorTable(1, g0);
@@ -3090,8 +3230,11 @@ static void UpdateAdaptiveExposure()
         g_pw_logged = true;
     }
 
-    // Average luminance of the AREA frame (0..1). The bytes are summed as
-    // integers and scaled once: a division per pixel was 57 600 of them per
+    // Average luminance of the AREA frame (0..1, SDR-normalized bytes on
+    // BOTH paths: the gray kernel divides the HDR scRGB values back to
+    // SDR scale with gPwScale - the thresholds below were tuned on this
+    // scale and stay valid in HDR). The bytes are summed as integers
+    // and scaled once: a division per pixel was 57 600 of them per
     // frame for a number that is the same either way.
     uint64_t sum = 0;
     const size_t n = static_cast<size_t>(g_gray_w) * g_gray_h;
@@ -3169,8 +3312,60 @@ static bool OpenDda(UINT w, UINT hgt)
     IDXGIAdapter1 *adapter = nullptr;
     if (FAILED(factory->EnumAdapters1(want_dda >= 0 ? (UINT)want_dda : 0, &adapter)))
     { Log("[dda] no adapter %d", want_dda >= 0 ? want_dda : 0); factory->Release(); return false; }
+    // The output the client's config points at, by GDI devicename
+    // (NS_MONITOR, e.g. "\\\\.\\\\DISPLAY2"). The hardcoded
+    // EnumOutputs(0) captured whatever sat at index 0 of the capture
+    // adapter - on a multi-monitor desktop that is not necessarily the
+    // configured screen, and when the two differ in HDR state the
+    // captured format (BGRA8 vs FP16) desyncs from the pipeline
+    // ("[cap] format mismatch: capture 87 vs pipeline 10" - every frame
+    // refused). Unset or not found falls back to output 0: the old
+    // behavior, one screen, no regression for single-monitor users.
+    char want_mon[64] = {};
+    const DWORD mon_got = GetEnvironmentVariableA("NS_MONITOR", want_mon, sizeof(want_mon));
+    const bool want_named = (mon_got > 0 && mon_got < sizeof(want_mon) && want_mon[0] != '\0');
+    wchar_t want_mon_w[64] = {};   // the wide form, converted once before the scan
+    if (want_named)
+        MultiByteToWideChar(CP_UTF8, 0, want_mon, -1, want_mon_w, 63);
     IDXGIOutput *output = nullptr;
-    if (FAILED(adapter->EnumOutputs(0, &output))) { Log("[dda] no output"); adapter->Release(); factory->Release(); return false; }
+    UINT output_idx = 0;
+    bool found = false;
+    wchar_t found_name[64] = {};
+    for (; adapter->EnumOutputs(output_idx, &output) == S_OK; ++output_idx)
+    {
+        DXGI_OUTPUT_DESC od = {};
+        if (FAILED(output->GetDesc(&od)) || od.DeviceName == nullptr) { output->Release(); continue; }
+        if (want_named && wcscmp(od.DeviceName, want_mon_w) == 0)
+        {
+            wcsncpy_s(found_name, od.DeviceName, _TRUNCATE);
+            found = true;
+            break;
+        }
+        if (!want_named)
+        {
+            // NS_MONITOR unset: the first output IS the selection (the
+            // old behavior, bit for bit).
+            wcsncpy_s(found_name, od.DeviceName, _TRUNCATE);
+            found = true;
+            break;
+        }
+        output->Release();
+    }
+    if (!found)
+    {
+        // The named monitor is not on this adapter (or the adapter has
+        // no outputs at all): fall back to output 0 - the capture's own
+        // fallback - rather than refusing the capture outright.
+        if (want_named)
+            Log("[dda] NS_MONITOR=%s not found on adapter - falling back to output 0", want_mon);
+        if (FAILED(adapter->EnumOutputs(0, &output)))
+        { Log("[dda] no output"); adapter->Release(); factory->Release(); return false; }
+        DXGI_OUTPUT_DESC od = {};
+        if (SUCCEEDED(output->GetDesc(&od)) && od.DeviceName != nullptr)
+            wcsncpy_s(found_name, od.DeviceName, _TRUNCATE);
+        output_idx = 0;
+    }
+    Log("[dda] duplicating output %u (%ls)", output_idx, found_name);
     IDXGIOutput1 *output1 = nullptr;
     if (FAILED(output->QueryInterface(__uuidof(IDXGIOutput1), (void **)&output1)))
     { Log("[dda] no Output1"); output->Release(); adapter->Release(); factory->Release(); return false; }
@@ -3239,7 +3434,14 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
         D3D12_RESOURCE_DESC td = {};
         td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         td.Width = fd.Width; td.Height = fd.Height; td.DepthOrArraySize = 1; td.MipLevels = 1;
-        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+        // The dst follows the PIPELINE format, not the captured one: the
+        // swizzle below is a converter (g_dda_convert), so whatever DWM
+        // hands over this session (measured: the format flips between
+        // BGRA8 and FP16 scRGB as the desktop HDR state changes) lands in
+        // the format NGX was created for. The old capture-format dst kept
+        // the pipeline hostage to DWM's choice - the 'capture 87 vs
+        // pipeline 10' refusal loop (review findings F1/F2).
+        td.Format = ColorFormat(); td.SampleDesc.Count = 1;
         td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         if (FAILED(h.dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td,
@@ -3247,7 +3449,8 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
                                                   __uuidof(ID3D12Resource),
                                                   reinterpret_cast<void **>(&g_dda_dst))))
         { Log("[cap] dst UAV failed"); goto fail_capture; }
-        Log("[cap] shared texture %ux%u ready", (UINT)fd.Width, (UINT)fd.Height);
+        Log("[cap] shared texture %ux%u ready (capture fmt %u -> pipeline fmt %u)",
+            (UINT)fd.Width, (UINT)fd.Height, (UINT)fd.Format, (UINT)ColorFormat());
     }
     // Any failure inside the "first frame" block leaves a PARTIAL bridge:
     // g_dda_shared alive with a NULL fence, and the next frame would copy
@@ -3265,6 +3468,26 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
         g_dda_shared->GetDesc(&sd);
         if (sd.Width != fd.Width || sd.Height != fd.Height)
             return StageResult::SizeChanged;
+        // The capture format is allowed to differ from the shared texture's
+        // (which was created from the first frame's format): DWM can flip
+        // between BGRA8 and FP16 mid-session. What must NOT differ is the
+        // size - a CopyResource with mismatched extents is device removed,
+        // and a cropped copy would leave stale pixels in the tail that NGX
+        // would then evaluate (M2 of audit #3). The format is reconciled by
+        // the converter swizzle below, not by the D3D11 copy (a same-size
+        // cross-format CopySubresourceRegion is NOT guaranteed - the box
+        // copy stays same-format, the conversion happens on the D3D12
+        // side, one hop later).
+        if (sd.Format != fd.Format)
+        {
+            // The shared texture must be rebuilt in the NEW capture format:
+            // it is the hand-off point between D3D11 (the copy from the
+            // captured frame) and D3D12 (the converter read). A mismatch
+            // would make the D3D11 copy undefined.
+            Log("[cap] capture format flipped %u -> %u - rebuilding the bridge",
+                (UINT)sd.Format, (UINT)fd.Format);
+            goto fail_capture;
+        }
         D3D11_BOX box = { 0, 0, 0, sd.Width, sd.Height, 1 };
         g_dda_ctx->CopySubresourceRegion(g_dda_shared, 0, 0, 0, 0, frame, 0, &box);
     }
@@ -3321,15 +3544,54 @@ fail_capture:
 // frame the optical-flow guides need.
 static bool SwizzleCaptureIntoColor(VideoState &v)
 {
+    if (g_dda_dst == nullptr || v.color.tex == nullptr) return false;
+    // The swizzle dst (g_dda_dst) is created in the PIPELINE format and the
+    // final copy into v.color.tex is format-matched by construction -
+    // both follow ColorFormat(). What CAN differ is the CAPTURE format:
+    // DWM hands BGRA8 or FP16 scRGB depending on the desktop's HDR state,
+    // and (measured on this Insider build) it can flip between the two
+    // mid-session while the DisplayConfig probe keeps answering the
+    // same. The converter below reconciles the two - the pipeline never
+    // refuses a frame over DWM's format choice again.
+    const DXGI_FORMAT pipe_fmt = v.color.tex->GetDesc().Format;
+    const DXGI_FORMAT cap_fmt = g_dda_d12->GetDesc().Format;
+    if (cap_fmt == DXGI_FORMAT_B8G8R8A8_UNORM && pipe_fmt == DXGI_FORMAT_R8G8B8A8_UNORM)
+        g_dda_convert = 0;   // SDR: the SRV already swaps B/R - passthrough
+    else if (cap_fmt == DXGI_FORMAT_B8G8R8A8_UNORM && pipe_fmt == DXGI_FORMAT_R16G16B16A16_FLOAT)
+        g_dda_convert = 1;   // SDR capture -> FP16 scRGB pipeline (sRGB decode + paper white)
+    else if (cap_fmt == DXGI_FORMAT_R16G16B16A16_FLOAT && pipe_fmt == DXGI_FORMAT_R8G8B8A8_UNORM)
+        g_dda_convert = 2;   // HDR capture -> SDR pipeline (paper white + clip + sRGB encode)
+    else if (cap_fmt == pipe_fmt)
+        g_dda_convert = 0;   // same format on both sides - passthrough
+    else
+    {
+        // A pair outside the measured matrix (e.g. a 10-bit capture on a
+        // future build): refuse rather than guess - the client's forced
+        // SDR mode (hdr=0) is the escape hatch that always works.
+        Log("[cap] unsupported capture/pipeline pair %u/%u - frame refused",
+            (UINT)cap_fmt, (UINT)pipe_fmt);
+        return false;
+    }
+    g_dda_paper_white = PaperWhiteNits();
+    struct CvtConst { UINT mode; float pw; UINT pad0, pad1; } cvt =
+        { g_dda_convert, g_dda_paper_white, 0u, 0u };
+    if (g_dda_convert != 0 && !g_dda_cvt_logged)
+    {
+        Log("[cap] converting capture fmt %u -> pipeline fmt %u (paper white %.0f)",
+            (UINT)cap_fmt, (UINT)pipe_fmt, static_cast<double>(g_dda_paper_white));
+        g_dda_cvt_logged = true;
+    }
     if (!BeginCommands()) return false;
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_d12, D3D12_RESOURCE_STATE_COMMON,
                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     h.list->ResourceBarrier(1, &to_srv);
-    BindDdaDescriptors(g_dda_d12);
+    BindDdaDescriptors(g_dda_d12, cap_fmt);
     ID3D12DescriptorHeap *heaps[] = { g_dda_heap };
     h.list->SetDescriptorHeaps(1, heaps);
     h.list->SetComputeRootSignature(g_dda_rs);
     h.list->SetPipelineState(g_dda_pso);
+    // The conversion constants (root param 2): mode + paper white.
+    h.list->SetComputeRoot32BitConstants(2, 4, &cvt, 0);
     D3D12_GPU_DESCRIPTOR_HANDLE g0 = g_dda_heap->GetGPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE g1 = g0;
     g1.ptr += h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -3524,8 +3786,13 @@ static bool OpenWgc(HWND hwnd)
         const auto size = s->item.Size();
         if (size.Width <= 0 || size.Height <= 0)
         { Log("[wgc] the window has no size (minimised?)"); delete s; return false; }
+        // FP16 scRGB on HDR (the Lossless Scaling recipe from its WGC engine:
+        // the same one-bool switch, pool format 10) - B8G8R8A8 otherwise.
+        const ns_wgdx::DirectXPixelFormat pool_fmt = HdrRequested()
+            ? ns_wgdx::DirectXPixelFormat::R16G16B16A16Float
+            : ns_wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
         s->pool = ns_wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
-            s->device, ns_wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
+            s->device, pool_fmt, 2, size);
         s->session = s->pool.CreateCaptureSession(s->item);
         try { s->session.IsCursorCaptureEnabled(false); }
         catch (winrt::hresult_error const &) { Log("[wgc] cursor capture stays on"); }
@@ -3599,7 +3866,7 @@ static bool UploadVideoFrame(VideoState &v, const BYTE *color, const BYTE *mv, b
 {
     const UINT cw = v.upscale ? v.full_w : v.w;
     const UINT ch = v.upscale ? v.full_h : v.hgt;
-    if (!FillUpload(v.color, color, cw * 4, ch)) return false;
+    if (!FillUpload(v.color, color, cw * ColorBpp(), ch)) return false;
     if (!motion_small && !FillUpload(v.mv, mv, v.w * 4, v.hgt)) return false;
     if (!BeginCommands()) return false;
     if (v.inputs_ready)
@@ -3846,7 +4113,7 @@ static bool EnsureSplitUav(ID3D12Resource *res)
             reinterpret_cast<void **>(&g_split_heap_cpu)))) return false;
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-    ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    ud.Format = res->GetDesc().Format;   // RGBA8 or FP16 scRGB - follows the resource
     ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     h.dev->CreateUnorderedAccessView(res, nullptr, &ud,
         g_split_heap_gpu->GetCPUDescriptorHandleForHeapStart());
@@ -3954,10 +4221,46 @@ static bool DownloadVideoFrame(VideoState &v, std::vector<BYTE> &packed,
     const UINT ow = v.upscale ? v.full_w : v.w;
     const UINT oh = v.upscale ? v.full_h : v.hgt;
     packed.resize(static_cast<size_t>(ow) * oh * 4);
-    for (UINT y = 0; y < oh; ++y)
-        memcpy(packed.data() + static_cast<size_t>(y) * ow * 4,
-               mapped + static_cast<size_t>(y) * v.out_fp.Footprint.RowPitch,
-               static_cast<size_t>(ow) * 4);
+    if (v.hdr)
+    {
+        // HDR: the readback rows are FP16 scRGB linear light. The client's
+        // contract is RGBA8 sRGB bytes (the reader, the screenshots, the
+        // recorder and the window-mode OUT all unpack it that way), so the
+        // conversion happens here, once, on the readback path: linear ->
+        // paper-white-normalized -> sRGB EOTF -> 8 bits. The same math the
+        // client's hdr_convert runs in the other direction.
+        const float inv_pw = 80.0f / PaperWhiteNits();
+        for (UINT y = 0; y < oh; ++y)
+        {
+            const uint16_t *src16 = reinterpret_cast<const uint16_t *>(
+                mapped + static_cast<size_t>(y) * v.out_fp.Footprint.RowPitch);
+            BYTE *dst = packed.data() + static_cast<size_t>(y) * ow * 4;
+            for (UINT x = 0; x < ow; ++x)
+            {
+                for (int c = 0; c < 3; ++c)
+                {
+                    float f;
+                    memcpy(&f, &src16[x * 4 + c], 2);
+                    f *= inv_pw;                       // scRGB -> SDR-relative linear
+                    if (f < 0.0f) f = 0.0f;
+                    if (f > 1.0f) f = 1.0f;           // HDR range clipped for the SDR consumers
+                    // sRGB OETF (the inverse of the client's EOTF)
+                    const float s = (f <= 0.0031308f)
+                        ? f * 12.92f
+                        : 1.055f * powf(f, 1.0f / 2.4f) - 0.055f;
+                    dst[x * 4 + c] = static_cast<BYTE>(s * 255.0f + 0.5f);
+                }
+                dst[x * 4 + 3] = 255;
+            }
+        }
+    }
+    else
+    {
+        for (UINT y = 0; y < oh; ++y)
+            memcpy(packed.data() + static_cast<size_t>(y) * ow * 4,
+                   mapped + static_cast<size_t>(y) * v.out_fp.Footprint.RowPitch,
+                   static_cast<size_t>(ow) * 4);
+    }
     D3D12_RANGE written = { 0, 0 };
     v.readback->Unmap(0, &written);
     return true;
@@ -4018,7 +4321,11 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
         }
         const size_t cw = v.upscale ? v.full_w : v.w;
         const size_t ch = v.upscale ? v.full_h : v.hgt;
-        const size_t color_bytes = cw * ch * 4;
+        // HDR: the colour slot is FP16 scRGB, 8 bytes per pixel (B2's
+        // SHM_FLAG_F16 negotiation). The bpp follows the pipeline, not a
+        // constant - the size check below is what catches a desync between
+        // what the client negotiated and what the worker expects.
+        const size_t color_bytes = cw * ch * (v.hdr ? 8 : 4);
         // The downscaled motion field (MOTS) takes as much as it takes, not
         // the work resolution - otherwise the stream parsing falls apart.
         const bool small_mv = (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0;
@@ -4272,6 +4579,15 @@ static int RunVideo()
     { Log("[video] resource creation failed"); return 3; }
     int flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure |
                 NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+    // True 10-bit HDR: the feature must know the input is FP16 linear scRGB,
+    // or it clamps to SDR assumptions internally (the Feeder sets the same
+    // flag for its HDR bridge). Matches the pipeline format from NS_HDR.
+    if (v.hdr)
+    {
+        flags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+        Log("[video] HDR pipeline: FP16 scRGB, IsHDR, paper white %.0f nits",
+            static_cast<double>(PaperWhiteNits()));
+    }
     NVSDK_NGX_Result create_result = NVSDK_NGX_Result_Fail;
     // In nr_small mode the feature is created at the work resolution and told
     // nothing about the screen: it is handed a work-sized frame and returns a
@@ -4352,7 +4668,19 @@ static int RunVideo()
             Log("[video] RNSZ: work %ux%u -> %ux%u (full %ux%u), warmup=%u",
                 v.w, v.hgt, rc.width, rc.height, rc.full_w, rc.full_h, rc.warmup);
             // 1. Drain the GPU: the old feature must be idle before release.
-            WaitFenceValue(h.fence, h.fence_value, 2000);
+            //    A timeout is NOT permission to proceed: releasing textures a
+            //    hung queue still writes is a use-after-free that turns a
+            //    hiccup into device-removed. Skip this resize, keep the old
+            //    (working) sizes, and nack - the client retries later when
+            //    the queue has drained (code review finding F3).
+            if (!WaitFenceValue(h.fence, h.fence_value, 2000))
+            {
+                Log("[video] RNSZ skipped: the GPU did not drain in 2s - "
+                    "keeping the old sizes");
+                VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0xBAD00006u, 0u, fh.pts };
+                if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
+                continue;
+            }
             // 2. Release the old feature and textures.
             SafeReleaseFeature(h.feature);
             h.feature = nullptr;
@@ -4392,10 +4720,20 @@ static int RunVideo()
             CloseSharedInput();
             const size_t need = static_cast<size_t>(sc.color_bytes) +
                                 static_cast<size_t>(sc.motion_bytes);
+            // The pixel width must match the pipeline: an HDR client sending
+            // 8 B/px to an SDR worker (or the reverse) is a desync that reads
+            // half a frame as a whole one - refuse it instead of mangling.
+            const bool client_f16 = (sc.flags & SHM_FLAG_F16) != 0;
+            const bool want_f16 = HdrRequested();
             uint32_t ok = 0;
             if (sc.color_bytes == 0 || sc.motion_bytes == 0 || need > (size_t)1 << 31)
                 Log("[video] SHMI rejected: implausible sizes colour=%u motion=%u",
                     sc.color_bytes, sc.motion_bytes);
+            else if (client_f16 != want_f16)
+                Log("[video] SHMI rejected: client %s the worker's %s pipeline - "
+                    "restart the app to re-resolve the HDR mode",
+                    client_f16 ? "sends float16 into" : "sends RGBA8 into",
+                    want_f16 ? "float16" : "RGBA8");
             else
             {
                 g_shm_handle = OpenFileMappingA(FILE_MAP_READ, FALSE, sc.name);
@@ -4422,7 +4760,10 @@ static int RunVideo()
                     }
                 }
             }
-            VideoShmAck ack = { SHM_ACK_MAGIC, ok, 0u, 0u, sc.pts };
+            // SACK: advertise the capabilities in the reserved words - the
+            // client (B2) activates its float16 send path only when the
+            // worker says it can take it. reserved1 stays 0 for the next one.
+            VideoShmAck ack = { SHM_ACK_MAGIC, ok, ok ? SHM_CAP_F16 : 0u, 0u, sc.pts };
             if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
             continue;
         }

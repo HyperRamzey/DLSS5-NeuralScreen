@@ -12,6 +12,7 @@ the other is a build error now, not a runtime desync.
 """
 from __future__ import annotations
 
+import contextlib
 import mmap
 import os
 import queue
@@ -25,7 +26,6 @@ import uuid
 import numpy as np
 
 from paths import BASE_DIR  # noqa: F401
-
 
 # NGX feature 18 goes silent at 3840x2160 (verified in isolation: the worker
 # hangs on frame 0 with work=4K, both in legacy and in upscale mode).
@@ -152,10 +152,8 @@ class SharedFrameBuffer:
         if self._out_buf is not None:
             self._out_buf = None
         if self._out_mm is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._out_mm.close()
-            except Exception:
-                pass
             self._out_mm = None
         self.out_bytes = 0
         self.out_w = self.out_h = 0
@@ -177,10 +175,8 @@ class SharedFrameBuffer:
         if self._gray_buf is not None:
             self._gray_buf = None
         if self._gray_mm is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._gray_mm.close()
-            except Exception:
-                pass
             self._gray_mm = None
 
     def put(self, rgba: np.ndarray, motion: np.ndarray) -> None:
@@ -230,29 +226,41 @@ class SharedFrameBuffer:
             print(f"[main] could not close the shared memory: {exc}", file=sys.stderr)
 
 
-def _negotiate_shm(worker: subprocess.Popen, reader: "WorkerReader",
+def _negotiate_shm(worker: subprocess.Popen, reader: WorkerReader,
                    shm: SharedFrameBuffer, timeout: float = 10.0) -> None:
     """Hand the shared memory name to the worker (SHMI) and wait for SACK.
 
     A refusal is not fatal: if the worker could not open the mapping we stay
     on sending the frame down the pipe - that path is still there and works.
+
+    HDR offers the float16 slot first (SHM_FLAG_F16, 8 B/px) and reads the
+    worker's answer from SACK.reserved0: SHM_CAP_F16 says the worker's
+    pipeline is FP16 end to end. A worker that accepts but does not
+    advertise the capability is an old SDR-only build - the offer is
+    retried SDR-sized before any frame flows, and the whole run stays on
+    the byte-identical SDR path. The mode desync that once crawled at
+    1.4 FPS (half frames read as whole ones) is now impossible: the f16
+    slot is only ever used after the worker said it can take it.
     """
     shm.negotiated = False
     try:
-        # The float16 colour slot (HDR) rides ONLY when the worker advertises
-        # the capability - the C++ host sets NS_HDR_F16_CAPABLE=1 in its
-        # HELLO environment contract when its FP16 path is built. Sending
-        # 8 B/px to a worker that reads 4 would desync the stream silently
-        # (seen in testing: the worker crawls at ~1 FPS reading half frames).
-        # Until then the buffer is RGBA8 even on an HDR desktop and the
-        # conversion is not applied - the SDR pipeline stays bit-identical.
-        f16_capable = os.environ.get("NS_HDR_F16_CAPABLE") == "1"
-        if shm.hdr and not f16_capable:
-            shm.hdr = False
-            shm.bytes_per_pixel = 4
-            shm.color_capacity = (shm.color_capacity // 2)
-            print("[main] HDR desktop, but this worker has no float16 path - "
-                  "staying on the SDR pipeline", file=sys.stderr)
+        want_hdr = bool(getattr(shm, "hdr", False))
+        if want_hdr:
+            # Offer the float16 slot; the caps bit in the SACK decides.
+            worker.stdin.write(struct.pack(
+                SHM_FMT, SHM_MAGIC, shm.color_capacity, shm.motion_capacity,
+                SHM_FLAG_F16, 0, shm.name.encode("ascii")))
+            worker.stdin.flush()
+            _ok, caps = reader.wait_sack(timeout)
+            if not (caps & SHM_CAP_F16):
+                # Old worker: it mapped the SDR-sized bytes but its pipeline
+                # reads RGBA8. Shrink the slot and re-offer - no frame has
+                # flowed yet, so this is race-free.
+                shm.hdr = False
+                shm.bytes_per_pixel = 4
+                shm.color_capacity //= 2
+                print("[main] HDR desktop, but this worker has no float16 "
+                      "path - staying on the SDR pipeline", file=sys.stderr)
         shm_flags = SHM_FLAG_F16 if shm.hdr else 0
         worker.stdin.write(struct.pack(
             SHM_FMT, SHM_MAGIC, shm.color_capacity, shm.motion_capacity,
@@ -261,7 +269,8 @@ def _negotiate_shm(worker: subprocess.Popen, reader: "WorkerReader",
         reader.wait_sack(timeout)
         shm.negotiated = True
         print(f"[main] shared memory agreed: {shm.size / 1e6:.1f} MB, "
-              f"the frame does not go through the pipe")
+              f"{'float16 HDR slot, ' if shm.hdr else ''}"
+              "the frame does not go through the pipe")
     except Exception as exc:
         print(f"[main] shared memory unavailable ({exc}) - frames through the pipe",
               file=sys.stderr)
@@ -291,6 +300,7 @@ SHM_FMT = "<4Iq64s"         # magic, color_bytes, motion_bytes, flags, pts, name
 SHM_ACK_FMT = "<4Iq"        # magic, ok, reserved0, reserved1, pts (24 bytes)
 FRAME_FLAG_SHM = 0x1         # a bit in the reserved field of the frame header
 SHM_FLAG_F16 = 0x2            # the colour slot carries float16 (8 B/px), agreed at SHMI
+SHM_CAP_F16 = 0x2             # SACK reserved0: the worker takes float16 frames
 FRAME_FLAG_WANT_PIXELS = 0x2  # return the pixels even in window mode (for a screenshot)
 FRAME_FLAG_MOTION_SMALL = 0x4  # motion field at flow resolution, upscaled by the worker
 FRAME_FLAG_SPLIT = 0x20        # before/after wipe; position in the high 16 bits of reserved
@@ -372,7 +382,7 @@ def _read_exact(stream, size: int) -> bytes:
 
 def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                motion: np.ndarray, reset: bool, pts: int,
-               shm: "SharedFrameBuffer | None" = None,
+               shm: SharedFrameBuffer | None = None,
                want_pixels: bool = False, motion_small: bool = False,
                no_color: bool = False, bypass: bool = False,
                split: float = 0.0, hdr: bool = False,
@@ -384,10 +394,12 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
     mapping. Otherwise it is the old path: header + RGBA8 + motion float16
     sent inline through the pipe.
 
-    hdr: the frame is converted to float16 scRGB linear light first (the
-    SHM slot was negotiated with SHM_FLAG_F16 for 8 B/px; the pipe path
-    sends the converted bytes the same way). The conversion is a no-op skip
-    for the DDA path - the worker captures HDR itself there.
+    hdr: the frame is converted to float16 scRGB linear light first. On the
+    SHM path that rides the negotiated float16 slot (shm.hdr, settled from
+    the worker's capability answer); on the pipe path the resolved mode is
+    the truth - both sides read the same NS_HDR environment and the worker
+    sizes its colour stream to match. The conversion is a no-op skip for
+    the DDA path - the worker captures HDR itself there.
     no_color (DDA mode): the worker takes the colour itself from Desktop
     Duplication - only motion goes down the pipe, rgba is ignored.
     bypass (NR OFF): the worker skips NGX and shows the raw capture - the
@@ -412,11 +424,20 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
         worker.stdin.flush()
         return
     color = rgba
-    if hdr and os.environ.get("NS_HDR_F16_CAPABLE") == "1":
+    # The float16 conversion follows the resolved transport: on SHM it rides
+    # ONLY the negotiated slot (shm.hdr, settled by _negotiate_shm from the
+    # worker's own capability answer - an old worker keeps the byte-identical
+    # SDR path); on the pipe the resolved HDR mode is authoritative, because
+    # both sides read the same NS_HDR and the worker sizes colour by it.
+    if hdr:
         from hdr_convert import rgba8_to_scrgb_f16
-        color = rgba8_to_scrgb_f16(rgba, paper_white)
+        if shm is not None and shm.negotiated:
+            if shm.hdr:
+                color = rgba8_to_scrgb_f16(rgba, paper_white)
+        else:
+            color = rgba8_to_scrgb_f16(rgba, paper_white)
     if shm is not None and shm.negotiated:
-        if hdr:
+        if shm.hdr:
             shm.put_f16(color, motion)
         else:
             shm.put(rgba, motion)
@@ -548,7 +569,7 @@ class WorkerReader:
     """
 
     def __init__(self, worker: subprocess.Popen, width: int, height: int,
-                 shm: "SharedFrameBuffer | None" = None):
+                 shm: SharedFrameBuffer | None = None):
         self._worker = worker
         self._width = width
         self._height = height
@@ -575,10 +596,11 @@ class WorkerReader:
                     _magic, ok, _r0, _r1, _pts = struct.unpack(WINDOW_ACK_FMT, magic_raw + rest)
                     self._queue.put(("wack", ok))
                 elif magic == SHM_ACK_MAGIC:
-                    # SACK: acknowledgement of SHMI - the worker opened the mapping
+                    # SACK: acknowledgement of SHMI - the worker opened the mapping.
+                    # reserved0 carries the worker's capabilities (SHM_CAP_F16).
                     rest = _read_exact(self._worker.stdout, struct.calcsize(SHM_ACK_FMT) - 4)
-                    _magic, ok, _r0, _r1, _pts = struct.unpack(SHM_ACK_FMT, magic_raw + rest)
-                    self._queue.put(("sack", ok))
+                    _magic, ok, caps, _r1, _pts = struct.unpack(SHM_ACK_FMT, magic_raw + rest)
+                    self._queue.put(("sack", (ok, caps)))
                 elif magic == RESIZE_ACK_MAGIC:
                     # RACK (24 bytes): acknowledgement of RNSZ - we put it in
                     # the queue, main takes it via wait_rack()
@@ -774,8 +796,12 @@ class WorkerReader:
                     raise RuntimeError("the worker could not open the pixel channel")
                 return
 
-    def wait_sack(self, timeout: float) -> None:
-        """Wait for SACK - the shared memory acknowledgement (SHMI)."""
+    def wait_sack(self, timeout: float) -> tuple[bool, int]:
+        """Wait for SACK - the shared memory acknowledgement (SHMI).
+
+        Returns (ok, capabilities): capabilities is the worker's reserved0
+        word - SHM_CAP_F16 bit says the worker takes float16 colour slots.
+        """
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -788,9 +814,10 @@ class WorkerReader:
             if got is None:
                 raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
             if got == "sack":
-                if not payload:
+                ok, caps = payload if isinstance(payload, tuple) else (bool(payload), 0)
+                if not ok:
                     raise RuntimeError("the worker could not open the shared memory")
-                return
+                return ok, caps
 
     def wait_rack(self, timeout: float) -> None:
         """Wait for RACK - the acknowledgement of a resolution change (RNSZ).

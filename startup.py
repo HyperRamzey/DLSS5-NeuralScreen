@@ -19,6 +19,7 @@ hotkeys are registered, because before that there are no bindings to name;
 and the state defaults come last, so nothing the loop reads is missing when
 the first frame arrives.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -30,23 +31,28 @@ import threading
 
 import numpy as np
 
-from capture import ScreenCapture, resolve_output_idx
+from capture import ScreenCapture, devicename_for_output_idx, resolve_output_idx
 from display import Display
-from gpuinfo import describe as gpu_describe, probe as gpu_probe
+from gpuinfo import describe as gpu_describe
+from gpuinfo import probe as gpu_probe
 from guides import TemporalGuideGenerator
-from hotkeys import (HotkeyController, build_bindings,
-                     describe as describe_hotkeys, numlock_needed,
-                     numlock_on)
+from hotkeys import HotkeyController, build_bindings, numlock_needed, numlock_on
+from hotkeys import describe as describe_hotkeys
 from i18n import STRINGS as UI_STRINGS
 from paths import BASE_DIR
 from pipeline import start_worker
 from protocol import SharedFrameBuffer, WorkerReader
 from recorder import VideoRecorder
-from settings_io import (APP_VERSION, _work_size, hotkey_labels, load_config,
-                         load_presets, resolve_params)
+from settings_io import (
+    APP_VERSION,
+    _work_size,
+    hotkey_labels,
+    load_config,
+    load_presets,
+    resolve_params,
+)
 from taskbar import TaskbarWindow
 from tray import TrayController
-
 
 # --- Log to a file instead of the console --------------------------------
 # The release is launched through pythonw.exe (no console window): stdout and
@@ -109,6 +115,35 @@ def _apply_gpu_env(cfg: dict) -> None:
         os.environ["NS_GPU"] = str(int(gpu))
 
 
+def _captured_devicename(cfg: dict) -> str | None:
+    """The devicename of the monitor the config points the capture at.
+
+    The config stores a devicename string ('\\\\.\\\\DISPLAY2') in current
+    configs and a positional output index in old ones. Both resolve to a
+    devicename here; a monitor that is not connected falls back to output
+    0 - the same fallback the capture itself applies (ScreenCapture's
+    monitor_idx=0), so the HDR probe, the DDA session and the Python
+    capture all stay on one screen. None means 'not resolvable now' and
+    the callers fall back to the primary answer.
+    """
+    monitor_cfg = cfg.get("monitor")
+    if monitor_cfg is None:
+        return None
+    if isinstance(monitor_cfg, str):
+        resolved = resolve_output_idx(monitor_cfg)
+        if resolved is None:
+            # Not connected: the capture's own fallback is output 0.
+            resolved = 0
+        return devicename_for_output_idx(resolved)
+    # Old configs store the positional index. A value that is not a
+    # number (hand-edited config) resolves to nothing rather than
+    # raising - the callers fall back to the primary answer.
+    try:
+        return devicename_for_output_idx(int(monitor_cfg))
+    except (TypeError, ValueError):
+        return None
+
+
 def _apply_hdr_env(cfg: dict) -> None:
     """The HDR mode the worker runs in, through the environment.
 
@@ -124,6 +159,13 @@ def _apply_hdr_env(cfg: dict) -> None:
     default: an HDR desktop gets the HDR pipeline, an SDR desktop never
     sees a behavior change.
 
+    Auto reads the CAPTURED monitor, not the primary: the worker's DDA
+    session captures the monitor the config names (NS_MONITOR below),
+    so on a mixed SDR-primary + HDR-captured desktop the pipeline format
+    must follow the screen that is actually captured. A desync between
+    the probed monitor and the captured one is the measured 'capture 87
+    vs pipeline 10' failure - every frame refused.
+
     NS_HDR_PAPER_WHITE carries the nits that linear 1.0 maps to (the OS
     answer when there is one, else the BT.2408 reference white) - the
     exposure solver's input. Always a real number, set once here.
@@ -134,6 +176,9 @@ def _apply_hdr_env(cfg: dict) -> None:
     if mode is None:
         mode = -1
     mode = int(mode)
+    # The monitor the auto probe answers for: the captured one when it
+    # resolves, else the primary (the old behavior).
+    captured = _captured_devicename(cfg)
     if mode == 1:
         on = True
     elif mode == 0:
@@ -141,9 +186,32 @@ def _apply_hdr_env(cfg: dict) -> None:
     else:
         # Auto: the monitor being captured, not the registry - a mixed
         # SDR+HDR desktop has one answer per screen.
-        on = _hdr.enabled_for(None)
+        on = _hdr.enabled_for(captured)
     os.environ["NS_HDR"] = "1" if on else "0"
-    os.environ["NS_HDR_PAPER_WHITE"] = f"{_hdr.paper_white_nits(None):.1f}"
+    os.environ["NS_HDR_PAPER_WHITE"] = f"{_hdr.paper_white_nits(captured):.1f}"
+
+
+def _apply_monitor_env(cfg: dict) -> None:
+    """Which monitor the worker's DDA captures, through the environment.
+
+    NS_MONITOR is the captured monitor's GDI devicename. The worker's
+    OpenDda used to hardcode EnumOutputs(0): with more than one output
+    on the capture adapter it duplicated the wrong screen - silently on
+    an SDR desktop, loudly on a mixed one ('[cap] format mismatch:
+    capture 87 vs pipeline 10': the SDR output delivering BGRA8 into
+    the FP16 pipeline resolved from the HDR monitor). NS_MONITOR names
+    the output; unset keeps the old behavior (output 0), so an old
+    client talking to a new worker still works.
+
+    Read once per worker process (OpenDda), reapplied on every restart;
+    a monitor switch is a full pipeline restart (pipeline.switch_monitor),
+    which reapplies the environment.
+    """
+    name = _captured_devicename(cfg)
+    if name:
+        os.environ["NS_MONITOR"] = name
+    else:
+        os.environ.pop("NS_MONITOR", None)
 
 
 def _log_environment(cfg: dict) -> None:
@@ -158,26 +226,34 @@ def _log_environment(cfg: dict) -> None:
     try:
         import platform
         import sys as _sys
+
         win = _sys.getwindowsversion()
-        print(f"[env] NeuralScreen {APP_VERSION} | Windows {win.major}.{win.minor} "
-              f"(build {win.build}) | {platform.platform()}")
+        print(
+            f"[env] NeuralScreen {APP_VERSION} | Windows {win.major}.{win.minor} "
+            f"(build {win.build}) | {platform.platform()}"
+        )
     except Exception:
         print(f"[env] NeuralScreen {APP_VERSION} | Windows unknown")
     try:
         import gpuinfo
+
         g = gpuinfo.probe()
-        print(f"[env] GPU: {g.get('name') or 'unknown'} "
-              f"({g.get('family') or '?'}, arch 0x{g.get('arch_group', 0):X})")
+        print(
+            f"[env] GPU: {g.get('name') or 'unknown'} "
+            f"({g.get('family') or '?'}, arch 0x{g.get('arch_group', 0):X})"
+        )
     except Exception:
         pass
     try:
         # The NVIDIA driver version from the display-class registry key.
         import winreg
+
         base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
         for idx in range(10):
             try:
-                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                    f"{base}\\{idx:04d}") as key:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, f"{base}\\{idx:04d}"
+                ) as key:
                     desc, _ = winreg.QueryValueEx(key, "DriverDesc")
                     if "NVIDIA" in str(desc):
                         ver, _ = winreg.QueryValueEx(key, "DriverVersion")
@@ -192,8 +268,11 @@ def _log_environment(cfg: dict) -> None:
         # One read, no deep API digging - if the key is not there the
         # line just says unknown.
         import winreg
-        base = (r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
-                r"\MonitorDataStore")
+
+        base = (
+            r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+            r"\MonitorDataStore"
+        )
         hdr = None
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as root:
@@ -215,10 +294,12 @@ def _log_environment(cfg: dict) -> None:
         pass
     try:
         numlock = bool(ctypes.windll.user32.GetKeyState(0x90) & 1)
-        print(f"[env] Num Lock: {'on' if numlock else 'off'} | "
-              f"lang: {cfg.get('lang', 'en')} | "
-              f"profile: {cfg.get('profile', '?')} | "
-              f"work_scale: {cfg.get('work_scale', '?')}")
+        print(
+            f"[env] Num Lock: {'on' if numlock else 'off'} | "
+            f"lang: {cfg.get('lang', 'en')} | "
+            f"profile: {cfg.get('profile', '?')} | "
+            f"work_scale: {cfg.get('work_scale', '?')}"
+        )
     except Exception:
         pass
 
@@ -242,8 +323,11 @@ def configure(st) -> None:
         # output index; a monitor that is not connected falls back to 0.
         st.monitor = resolve_output_idx(monitor_cfg)
         if st.monitor is None:
-            print(f"[main] monitor {monitor_cfg!r} from config.json is not "
-                  "connected - using monitor 0", file=sys.stderr)
+            print(
+                f"[main] monitor {monitor_cfg!r} from config.json is not "
+                "connected - using monitor 0",
+                file=sys.stderr,
+            )
             st.monitor = 0
     else:
         # Old configs store the positional index.
@@ -269,6 +353,10 @@ def configure(st) -> None:
     # And the HDR mode: NS_HDR/NS_HDR_PAPER_WHITE are read once per worker
     # process, before the feature is created.
     _apply_hdr_env(st.cfg)
+    # Which output the worker's DDA duplicates (NS_MONITOR, the GDI
+    # devicename): read once per worker process at OpenDda - the same
+    # once-per-restart contract, reapplied by pipeline.switch_monitor.
+    _apply_monitor_env(st.cfg)
     st.lang = str(st.cfg["lang"])
 
     # The output resolution comes FROM THE REAL MONITOR, not from a stale
@@ -278,15 +366,21 @@ def configure(st) -> None:
     st.capture = ScreenCapture(monitor_idx=st.monitor)
     st.mon_w, st.mon_h = st.capture.resolution
     if st.mon_w > 0 and st.mon_h > 0 and (st.mon_w, st.mon_h) != (st.width, st.height):
-        print(f"[main] monitor {st.monitor} is {st.mon_w}x{st.mon_h} (config: {st.width}x{st.height}), "
-              f"taking the real resolution")
+        print(
+            f"[main] monitor {st.monitor} is {st.mon_w}x{st.mon_h} (config: {st.width}x{st.height}), "
+            f"taking the real resolution"
+        )
         st.width, st.height = st.mon_w, st.mon_h
 
-    print(f"[main] NeuralScreen - profile {st.cfg['profile']!r}, "
-          f"resolution {st.width}x{st.height}, monitor {st.monitor}")
+    print(
+        f"[main] NeuralScreen - profile {st.cfg['profile']!r}, "
+        f"resolution {st.width}x{st.height}, monitor {st.monitor}"
+    )
     print(f"[main] NGX parameters: {st.params}")
-    print(f"[main] work_scale {st.work_scale:.2f} (NGX resolution "
-          f"{int(st.width * st.work_scale)}x{int(st.height * st.work_scale)})")
+    print(
+        f"[main] work_scale {st.work_scale:.2f} (NGX resolution "
+        f"{int(st.width * st.work_scale)}x{int(st.height * st.work_scale)})"
+    )
 
     st.worker: subprocess.Popen | None = None
     st.reader: WorkerReader | None = None
@@ -315,16 +409,22 @@ def bring_up(st) -> None:
     full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
     # Shared memory for the input frame: its size does not depend on
     # work_scale (see SharedFrameBuffer), so it is created once per process.
-    st.shm = SharedFrameBuffer(st.width, st.height)
+    # The HDR mode was resolved once by _apply_hdr_env and rides the
+    # environment - the same source rebuild_pipeline reads, so the slot
+    # and the worker's pipeline always agree on 4 vs 8 bytes per pixel.
+    st.hdr = os.environ.get("NS_HDR") == "1"
+    st.shm = SharedFrameBuffer(st.width, st.height, hdr=st.hdr)
     # Which card this is and whether NR works on it. The model comes from
     # nvapi, but the support verdict comes from the worker rather than the
     # architecture: only it knows whether feature 18 was created.
     gpu_info = gpu_probe()
     st.gpu_text = gpu_describe(gpu_info)
     st.gpu_ok: bool | None = None
-    print(f"[main] GPU: {st.gpu_text or 'unknown'} "
-          f"(group 0x{gpu_info['arch_group']:X}, officially supported: "
-          f"{'yes' if gpu_info['official'] else 'no'})")
+    print(
+        f"[main] GPU: {st.gpu_text or 'unknown'} "
+        f"(group 0x{gpu_info['arch_group']:X}, officially supported: "
+        f"{'yes' if gpu_info['official'] else 'no'})"
+    )
     # The stock warm-up is 120 discarded evaluations. On a fast Blackwell
     # card that is a second or two; on Turing/Ampere/Ada it can take far
     # longer than the frame watchdog, which then kills the worker on
@@ -335,13 +435,18 @@ def bring_up(st) -> None:
     effective_warmup = st.warmup
     if not gpu_info["official"] and st.warmup > 4:
         effective_warmup = 4
-        print(f"[main] pre-Blackwell GPU: warmup {st.warmup} -> "
-              f"{effective_warmup} to avoid a false frame-0 watchdog "
-              f"timeout")
+        print(
+            f"[main] pre-Blackwell GPU: warmup {st.warmup} -> "
+            f"{effective_warmup} to avoid a false frame-0 watchdog "
+            f"timeout"
+        )
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-        st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
-    print(f"[main] worker started (pid {st.worker.pid}), header sent "
-          f"({st.work_w}x{st.work_h})")
+        st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm
+    )
+    print(
+        f"[main] worker started (pid {st.worker.pid}), header sent "
+        f"({st.work_w}x{st.work_h})"
+    )
 
     print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
 
@@ -371,10 +476,13 @@ def bring_up(st) -> None:
     # its own thread (see _open_save_dialog); the path arrives here.
     st.shot_paths = queue.Queue()
     st.shot_dialog_open = False
-    st.tray = TrayController(st.tray_commands, labels={
-        "settings": UI_STRINGS[st.lang].get("settings_title", "Settings"),
-        "quit": UI_STRINGS[st.lang].get("exit", "Exit"),
-    })
+    st.tray = TrayController(
+        st.tray_commands,
+        labels={
+            "settings": UI_STRINGS[st.lang].get("settings_title", "Settings"),
+            "quit": UI_STRINGS[st.lang].get("exit", "Exit"),
+        },
+    )
     st.tray._set_state(nr=True, scale=st.work_scale)
     st.tray.start()
     print("[main] tray icon started")
@@ -401,19 +509,25 @@ def bring_up(st) -> None:
     st.hotkeys = HotkeyController(st.tray_commands, st.hotkey_bindings)
     st.hotkeys.start()
     if st.hotkeys.registered:
-        print(f"[main] hotkeys registered: {', '.join(st.hotkeys.registered)} "
-              f"({describe_hotkeys(st.hotkey_bindings)})")
+        print(
+            f"[main] hotkeys registered: {', '.join(st.hotkeys.registered)} "
+            f"({describe_hotkeys(st.hotkey_bindings)})"
+        )
     if st.hotkeys.failed:
-        print(f"[main] hotkeys taken by another program: {', '.join(st.hotkeys.failed)}",
-              file=sys.stderr)
+        print(
+            f"[main] hotkeys taken by another program: {', '.join(st.hotkeys.failed)}",
+            file=sys.stderr,
+        )
     # The numpad sends different key codes with Num Lock off, so those
     # bindings do not misbehave - they are simply absent. Say so, or it
     # looks like the program ignores the keyboard.
     numpad = numlock_needed(st.hotkey_bindings)
     if numpad and not numlock_on():
-        print(f"[main] Num Lock is off: the numpad hotkeys "
-              f"({', '.join(numpad)}) will not fire until it is on",
-              file=sys.stderr)
+        print(
+            f"[main] Num Lock is off: the numpad hotkeys "
+            f"({', '.join(numpad)}) will not fire until it is on",
+            file=sys.stderr,
+        )
         st.display.alert(UI_STRINGS[st.lang]["numlock_off"], duration=6.0)
     # The captions on the menu buttons come from the same bindings that were
     # registered. Strictly after build_bindings: before that they do not exist.
@@ -442,11 +556,15 @@ def bring_up(st) -> None:
     st.worker_failed = False
     st.frame_index = 0
     st.pts = 0
-    st.output_rgba = None  # the last NR frame (for a screenshot); None until the first one
+    st.output_rgba = (
+        None  # the last NR frame (for a screenshot); None until the first one
+    )
     # WNDO mode: the worker shows the frame, no pixels come back to Python.
     st.want_present = bool(st.cfg.get("worker_present", True))
     st.want_motion_small = bool(st.cfg.get("motion_on_gpu", True))
-    st.want_dda = bool(st.cfg.get("capture_in_worker", True))  # DDA: the worker takes the colour
+    st.want_dda = bool(
+        st.cfg.get("capture_in_worker", True)
+    )  # DDA: the worker takes the colour
     # The result pixels come back through shared memory, not the pipe.
     st.want_out_shm = bool(st.cfg.get("pixels_in_shm", True))
     # System audio ("what you hear") as a second track in the recording.
@@ -457,20 +575,22 @@ def bring_up(st) -> None:
     st.out_attempted = False
     st.motion_small = False  # the worker upscales the motion field itself
     st.motion_attempted = False  # already tried for the current worker
-    st.present_mode = False      # the worker window is up right now
+    st.present_mode = False  # the worker window is up right now
     st.present_attempted = False  # already tried for the current worker (do not spam)
-    st.dda_mode = False          # the worker captures the screen itself
-    st.dda_attempted = False     # already tried for the current worker (do not spam)
-    st.window_hwnd = None        # WGCW target; None = the whole desktop (DDA1)
-    st.last_foreground = 0       # the last focused window that was not ours
-    st.follow_pos = None         # where the overlay currently sits (window mode)
-    st.follow_resize = None      # a pending size change, waiting to settle
-    st.mon_w, st.mon_h = st.width, st.height  # the full monitor size (for the menu layer)
-    st.gray_active = False       # guides take luminance from the worker's gray channel
+    st.dda_mode = False  # the worker captures the screen itself
+    st.dda_attempted = False  # already tried for the current worker (do not spam)
+    st.window_hwnd = None  # WGCW target; None = the whole desktop (DDA1)
+    st.last_foreground = 0  # the last focused window that was not ours
+    st.follow_pos = None  # where the overlay currently sits (window mode)
+    st.follow_resize = None  # a pending size change, waiting to settle
+    st.mon_w, st.mon_h = (
+        st.width,
+        st.height,
+    )  # the full monitor size (for the menu layer)
+    st.gray_active = False  # guides take luminance from the worker's gray channel
     st.pending_shot: Path | None = None  # a screenshot waiting for a frame with pixels
     st.recorder: VideoRecorder | None = None  # recording (Num0), MP4 AV1 NVENC
     st.work_frame = None  # the current work frame; None -> grab at the top of the loop
-
 
     st.running = True
     # Protection against rapid changes (arrow key repeat, a jerked slider):
@@ -480,6 +600,6 @@ def bring_up(st) -> None:
     # sleep(2) - the expensive path is only a fallback now.
     st.last_restart = 0.0
     st.pending_apply: tuple | None = None  # the deferred (scale, profile, params)
-    st.next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
+    st.next_auto_revive = 0.0  # monotonic deadline; 0 = no revive pending
     st.consecutive_restarts = 0
     st.guide_fails = 0

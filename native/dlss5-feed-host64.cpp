@@ -4199,7 +4199,43 @@ static bool EvaluateVideo(VideoState &v, int reset)
     h.params->Set("DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
     h.params->Set("DLSSNR.UseAutoMask", g_video_options.auto_mask);
     h.params->Set("DLSSNR.Style", g_video_options.style);
-    h.params->Set("DLSSNR.UICorrection", g_video_options.ui_correction);
+    // D2: NS_UI_CORRECTION tri-state (-1 auto / 0 off / 1 on). Auto reads as
+    // ON - the evaluated source is always NeuralScreen's own overlay, so
+    // auto == on today (the ShortFuse's own wording: the correction is
+    // for the own-UI case). Unset keeps the wire value (the profile's
+    // ui_correction), so nothing changes for an untouched config.
+    {
+        char uic[8] = {};
+        const DWORD got_uic = GetEnvironmentVariableA("NS_UI_CORRECTION", uic, sizeof(uic));
+        if (got_uic > 0 && got_uic < sizeof(uic))
+        {
+            int ui = atoi(uic);
+            // -1 (or anything else) = auto = on; 0 = explicitly off.
+            h.params->Set("DLSSNR.UICorrection", ui == 0 ? 0u : 1u);
+        }
+        else
+            h.params->Set("DLSSNR.UICorrection", g_video_options.ui_correction);
+    }
+    // D1: the remaining DLSSNR knobs, exact names pinned by
+    // tests/test_nr_knobs.py (the DLL ignores unknown keys silently).
+    // Jitter offsets: 0.0 by default (today's behavior), NS_JITTER_X/Y
+    // sweep them without a rebuild. GlobalToneStrength ships UNSET - the
+    // ShortFuse notes its effect is not visible in the recovered NGX
+    // path (@0x180215e6b); sending a value unasked would still be a
+    // visible change if the DLL ever starts honoring it.
+    {
+        char jb[16] = {};
+        const DWORD gx = GetEnvironmentVariableA("NS_JITTER_X", jb, sizeof(jb));
+        if (gx > 0 && gx < sizeof(jb)) h.params->Set("DLSSNR.JitterOffsetX", (float)atof(jb));
+        else h.params->Set("DLSSNR.JitterOffsetX", 0.0f);
+        const DWORD gy = GetEnvironmentVariableA("NS_JITTER_Y", jb, sizeof(jb));
+        if (gy > 0 && gy < sizeof(jb)) h.params->Set("DLSSNR.JitterOffsetY", (float)atof(jb));
+        else h.params->Set("DLSSNR.JitterOffsetY", 0.0f);
+        char gt[16] = {};
+        const DWORD gg = GetEnvironmentVariableA("NS_GLOBAL_TONE", gt, sizeof(gt));
+        if (gg > 0 && gg < sizeof(gt)) h.params->Set("DLSSNR.GlobalToneStrength", (float)atof(gt));
+        // unset: NOT sent (UNSET_BY_DEFAULT in tests/test_nr_knobs.py)
+    }
     h.params->Set("DLSS.Pre.Exposure", 1.0f);
     h.params->Set("DLSS.Exposure.Scale", g_pw_exposure);
     // The multipass cascade (Phase C1): pass 1 runs exactly as before

@@ -59,6 +59,7 @@ ABOUT = {
     "test_settings_hints.py": "every hint is one line and fits its row, in 12 languages",
     "test_rebuild_warmup.py": "a rebuild warms up briefly; only a cold launch pays 120 frames",
     "test_param_apply.py": "a parameter change applies without rebuilding the feature",
+    "test_param_effect.py": "every menu parameter changes the picture; the dead ones are named",
     "test_direct_reconstruction.py": "the two Boost composites are a live switch, and they differ",
     "test_motion_trust.py": "vectors where nothing moved are dropped before NGX sees them",
     "test_live_resize.py": "a window resize reconfigures the worker instead of replacing it",

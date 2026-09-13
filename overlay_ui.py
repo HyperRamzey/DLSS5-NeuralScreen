@@ -118,7 +118,9 @@ KNOB_R = 9
 BTN_H = 42
 BTN_PAD = 18
 BTN_GAP = 10
-ICON_W = 30        # header button: a rounded square, not a circle
+ICON_W = 34        # header button: a rounded square, not a circle
+                   # 30 was too small to notice: the user asked where the
+                   # collapse button was while looking straight at it.
 ACTION_H = 46      # action button: title with the hotkey caption below it
 EXIT_H = 64        # exit: plus an explanation on a third line
 STAT_LINE_H = 24
@@ -1980,7 +1982,12 @@ class OverlayMenu:
         if hot:
             pygame.draw.rect(surface, _rgb(self.c["surface"]), rect,
                              border_radius=radius)
-        col = self.c["accent"] if hot else self.c["muted"]
+        # At rest the glyph takes the panel's own text colour, not `muted`.
+        # Muted is for captions you read once; these are controls, and one of
+        # them is the only way to put the menu away. Drawn in muted on the
+        # title bar's surface they read as decoration - the collapse button
+        # was reported missing while it was on screen.
+        col = self.c["accent"] if hot else self.c["text"]
         pygame.draw.rect(surface,
                          _rgb(self.c["accent"] if hot else self.c["border"]),
                          rect, max(1, self._u(1)), border_radius=radius)

@@ -3857,7 +3857,14 @@ static double PhaseNow();
 static void PhaseAdd(int idx, double t0);
 static bool PhaseEnabled();
 
-enum class StageResult { Ok, SizeChanged, Failed };
+// FormatChanged is NOT SizeChanged, and telling them apart is the whole of
+// issue #62. A desktop set to 10 bits per colour can alternate between
+// B8G8R8A8 and FP16 frame after frame - one reporter's log has 781 changes
+// one way and 667 the other in thirteen minutes, two of them 78 ms apart.
+// The staging bridge really does have to be rebuilt for a new format, but
+// the DUPLICATION does not: reopening it cost a full CloseDda/OpenDda per
+// change, 1453 of them in that log, which is what the flicker is.
+enum class StageResult { Ok, SizeChanged, FormatChanged, Failed };
 
 // Everything between "a captured D3D11 texture" and "the bytes are in the
 // shared texture and D3D12 may read them". Desktop Duplication and Windows
@@ -3964,8 +3971,27 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
     {
         D3D11_TEXTURE2D_DESC sd = {};
         g_dda_shared->GetDesc(&sd);
-        if (sd.Width != fd.Width || sd.Height != fd.Height || sd.Format != fd.Format)
+        if (sd.Width != fd.Width || sd.Height != fd.Height)
             return StageResult::SizeChanged;
+        if (sd.Format != fd.Format)
+        {
+            // Same surface, different format: only the bridge is wrong. Tear
+            // down exactly what fail_capture tears down - the source (dup,
+            // ctx, d11) stays up - and the next frame rebuilds the channel
+            // for the new format. The HDR resources go with it because they
+            // are chosen from the capture format; CloseDda used to take them
+            // on this path and they must not survive it.
+            Log("[cap] capture format %u -> %u - rebuilding the bridge",
+                (unsigned)sd.Format, (unsigned)fd.Format);
+            CloseHdrResources();
+            if (g_dda_d12) { g_dda_d12->Release(); g_dda_d12 = nullptr; }
+            if (g_dda_nt)  { CloseHandle(g_dda_nt); g_dda_nt = nullptr; }
+            if (g_dda_signal) { g_dda_signal->Release(); g_dda_signal = nullptr; }
+            if (g_dda_signal11) { g_dda_signal11->Release(); g_dda_signal11 = nullptr; }
+            if (g_dda_dst) { g_dda_dst->Release(); g_dda_dst = nullptr; }
+            if (g_dda_shared) { g_dda_shared->Release(); g_dda_shared = nullptr; }
+            return StageResult::FormatChanged;
+        }
         D3D11_BOX box = { 0, 0, 0, sd.Width, sd.Height, 1 };
         g_dda_ctx->CopySubresourceRegion(g_dda_shared, 0, 0, 0, 0, frame, 0, &box);
     }
@@ -4152,14 +4178,12 @@ static bool DdaGrab(VideoState &v)
     // is done; releasing earlier let the compositor overwrite the surface
     // mid-copy (torn frames on motion).
     g_dda_dup->ReleaseFrame();
+    // A format change already rebuilt the bridge inside StageCapturedFrame
+    // and said so; it costs this one frame and nothing else (#62).
+    if (st == StageResult::FormatChanged) return false;
     if (st == StageResult::SizeChanged)
     {
-        // Not always the resolution: the staged texture is also rebuilt
-        // when the FORMAT changes, which is what a colour-depth switch
-        // does. The old wording read "resolution changed -> 3840x2160"
-        // while the desktop was still 3840x2160, which is a line that
-        // sends the reader somewhere else (#58).
-        Log("[dda] capture changed -> %ux%u, format %u - recreating",
+        Log("[dda] capture resized -> %ux%u, format %u - recreating",
             new_w, new_h, (unsigned)new_format);
         OpenDda(new_w, new_h);
         return false;

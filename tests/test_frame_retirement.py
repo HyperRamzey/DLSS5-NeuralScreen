@@ -23,6 +23,15 @@ from main import PROFILES
 from paths import WORKER_EXE
 
 
+def check_hdr_transition_guard():
+    source = (ROOT / 'native/dlss5-feed-host64.cpp').read_text(encoding='utf-8')
+    acquire = source.index('const bool got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);')
+    decide = source.index('defer_tail = !g_hdr_capture', acquire)
+    upload = source.index('UploadMotionOnly(v, mv_ptr', decide)
+    assert acquire < decide < upload, 'tail deferral must use the acquired frame format'
+    print('OK: HDR capture format is known before tail deferral is selected')
+
+
 def check_close_failure():
     """Include the actual shared functions so the check cannot mirror a fake implementation."""
     vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -252,6 +261,7 @@ def check_frames(phase, dda=False):
 
 
 if __name__ == '__main__':
+    check_hdr_transition_guard()
     check_close_failure()
     check_frames(1)
     check_frames(0)

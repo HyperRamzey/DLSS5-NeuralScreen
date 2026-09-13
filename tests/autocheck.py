@@ -38,10 +38,21 @@ def fresh_worker():
     data = dll.read_bytes()
     if b"NS_ARCH_SPOOF" not in data:
         return False, "no NS_ARCH_SPOOF in the binary (an old build?)"
-    # freshness: the mtime must not be older than the cpp
-    cpp = ROOT / "native" / "dlss5-feed-host64.cpp"
-    if dll.stat().st_mtime < cpp.stat().st_mtime:
-        return False, "the dll is older than the cpp - rerun build-host.bat"
+    # freshness: the mtime must not be older than any source it is built
+    # from. The .cpp is not alone any more - the HDR path lives in headers
+    # and an .inl included by it, and editing one of those without a
+    # rebuild leaves a binary that disagrees with the tree in silence.
+    sources = [ROOT / "native" / "dlss5-feed-host64.cpp",
+               ROOT / "native" / "hdr_display.h",
+               ROOT / "native" / "hdr_shaders.h",
+               ROOT / "native" / "hdr_present.inl",
+               ROOT / "native" / "ns_forwarder.cpp",
+               ROOT / "native" / "spout_bridge.cpp",
+               ROOT / "native" / "spout_bridge.h"]
+    stale = [s.name for s in sources
+             if s.exists() and dll.stat().st_mtime < s.stat().st_mtime]
+    if stale:
+        return False, f"the dll is older than {', '.join(stale)} - rerun build-host.bat"
     return True, f"{dll.stat().st_size} bytes, the hook is there, fresh"
 
 
@@ -77,9 +88,9 @@ def personal_config_keys():
 
 
 def zip_integrity():
-    zpath = ROOT / "neuralscreen-v1.7.1-full.zip"
+    zpath = ROOT / "neuralscreen-v1.8.0-full.zip"
     if not zpath.is_file():
-        return False, "no neuralscreen-v1.7.1-full.zip"
+        return False, "no neuralscreen-v1.8.0-full.zip"
     required = [
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
@@ -168,8 +179,8 @@ def zip_integrity():
         zsha = hashlib.sha256(zip_dll).hexdigest()
         if f"sha256 {zsha}" not in vt:
             return False, "VERSION.txt runtime sha != the DLL inside the archive"
-        if "NeuralScreen 1.7.1" not in vt:
-            return False, "VERSION.txt version does not match v1.7.1"
+        if "NeuralScreen 1.8.0" not in vt:
+            return False, "VERSION.txt version does not match v1.8.0"
     return True, f"{zpath.stat().st_size} bytes, all files, the hook, a default config, a truthful manifest"
 
 

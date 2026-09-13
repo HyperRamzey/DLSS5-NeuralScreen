@@ -132,31 +132,69 @@ CHANNEL_LABEL = "@perseval_BLR"
 # brightening this program does anyway meets it head on. The four sliders
 # still reach everything they reached: this moves where the profiles sit,
 # not what the range allows.
+#
+# The profiles no longer carry `profile`, `preset` or `ui_correction`.
+# Measured on the 310.8.0 runtime: every value of all three produces a
+# byte-identical frame (colour-sweep-20260913, and tests/test_param_effect.py
+# reports them every run). They are still sent - the wire layout is shared
+# with the resize command and with a hundred tests - but they are sent as a
+# fixed zero by the two packers, and nobody has to wonder about them again.
+#
+# Intensity is clamped at 1.00 inside NVIDIA's DLL, so the 1.65 and 2.50 the
+# strong profiles used to ask for were the same picture as 1.00 all along.
+# Extreme's local_structure comes down from 2.00 to the new 1.50 ceiling,
+# which is the one real change here: measured, that is a detail metric of
+# -14.4% against -13.5%, about a percent of the picture.
 PROFILES = {
-    "Faithful": dict(profile=0, preset=0, style=0, auto_mask=0, ui_correction=0,
+    "Faithful": dict(style=0, auto_mask=0,
                      intensity=0.70, local_tone=0.25, local_structure=0.75, skin_structure=-1.0),
-    "Natural": dict(profile=1, preset=0, style=1, auto_mask=0, ui_correction=0,
+    "Natural": dict(style=1, auto_mask=0,
                     intensity=1.00, local_tone=0.50, local_structure=1.00, skin_structure=-1.0),
-    "Strong / Cinematic": dict(profile=2, preset=2, style=2, auto_mask=1, ui_correction=0,
-                               intensity=1.65, local_tone=0.90, local_structure=1.50, skin_structure=1.0),
-    "Extreme / Overdrive": dict(profile=2, preset=2, style=2, auto_mask=1, ui_correction=0,
-                                intensity=2.50, local_tone=1.50, local_structure=2.00, skin_structure=1.5),
+    "Strong / Cinematic": dict(style=2, auto_mask=1,
+                               intensity=1.00, local_tone=0.90, local_structure=1.50, skin_structure=1.0),
+    "Extreme / Overdrive": dict(style=2, auto_mask=1,
+                                intensity=1.00, local_tone=1.50, local_structure=1.50, skin_structure=1.5),
 }
 
 
 WORK_SCALE_MIN = 0.1
 
 
-PARAM_MIN, PARAM_MAX = 0.0, 2.5
+# How far each slider really reaches. One shared 0..2.5 was wrong in both
+# directions: it promised travel that did nothing (issue #40, "low effect
+# strength" - the user was turning a knob that had stopped answering), and
+# it allowed values where the picture gets worse rather than stronger.
+#
+#   intensity        clamped at 1.0 inside NVIDIA's DLL. 1.0, 1.25, 1.5, 2
+#                    and 2.5 all hash to the same frame.
+#   tone, structure  the detail metric keeps climbing past 1.5, but what is
+#                    climbing is shimmer: the metric counts trembling noise
+#                    as fine detail. 1.5 is where the picture stops
+#                    improving and only starts moving.
+#   skin_structure   inert unless auto_mask is on, and -1 is "off".
+PARAM_RANGE = {
+    "intensity": (0.0, 1.0),
+    "local_tone": (0.0, 1.5),
+    "local_structure": (0.0, 1.5),
+    "skin_structure": (-1.0, 2.0),
+}
+
+
+def param_range(key: str) -> tuple:
+    """The (low, high) a parameter is allowed. Unknown keys get the widest."""
+    return PARAM_RANGE.get(key, (0.0, 1.5))
+
+
+def clamp_param(key: str, value: float) -> float:
+    """Pull a value into range - for configs written before the range was."""
+    lo, hi = param_range(key)
+    return min(max(float(value), lo), hi)
 
 
 # The four sliders a user preset stores. The same keys as PROFILES carries,
 # minus the NGX plumbing (profile/preset/style/auto_mask/ui_correction stay
 # tied to the built-in profile the preset was saved from).
 PRESET_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
-
-
-SKIN_MIN = -1.0
 
 
 DEFAULT_LANG = "en"
@@ -173,28 +211,30 @@ def _valid_preset_value(key: str, value) -> bool:
         value = float(value)
     except (TypeError, ValueError, OverflowError):
         return False
-    lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
-    return lo <= value <= PARAM_MAX
+    lo, hi = param_range(key)
+    return lo <= value <= hi
 
 
-# The NGX plumbing fields a preset carries along with the four sliders.
-# They are integers with a small, known range (the same values PROFILES
-# uses); anything outside is a broken entry.
+# The NGX plumbing a preset carries along with the four sliders: the range
+# it must be in, and what to use when it is not there at all. Presets saved
+# by builds up to 1.8.2 also carry profile/preset/ui_correction; those are
+# read and thrown away, because they do nothing (see PARAM_RANGE). A preset
+# saved by this build does not have them, and must still load.
 _PRESET_INT_KEYS = {
-    "profile": (0, 2), "preset": (0, 2), "style": (0, 2),
-    "auto_mask": (0, 1), "ui_correction": (0, 1),
+    "style": (0, 2, 1),
+    "auto_mask": (0, 1, 0),
 }
 
 
 def load_presets(cfg: dict) -> dict:
     """The user presets from the config, validated.
 
-    A preset is a full params snapshot: the four sliders plus the NGX
-    plumbing (profile/preset/style/auto_mask/ui_correction), so applying
-    it reproduces the exact look it was saved with. Anything that is not
-    exactly that shape is dropped - a broken entry must not take the
-    program down, and a broken entry must not be offered in the menu
-    either.
+    A preset is a full params snapshot: the four sliders plus the style and
+    the auto mask, so applying it reproduces the look it was saved with.
+    A broken entry is dropped - it must neither take the program down nor
+    be offered in the menu. A merely OLD entry is not broken: values wider
+    than the ranges allow today are pulled in, and the three dead fields a
+    pre-1.8.3 preset carries are ignored.
     """
     raw = cfg.get("presets")
     if not isinstance(raw, dict):
@@ -208,14 +248,27 @@ def load_presets(cfg: dict) -> dict:
         clean = {}
         ok = True
         for key in PRESET_KEYS:
-            if key not in values or not _valid_preset_value(key, values[key]):
+            if key not in values:
                 ok = False
                 break
-            clean[key] = float(values[key])
+            try:
+                v = float(values[key])
+            except (TypeError, ValueError, OverflowError):
+                ok = False
+                break
+            if isinstance(values[key], bool) or v != v:
+                ok = False
+                break
+            # Out of range is an older build, not a broken preset: the
+            # ranges shrank when they were measured, and a preset saved at
+            # intensity 2.5 was already giving the picture 1.0 gives. It is
+            # pulled in, not thrown away - losing someone's saved look over
+            # a number that never did anything would be indefensible.
+            clean[key] = clamp_param(key, v)
         if not ok:
             continue
-        for key, (lo, hi) in _PRESET_INT_KEYS.items():
-            v = values.get(key)
+        for key, (lo, hi, fallback) in _PRESET_INT_KEYS.items():
+            v = values.get(key, fallback)
             if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
                 ok = False
                 break
@@ -249,11 +302,30 @@ def load_config(path: Path) -> dict:
     for key in ("width", "height", "warmup"):
         if isinstance(cfg[key], bool) or not isinstance(cfg[key], int) or cfg[key] <= 0:
             raise ValueError(f"config.json: field {key} must be a positive integer")
+    # Out of range is not an error any more, it is an old config. The
+    # ranges shrank when they were measured (intensity 2.5 -> 1.0 and so
+    # on), and a user who had 2.5 saved was already getting the picture 1.0
+    # gives - refusing to start over a number that never did anything would
+    # be the worst of both. Nonsense is still an error: "abc" is a broken
+    # file, 2.5 is a file written by an older build.
     for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
-        if (cfg[key] is not None
-                and (isinstance(cfg[key], bool)
-                     or not _valid_preset_value(key, cfg[key]))):
-            raise ValueError(f"config.json: field {key} must be a finite number in range")
+        if cfg[key] is None:
+            continue
+        if isinstance(cfg[key], bool):
+            raise ValueError(f"config.json: field {key} must be a finite number")
+        try:
+            value = float(cfg[key])
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"config.json: field {key} must be a finite number")
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError(f"config.json: field {key} must be a finite number")
+        pulled = clamp_param(key, value)
+        if pulled != value:
+            print(f"[main] config.json: {key} {value:g} is outside the "
+                  f"measured range {param_range(key)}; using {pulled:g} - "
+                  f"the same picture the old value gave",
+                  file=sys.stderr)
+        cfg[key] = pulled
     # work_scale: 0.1..1.0 - the NGX processing resolution relative to the output
     scale = float(cfg.get("work_scale", 1.0))
     cfg["work_scale"] = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, scale))
@@ -277,9 +349,14 @@ def resolve_params(cfg: dict) -> dict:
     else:
         params = dict(load_presets(cfg).get(cfg["profile"], PROFILES["Natural"]))
     for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
+        # Saved presets are written by whatever build the user had, so they
+        # are pulled into range here as well - validate_config only sees the
+        # live slider values, not the presets behind them.
+        if key in params:
+            params[key] = clamp_param(key, params[key])
         value = cfg.get(key)
         if value is not None:
-            params[key] = float(value)
+            params[key] = clamp_param(key, value)
     return params
 
 
@@ -566,6 +643,10 @@ def menu_payload(st) -> dict:
         # What the CURRENT profile puts each parameter at. The menu draws it
         # as a tick under the slider, so "how far have I moved this from
         # Natural" is visible instead of remembered.
+        # The range each slider draws. It lives here, next to the
+        # measurement that set it, rather than being a second copy of the
+        # numbers inside the menu.
+        "param_ranges": {k: list(v) for k, v in PARAM_RANGE.items()},
         "param_defaults": {
             k: float(v) for k, v in
             (PROFILES.get(st.cfg["profile"])

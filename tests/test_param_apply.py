@@ -88,7 +88,7 @@ def send_params(worker, params, w=W, h=H):
     worker.stdin.write(struct.pack(
         RESIZE_FMT, RESIZE_MAGIC, w, h, WARMUP, 0, 0, 0,
         int(params["style"]), int(params["auto_mask"]),
-        int(params["ui_correction"]), float(params["intensity"]),
+        int(params.get("ui_correction", 0)), float(params["intensity"]),
         float(params["local_tone"]), float(params["local_structure"]),
         float(params["skin_structure"]), 0, 0))
     worker.stdin.flush()
@@ -107,7 +107,7 @@ def main() -> int:
     extreme = dict(PROFILES["Extreme / Overdrive"])
     header = struct.pack(HEADER_FMT, VIDEO_MAGIC, W, H, WARMUP, 0, 0, 0,
                          int(faithful["style"]), int(faithful["auto_mask"]),
-                         int(faithful["ui_correction"]),
+                         int(faithful.get("ui_correction", 0)),
                          float(faithful["intensity"]),
                          float(faithful["local_tone"]),
                          float(faithful["local_structure"]),

@@ -64,7 +64,7 @@ def run_worker(small: bool) -> dict:
     header = struct.pack(
         HEADER_FMT, VIDEO_MAGIC, WORK_W, WORK_H, WARMUP, 0,
         0, 0, int(params["style"]), int(params["auto_mask"]),
-        int(params["ui_correction"]),
+        int(params.get("ui_correction", 0)),
         float(params["intensity"]), float(params["local_tone"]),
         float(params["local_structure"]), float(params["skin_structure"]),
         FULL_W, FULL_H)
@@ -294,7 +294,7 @@ def check_live_switch(failures: list) -> None:
     header = struct.pack(
         HEADER_FMT, VIDEO_MAGIC, WORK_W, WORK_H, WARMUP, 0,
         0, 0, int(params["style"]), int(params["auto_mask"]),
-        int(params["ui_correction"]),
+        int(params.get("ui_correction", 0)),
         float(params["intensity"]), float(params["local_tone"]),
         float(params["local_structure"]), float(params["skin_structure"]),
         FULL_W, FULL_H)
@@ -335,7 +335,7 @@ def check_live_switch(failures: list) -> None:
             RESIZE_FMT, RESIZE_MAGIC, WORK_W, WORK_H, WARMUP,
             RESIZE_FLAG_NR_SMALL,
             0, 0, int(params["style"]), int(params["auto_mask"]),
-            int(params["ui_correction"]),
+            int(params.get("ui_correction", 0)),
             float(params["intensity"]), float(params["local_tone"]),
             float(params["local_structure"]), float(params["skin_structure"]),
             FULL_W, FULL_H))

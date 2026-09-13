@@ -121,8 +121,10 @@ def main() -> int:
 
     # 7. Invalid non-null overrides are rejected with field-specific errors.
     for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
+        # Out of range is no longer invalid - it is an older config, and it
+        # is pulled into range instead (case 8b). What stays invalid is what
+        # was never a number.
         invalid = ("abc", [], {}, float("nan"), float("inf"), -float("inf"), 10 ** 4000)
-        invalid += (-0.1, 2.6) if key != "skin_structure" else (-1.1, 2.6)
         for value in invalid:
             bad = dict(GOOD)
             bad[key] = value
@@ -138,22 +140,52 @@ def main() -> int:
                 p.unlink()
 
     # 8. Numeric strings and range boundaries survive load and resolution.
+    # The boundaries are the measured ones now: intensity stops at 1.0
+    # because NVIDIA's DLL clamps it there, tone and structure at 1.5.
     for key, raw, want in (
             ("intensity", "0.0", 0.0),
-            ("local_tone", "2.5", 2.5),
+            ("local_tone", "1.5", 1.5),
             ("local_structure", 0.0, 0.0),
             ("skin_structure", "-1.0", -1.0),
-            ("skin_structure", 2.5, 2.5)):
+            ("skin_structure", 2.0, 2.0)):
         bad = dict(GOOD)
         bad[key] = raw
         p = write_cfg(bad)
         try:
             loaded = load_config(p)
             params = resolve_params(loaded)
-            if loaded[key] != raw:
-                failures.append(f"load_config rewrote {key}: {loaded[key]!r}")
+            # load_config normalises these to floats now - it has to look
+            # at the number to pull it into range - so what is checked is
+            # the value, not that the string was left untouched.
+            if float(loaded[key]) != want:
+                failures.append(f"load_config lost {key}: {loaded[key]!r}")
             if params[key] != want:
                 failures.append(f"resolve_params changed {key}: {params[key]} vs {want}")
+        finally:
+            p.unlink()
+
+    # 8b. A config from an older build opens, and opens to the same picture:
+    # every value above the measured range is pulled in rather than refused.
+    # A user with intensity 2.5 saved was already seeing what 1.0 gives.
+    for key, raw, want in (("intensity", 2.5, 1.0),
+                           ("intensity", -0.1, 0.0),
+                           ("local_tone", 2.5, 1.5),
+                           ("local_structure", 2.0, 1.5),
+                           ("skin_structure", 2.5, 2.0),
+                           ("skin_structure", -1.1, -1.0)):
+        old_cfg = dict(GOOD)
+        old_cfg[key] = raw
+        p = write_cfg(old_cfg)
+        try:
+            loaded = load_config(p)
+            if loaded[key] != want:
+                failures.append(f"an old {key}={raw} must load as {want}, "
+                                f"got {loaded[key]!r}")
+            if resolve_params(loaded)[key] != want:
+                failures.append(f"an old {key}={raw} must resolve to {want}")
+        except ValueError as exc:
+            failures.append(f"an old config with {key}={raw} must open, not "
+                            f"raise: {exc}")
         finally:
             p.unlink()
 

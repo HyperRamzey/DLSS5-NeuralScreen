@@ -104,7 +104,7 @@ from startup import (LOG_PATH, _apply_gpu_env,  # noqa: F401
                      _apply_nr_dll, _apply_spout_env, _init_logging,
                      _log_environment)
 from settings_io import (DEFAULT_LANG, PRESET_KEYS,  # noqa: F401
-                         SKIN_MIN, load_config, load_presets,
+                         load_config, load_presets,
                          resolve_params)
 from settings_io import _work_size, hotkey_labels  # noqa: F401
 # The settings layer owns these now; re-exported because the rest

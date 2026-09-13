@@ -146,8 +146,11 @@ def main() -> int:
     #    (single monitor: devicename_for_output_idx(2) is None).
     cfg = dict(GOOD, profile="Extreme / Overdrive")
     params = resolve_params(cfg)
-    params["intensity"] = 2.1
-    params["local_tone"] = 1.9
+    # Inside the measured ranges: the round trip is about the write and the
+    # read, and values above the range would be pulled in on load - a real
+    # behaviour, but a different test's (test_config case 8b).
+    params["intensity"] = 0.9
+    params["local_tone"] = 1.4
     payload = _payload(cfg, params, monitor=2)
     if payload["profile"] != "Extreme / Overdrive":
         failures.append(f"profile not persisted: {payload['profile']!r}")

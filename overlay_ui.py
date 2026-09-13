@@ -130,8 +130,10 @@ TITLE_SIZE = 21
 SMALL_SIZE = 14
 
 PARAM_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
-PARAM_MIN, PARAM_MAX = 0.0, 2.5
-SKIN_MIN = -1.0
+# The fallback range, used only if the state has no "param_ranges" - the
+# real ones are measured and live in settings_io, which owns them. A menu
+# built by hand in a test still has to draw something.
+PARAM_FALLBACK = (0.0, 1.5)
 
 
 def _rgb(color: str) -> tuple[int, int, int]:
@@ -180,6 +182,8 @@ class OverlayMenu:
             "params": {},
             # The profile's own numbers, drawn as a tick under each
             # parameter slider (see _draw_slider).
+            # (low, high) per parameter, from settings_io.
+            "param_ranges": {},
             "param_defaults": {},
             "preset_active": False,
             "recording": False,
@@ -812,10 +816,11 @@ class OverlayMenu:
             params = self.state.get("params") or {}
             defaults = self.state.get("param_defaults") or {}
             for key in PARAM_KEYS:
-                lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
+                ranges = self.state.get("param_ranges") or {}
+                lo, hi = ranges.get(key) or PARAM_FALLBACK
                 val = float(params.get(key, 0.0))
-                slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}",
-                       mark=defaults.get(key))
+                slider(key, float(lo), float(hi), val, s[key],
+                       value_text=f"{val:.2f}", mark=defaults.get(key))
             # Save / Delete preset: the user presets live in the same list
             # as the built-in profiles. Delete is only offered while a user
             # preset is active - the built-in profiles are not deletable.

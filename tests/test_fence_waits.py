@@ -56,7 +56,7 @@ def main() -> int:
     sh = ctypes.windll.user32.GetSystemMetrics(1)
     header = struct.pack(HEADER_FMT, VIDEO_MAGIC, SIZES[0][0], SIZES[0][1],
                          WARMUP, 0, 0, 0, int(params["style"]),
-                         int(params["auto_mask"]), int(params["ui_correction"]),
+                         int(params["auto_mask"]), int(params.get("ui_correction", 0)),
                          float(params["intensity"]), float(params["local_tone"]),
                          float(params["local_structure"]),
                          float(params["skin_structure"]), 0, 0)

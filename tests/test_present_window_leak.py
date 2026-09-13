@@ -98,7 +98,7 @@ def main() -> int:
     params = dict(PROFILES["Natural"])
     header = struct.pack(HEADER_FMT, VIDEO_MAGIC, W, H, 4, 0, 0, 0,
                          int(params["style"]), int(params["auto_mask"]),
-                         int(params["ui_correction"]),
+                         int(params.get("ui_correction", 0)),
                          float(params["intensity"]), float(params["local_tone"]),
                          float(params["local_structure"]),
                          float(params["skin_structure"]), 0, 0)

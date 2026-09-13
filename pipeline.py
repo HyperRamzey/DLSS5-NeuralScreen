@@ -145,8 +145,13 @@ def start_worker(params: dict, width: int, height: int, warmup: int,
     header = struct.pack(
         HEADER_FMT,
         VIDEO_MAGIC, width, height, int(warmup), 0,  # frame_count=0 -> an endless loop
-        params["profile"], params["preset"], params["style"],
-        params["auto_mask"], params["ui_correction"],
+        # profile, preset and ui_correction: sent, and sent as zero. All
+        # three are dead in the 310.8.0 runtime - every value gives a
+        # byte-identical frame - so they are not carried in the profiles
+        # any more. The wire keeps its shape because the resize command
+        # shares this layout and a hundred tests build it by position.
+        0, 0, params["style"],
+        params["auto_mask"], 0,
         params["intensity"], params["local_tone"],
         params["local_structure"], params["skin_structure"],
         int(full_w), int(full_h),

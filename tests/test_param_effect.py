@@ -121,8 +121,8 @@ def read_exact(pipe, n: int) -> bytes:
 
 def pack(fmt, magic, p):
     return struct.pack(fmt, magic, W, H, WARMUP, 0,
-                       int(p["profile"]), int(p["preset"]), int(p["style"]),
-                       int(p["auto_mask"]), int(p["ui_correction"]),
+                       int(p.get("profile", 0)), int(p.get("preset", 0)), int(p["style"]),
+                       int(p["auto_mask"]), int(p.get("ui_correction", 0)),
                        float(p["intensity"]), float(p["local_tone"]),
                        float(p["local_structure"]),
                        float(p["skin_structure"]), W, H)

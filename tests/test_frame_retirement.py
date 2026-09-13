@@ -144,7 +144,7 @@ def check_frames(phase, dda=False):
         reader = p.WorkerReader(worker, w, height, shm)
         try:
             worker.stdin.write(struct.pack(p.HEADER_FMT, p.VIDEO_MAGIC, w, height, 2, 0, 0, 0,
-                int(params['style']), int(params['auto_mask']), int(params['ui_correction']),
+                int(params['style']), int(params['auto_mask']), int(params.get("ui_correction", 0)),
                 params['intensity'], params['local_tone'], params['local_structure'],
                 params['skin_structure'], 0, 0))
             worker.stdin.write(struct.pack(p.SHM_FMT, p.SHM_MAGIC, shm.color_capacity,

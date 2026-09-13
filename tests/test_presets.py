@@ -44,12 +44,13 @@ def _base_cfg() -> dict:
 def main() -> int:
     failures = []
 
-    # 1. A well-formed preset loads and applies.
+    # 1. A preset written by THIS build loads and applies. It carries the
+    # four sliders plus style and the auto mask - the three dead fields are
+    # gone from presets since the ranges were measured.
     good = {
-        "My Game": {"intensity": 1.2, "local_tone": 0.8,
+        "My Game": {"intensity": 0.9, "local_tone": 0.8,
                     "local_structure": 1.1, "skin_structure": 0.5,
-                    "profile": 2, "preset": 2, "style": 2,
-                    "auto_mask": 1, "ui_correction": 0},
+                    "style": 2, "auto_mask": 1},
     }
     cfg = _base_cfg()
     cfg["presets"] = good
@@ -58,8 +59,28 @@ def main() -> int:
     if presets != good:
         failures.append(f"a well-formed preset must load as-is, got {presets}")
     params = resolve_params(cfg)
-    if params["intensity"] != 1.2 or params["style"] != 2:
+    if params["intensity"] != 0.9 or params["style"] != 2:
         failures.append(f"resolve_params must apply the preset, got {params}")
+
+    # 1b. A preset written by an OLDER build loads too: the three dead
+    # fields are ignored, and a value wider than today's range is pulled in
+    # rather than dropped. Losing someone's saved look over a number that
+    # never did anything would be the wrong trade.
+    old = {
+        "From 1.8.2": {"intensity": 2.5, "local_tone": 0.8,
+                       "local_structure": 2.0, "skin_structure": 0.5,
+                       "profile": 2, "preset": 2, "style": 2,
+                       "auto_mask": 1, "ui_correction": 0},
+    }
+    cfg_old = _base_cfg()
+    cfg_old["presets"] = old
+    loaded = load_presets(cfg_old).get("From 1.8.2", {})
+    if loaded.get("intensity") != 1.0 or loaded.get("local_structure") != 1.5:
+        failures.append(f"an old preset must be pulled into range, got {loaded}")
+    if "ui_correction" in loaded or "profile" in loaded:
+        failures.append(f"the dead fields must not survive the load, got {loaded}")
+    if loaded.get("style") != 2 or loaded.get("auto_mask") != 1:
+        failures.append(f"style and the auto mask must survive, got {loaded}")
 
     # 2. Broken entries are dropped, the rest survive.
     broken = {
@@ -68,18 +89,19 @@ def main() -> int:
                       "local_structure": 1.0, "skin_structure": 0.0,
                       "profile": 1, "preset": 0, "style": 1,
                       "auto_mask": 0, "ui_correction": 0},
-        "Out Of Range": {"intensity": 99.0, "local_tone": 1.0,
-                         "local_structure": 1.0, "skin_structure": 0.0,
-                         "profile": 1, "preset": 0, "style": 1,
-                         "auto_mask": 0, "ui_correction": 0},
+        # No "out of range" entry here any more: that is a migration, not
+        # a breakage, and case 1b covers it. What IS broken is a style
+        # nobody ever wrote.
+        "Bad Style": {"intensity": 1.0, "local_tone": 1.0,
+                      "local_structure": 1.0, "skin_structure": 0.0,
+                      "style": 9, "auto_mask": 0},
         "Missing Key": {"intensity": 1.0, "local_tone": 1.0,
                         "local_structure": 1.0,
                         "profile": 1, "preset": 0, "style": 1,
                         "auto_mask": 0, "ui_correction": 0},
-        "Bad Int": {"intensity": 1.0, "local_tone": 1.0,
-                    "local_structure": 1.0, "skin_structure": 0.0,
-                    "profile": 1, "preset": 0, "style": 1,
-                    "auto_mask": 0, "ui_correction": 7},
+        "Bad Mask": {"intensity": 1.0, "local_tone": 1.0,
+                     "local_structure": 1.0, "skin_structure": 0.0,
+                     "style": 1, "auto_mask": 7},
         "": {"intensity": 1.0, "local_tone": 1.0,
              "local_structure": 1.0, "skin_structure": 0.0,
              "profile": 1, "preset": 0, "style": 1,

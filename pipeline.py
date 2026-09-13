@@ -489,6 +489,9 @@ def switch_window(st, hwnd: int) -> None:
             print(f"[main] the worker cannot capture that window: {exc}",
                   file=sys.stderr)
             st.display.exit_switch_mode()  # the overlay was raised before the probe
+            rect = window_frame_rect(hwnd) if hwnd else None
+            if rect is not None:
+                st.follow_size = rect[2:]   # do not ask again every half second
             return
         if aw < 64 or ah < 64:
             # Below the work-resolution floor there is nothing to
@@ -503,6 +506,12 @@ def switch_window(st, hwnd: int) -> None:
                   file=sys.stderr)
             st.display.alert(UI_STRINGS[st.lang]["win_fail"])
             st.display.exit_switch_mode()  # the overlay was raised before the probe
+            # The size that was refused is remembered, or follow_window
+            # would ask for the same switch again in half a second and keep
+            # asking (user, 13.09: the alert kept coming back).
+            rect = window_frame_rect(hwnd) if hwnd else None
+            if rect is not None:
+                st.follow_size = rect[2:]
             return
         teardown_pipeline(st)
         st.window_hwnd = int(hwnd)
@@ -881,6 +890,19 @@ def follow_window(st) -> None:
             st.follow_resize = ((w, h), now)
         elif now - st.follow_resize[1] > 0.5:
             st.follow_resize = None
+            # Below the floor there is nothing to process, and asking is not
+            # free: switch_window probes the worker, puts the capture back on
+            # the desktop and shows an alert. It also used to leave
+            # follow_size alone, so the watcher tried again half a second
+            # later, forever - four "the window is 3840x60 - too small to
+            # process" in one session, with an alert each time (user, 13.09).
+            # Remember the size and wait for it to become usable.
+            if w < 64 or h < 64:
+                if st.follow_size != (w, h):
+                    print(f"[main] the window is {w}x{h} - too small to "
+                          f"process, staying where we are")
+                st.follow_size = (w, h)
+                return
             # Live first: no new process, no veil, ~150 ms instead of ~1 s.
             # It refuses when it cannot do it safely, and then the old road
             # is still there.

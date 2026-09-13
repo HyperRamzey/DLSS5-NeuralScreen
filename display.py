@@ -297,6 +297,10 @@ class Display:
         self.clock = pygame.time.Clock()
         self._hud: Dict = {}
         self._alerts: List[tuple[str, float]] = []  # (text, expires_at)
+        # Window mode: where the layer belongs when no alert is up,
+        # and whether an alert is currently holding it open.
+        self._window_layer: tuple[int, int, int, int] | None = None
+        self._alert_expanded = False
         # Interface scale and the layout sizes derived from it.
         self.ui_scale = ui_scale_for(self.height)
         self.font_size = max(8, int(round(FONT_SIZE * self.ui_scale)))
@@ -731,6 +735,10 @@ class Display:
         waits and the veil's teardown lands the layer on it. The move
         happens then too - one place applies the geometry, not two.
         """
+        # Remembered so an alert can put the layer back where it was: an
+        # alert expands it to the screen for as long as it is up (see
+        # alert()), and only this call knows where the window is.
+        self._window_layer = (int(x), int(y), int(w), int(h))
         if self._switch_active:
             self._switch_pending = (w, h)
             return
@@ -1336,8 +1344,54 @@ class Display:
         self._hud = dict(data)
 
     def alert(self, text: str, duration: float = 2.5) -> None:
-        """Show a pop-up alert centred on the screen (amber border)."""
+        """Show a pop-up alert at the top of the SCREEN (amber border).
+
+        In one-window mode the HUD layer is the size of the captured window
+        and sits on it, so an alert could only be drawn inside that window -
+        and an alert about the graphics card or the monitor has nothing to
+        do with somebody's browser (user, 13.09: wherever it is in
+        full-screen mode, that is where it belongs in window mode too).
+
+        So the layer goes to the whole screen for as long as the alert is
+        up, and back onto the window when it expires. That is the same
+        thing the menu already does for the same reason - it would be
+        clipped by the window bounds otherwise - through the same two
+        calls, which have been carrying the mode switch since 1.6.
+        """
         self._alerts.append((text, time.monotonic() + duration))
+        self._layer_to_screen_for_alert()
+
+    def _layer_to_screen_for_alert(self) -> None:
+        """Expand the layer for an alert, if it is not already expanded.
+
+        Where the layer goes back to is read from the layer ITSELF rather
+        than from whoever shrank it. set_window_layer is only one of the
+        roads onto a window - resize() plus move_to() is the other, and it
+        is the one a Num5 takes - so remembering it there covered the menu
+        and nothing else: the first live check showed no alert at the top
+        of the screen at all.
+        """
+        if self._alert_expanded or self.menu.visible:
+            return
+        screen, own = self._screen_rect(), self._own_rect()
+        if screen is None or own is None:
+            return
+        if own[2] >= screen[2] and own[3] >= screen[3]:
+            return          # already the whole screen: nothing to expand
+        self._window_layer = own
+        self._alert_expanded = True
+        self.set_fullscreen_layer(screen[2], screen[3])
+
+    def _layer_back_after_alert(self) -> None:
+        """Put the layer back on the window once the last alert is gone."""
+        if not self._alert_expanded:
+            return
+        self._alert_expanded = False
+        # Not while the menu is up: the menu owns the expanded layer then,
+        # and its own close puts it back.
+        if self.menu.visible or not getattr(self, "_window_layer", None):
+            return
+        self.set_window_layer(*self._window_layer)
 
     def show(self, frame_rgba: np.ndarray) -> None:
         """Blit frame (RGBA uint8) fullscreen and draw the HUD on top.
@@ -1530,8 +1584,11 @@ class Display:
         window 300 tall is 13, and neither of those is "a small margin".
         """
         now = time.monotonic()
+        had = bool(self._alerts)
         self._alerts = [(text, expires) for text, expires in self._alerts if expires > now]
         if not self._alerts:
+            if had:
+                self._layer_back_after_alert()
             return
         c = self.theme
         text, _ = self._alerts[-1]

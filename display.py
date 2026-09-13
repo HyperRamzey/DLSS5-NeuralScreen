@@ -1394,26 +1394,6 @@ class Display:
         """
         self._alerts.append((text, time.monotonic() + duration))
 
-    def _fill_around(self, keep: "pygame.Rect") -> None:
-        """Paint the layer with the key everywhere outside `keep`.
-
-        Four rectangles rather than one full-screen fill: the frame is about
-        to be blitted over the middle anyway, and at 4K the difference is a
-        whole 8-megapixel fill per frame.
-        """
-        w, h = self.width, self.height
-        keep = keep.clip(pygame.Rect(0, 0, w, h))
-        if keep.width <= 0 or keep.height <= 0:
-            self.screen.fill(CHROMA_KEY)
-            return
-        for rect in (pygame.Rect(0, 0, w, keep.top),
-                     pygame.Rect(0, keep.bottom, w, h - keep.bottom),
-                     pygame.Rect(0, keep.top, keep.left, keep.height),
-                     pygame.Rect(keep.right, keep.top, w - keep.right,
-                                 keep.height)):
-            if rect.width > 0 and rect.height > 0:
-                self.screen.fill(CHROMA_KEY, rect)
-
     def show(self, frame_rgba: np.ndarray) -> None:
         """Blit frame (RGBA uint8) fullscreen and draw the HUD on top.
 
@@ -1454,24 +1434,6 @@ class Display:
                 and surface.get_width() < self.width):
             ox, oy = getattr(self, "_origin", (0, 0))
             at = (self._window_layer[0] - ox, self._window_layer[1] - oy)
-            # Everything the frame does not cover has to be painted, every
-            # frame. The swap chain is flip-discard: what was on screen last
-            # time is NOT in the back buffer, so a surround nobody draws is
-            # undefined - in practice the frame from two flips ago. With the
-            # captured window not redrawing (which is what an unfocused
-            # window does) that is a still photograph of the desktop pinned
-            # over the real one: nothing appears to react, because nothing
-            # that reacts is visible (user, 13.09).
-            #
-            # The key colour is the whole answer here, and no window
-            # attribute is touched to get it: in one-window mode the capture
-            # is always WGC inside the worker, so the layer is already
-            # colour-keyed - main only ever turns the key OFF when Python
-            # itself owns the picture, and Python cannot capture a window.
-            # The previous attempt set a SECOND key from here and that was
-            # the blinking: two places writing SetLayeredWindowAttributes,
-            # one of them twice a second from raise_topmost.
-            self._fill_around(surface.get_rect(topleft=at))
         self.screen.blit(surface, at)
         self._draw_alerts()
         self.menu.set_stats(self._hud)

@@ -1524,6 +1524,12 @@ struct VideoResizeCmd
 // is one control: the resolution the network sees, with "full screen" at the
 // top of the slider.
 static constexpr uint32_t RESIZE_FLAG_NR_SMALL = 0x1u;
+// Direct reconstruction: show what the network produced, stretched, instead
+// of composing its delta onto the native frame. Only means anything while
+// nr_small is on - at work == full the network already IS the output. This
+// is the A/B the residual composite has never been measured against on real
+// content, so it travels live: flipping it must not cost a feature.
+static constexpr uint32_t RESIZE_FLAG_NR_DIRECT = 0x2u;
 struct VideoResizeAck
 {
     uint32_t magic, ok, ngx_result, reserved;
@@ -2448,6 +2454,13 @@ static float ResidualStrengthRequested()
     return 1.0f;
 }
 
+// Which of the two composites is in force, as the client last asked. The
+// environment decides the very first frame (the client has not spoken yet);
+// every RNSZ after that carries RESIZE_FLAG_NR_DIRECT and overwrites this.
+// A global rather than a field of VideoState because the params-only resize
+// path deliberately does not touch the view - see the RNSZ handler.
+static bool g_nr_direct = !ResidualRequested();
+
 // want_small < 0 means "whatever NS_NR_SMALL says" - used for the very first
 // creation, before the client has had a chance to ask for anything.
 static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 0, UINT full_h = 0,
@@ -2464,9 +2477,10 @@ static bool CreateVideoResources(VideoState &v, UINT w, UINT hgt, UINT full_w = 
     v.nr_w = v.nr_small ? w : 0;
     v.nr_h = v.nr_small ? hgt : 0;
     // Residual compose rides on nr_small: at work == full there is nothing
-    // to compose (native would equal nr_in). Env-overridable for now; the
-    // menu wiring lands with the release.
-    v.residual = v.nr_small && ResidualRequested();
+    // to compose (native would equal nr_in). The client asks for the other
+    // composite with RESIZE_FLAG_NR_DIRECT; NS_NR_RESIDUAL=0 still decides
+    // the first frame, before any RNSZ has arrived.
+    v.residual = v.nr_small && !g_nr_direct;
     v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
     const UINT cw = v.upscale ? full_w : w;   // color texture: full-res in upscale mode
     const UINT ch = v.upscale ? full_h : hgt;
@@ -5299,13 +5313,23 @@ static int RunVideo()
             if (same_size && h.feature != nullptr)
             {
                 memcpy(&g_video_options, &rc, sizeof(g_video_options));
+                // Which composite is a parameter, not a size: the textures
+                // and the feature are the same either way, so the switch
+                // belongs on this path and must be applied to the view by
+                // hand - nothing else here touches it.
+                g_nr_direct = (rc.flags & RESIZE_FLAG_NR_DIRECT) != 0;
+                v.residual = v.nr_small && !g_nr_direct;
+                v.residual_strength = v.residual ? ResidualStrengthRequested() : 1.0f;
                 g_force_next_frame = true;   // show it on the next frame
                 VideoResizeAck ok = { RESIZE_ACK_MAGIC, 1u,
                                       static_cast<uint32_t>(NVSDK_NGX_Result_Success),
                                       0u, fh.pts };
                 if (!WriteExact(g_wire, &ok, sizeof(ok))) return 10;
-                Log("[video] RNSZ: parameters only at %ux%u - the feature stays",
-                    v.w, v.hgt);
+                Log("[video] RNSZ: parameters only at %ux%u - the feature stays"
+                    " (%s)", v.w, v.hgt,
+                    !v.nr_small ? "no composite - the network is the output"
+                                : (v.residual ? "matched residual"
+                                              : "direct reconstruction"));
                 continue;
             }
             Log("[video] RNSZ: work %ux%u -> %ux%u (full %ux%u), warmup=%u",
@@ -5319,7 +5343,10 @@ static int RunVideo()
             // 3. New options (profile/params travel with the command).
             // VideoResizeCmd has the same packed layout as VideoHeader.
             memcpy(&g_video_options, &rc, sizeof(g_video_options));
-            // 4. Recreate textures + feature at the new sizes.
+            // 4. Recreate textures + feature at the new sizes. The composite
+            // is read here too: CreateVideoResources decides v.residual off
+            // this global, and a resize may well carry a changed switch.
+            g_nr_direct = (rc.flags & RESIZE_FLAG_NR_DIRECT) != 0;
             const int want_small = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0 ? 1 : 0;
             if (!CreateVideoResources(v, rc.width, rc.height, rup ? rc.full_w : 0,
                                       rup ? rc.full_h : 0, want_small))

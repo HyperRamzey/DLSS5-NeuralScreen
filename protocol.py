@@ -274,6 +274,10 @@ RESIZE_ACK_MAGIC = 0x4B434152  # 'RACK'
 RESIZE_FMT = "<10I4f2I"   # the same layout as HEADER_FMT (magic instead of VIDEO_MAGIC)
 # The slot the header keeps frame_count in carries flags in a resize.
 RESIZE_FLAG_NR_SMALL = 0x1   # run the network at the work size, scale the result back
+# Show the network's own output, stretched, instead of composing its delta
+# onto the native frame. Only means anything with NR_SMALL on. Travels with
+# the resize so that flipping it costs no feature - it is an A/B switch.
+RESIZE_FLAG_NR_DIRECT = 0x2
 RACK_FMT = "<4Iq"         # magic, ok, ngx_result, reserved, pts (24 bytes)
 
 # DDA1: the worker captures the screen itself (Desktop Duplication) - the
@@ -376,7 +380,7 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
 
 def send_resize(worker: subprocess.Popen, params: dict, width: int, height: int,
                 warmup: int, full_w: int = 0, full_h: int = 0,
-                nr_small: bool = False) -> None:
+                nr_small: bool = False, nr_direct: bool = False) -> None:
     """Send RNSZ - change the work resolution/parameters on the fly.
 
     The worker recreates the NGX feature at the new sizes (ReleaseFeature ->
@@ -387,7 +391,8 @@ def send_resize(worker: subprocess.Popen, params: dict, width: int, height: int,
     worker.stdin.write(struct.pack(
         RESIZE_FMT,
         RESIZE_MAGIC, width, height, int(warmup),
-        RESIZE_FLAG_NR_SMALL if nr_small else 0,
+        (RESIZE_FLAG_NR_SMALL if nr_small else 0)
+        | (RESIZE_FLAG_NR_DIRECT if nr_direct else 0),
         params["profile"], params["preset"], params["style"],
         params["auto_mask"], params["ui_correction"],
         params["intensity"], params["local_tone"],

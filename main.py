@@ -263,6 +263,7 @@ class _Pipeline:
         "motion_attempted",
         "motion_small",
         "next_auto_revive",
+        "nr_direct",
         "nr_small",
         "out_attempted",
         "out_shm",

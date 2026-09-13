@@ -270,6 +270,15 @@ def configure(st) -> None:
     # the residual composite puts the detail back off the native frame.
     st.nr_small = bool(st.cfg.get("nr_small", True))
     os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
+    # Which composite Boost uses: the matched residual (the network's delta
+    # laid over the native frame, so text and edges keep full resolution) or
+    # direct reconstruction (the network's own output, stretched). Residual
+    # is what ships; direct exists to be measured against it on real content,
+    # which has never been done. No menu control on purpose - it becomes one
+    # only if the A/B says it earns its place. Unlike Boost itself this one
+    # travels with the resize, so flipping it costs no feature.
+    st.nr_direct = bool(st.cfg.get("nr_direct", False))
+    os.environ["NS_NR_RESIDUAL"] = "0" if st.nr_direct else "1"
     # The Spout2 bridge is the same story: the worker reads NS_SPOUT once
     # at startup (SpoutBridgeInit), so the config flag becomes the
     # environment before the first worker is launched. Off by default -

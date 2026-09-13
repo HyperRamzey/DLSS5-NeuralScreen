@@ -96,7 +96,7 @@ def zip_integrity():
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
         "audio.py", "protocol.py", "winapi.py", "dialogs.py", "channels.py",
         "settings_io.py", "paths.py", "pipeline.py", "commands.py",
-        "startup.py",
+        "startup.py", "fonts.py", "taskbar.py",
         "NeuralScreen.exe",
         "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
@@ -133,11 +133,15 @@ def zip_integrity():
         # same goes for the worker - the archive carries a freshly built
         # nvngx.dll whose content nobody can verify by eye, so a
         # non-committed rebuild slips through (audit #4, C1/C2).
-        for name in ("main.py", "hotkeys.py", "display.py", "recorder.py",
-                     "overlay_ui.py", "i18n.py", "protocol.py", "winapi.py",
-                     "pipeline.py", "settings_io.py", "channels.py",
-                     "commands.py", "paths.py", "startup.py",
-                     "README.md", "README.ru.md"):
+        # Derived from `required` rather than written out again: the two
+        # lists have to agree, and the second one drifted - guides.py,
+        # gpuinfo.py, tray.py, capture.py, audio.py and dialogs.py were
+        # required to be PRESENT but never compared, so an uncommitted
+        # change to any of them shipped silently. guides.py is where the
+        # motion-vector validation lives.
+        compared = [f for f in required if f.endswith(".py")]
+        compared += ["README.md", "README.ru.md"]
+        for name in compared:
             try:
                 head = subprocess.check_output(["git", "show", f"HEAD:{name}"],
                                                cwd=ROOT)

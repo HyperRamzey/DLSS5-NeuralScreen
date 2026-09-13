@@ -840,11 +840,14 @@ def main() -> int:
                 else:
                     st.display.exit_switch_mode()  # the next frame replaces the overlay
                     st.display.reveal()  # a real frame exchange happened
-                    # The other half of the same invariant: this branch paints
-                    # the layer with a real frame, so it must NOT be
-                    # colour-keyed - magenta pixels inside the picture would
-                    # punch holes in it.
-                    st.display.set_hud_only(False)
+                    # The other half of the same invariant - but only when
+                    # Python owns the picture. With the capture inside the
+                    # worker a frame comes back for a screenshot or the
+                    # recorder and means nothing about who paints the layer;
+                    # flipping the key on it made the menu blink once per
+                    # returned frame.
+                    if not st.dda_mode and not st.present_mode:
+                        st.display.set_hud_only(False)
                     st.display.show(st.output_rgba)
                     if st.pending_shot is not None:
                         commands.save_screenshot(st, st.pending_shot, st.output_rgba)

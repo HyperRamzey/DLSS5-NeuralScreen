@@ -741,6 +741,12 @@ class OverlayMenu:
                 self._hint_rel = pygame.Rect(pad, cy, inner_w,
                                              self._u(SMALL_SIZE) + self._u(6))
                 cy += self._hint_rel.h + gap
+            else:
+                # Not on this tab - and the rect has to be emptied, not just
+                # left unset: it is a member, the draw reads it every frame,
+                # and the caption from the keys tab floated under Theme on
+                # the program tab (user, 13.09).
+                self._hint_rel = pygame.Rect(0, 0, 0, 0)
 
             # Appearance: language and theme moved here from the main page
             # (user rule 10.09: the main page is the main page - settings
@@ -816,7 +822,7 @@ class OverlayMenu:
             # the difference is not visible. The residual is what makes that
             # true: without it the same setting is visibly soft.
             boost = bool(self.state.get("nr_small"))
-            toggle("boost", s["boost"], boost, hint=s["boost_hint"])
+            toggle("boost", s["boost"], boost)
 
             # The resolution the network runs at - only while Boost is on.
             #
@@ -924,17 +930,8 @@ class OverlayMenu:
                 ranges = self.state.get("param_ranges") or {}
                 lo, hi = ranges.get(key) or PARAM_FALLBACK
                 val = float(params.get(key, 0.0))
-                # The scale under the track. A slider that runs from 0 to 1
-                # and one that runs from 0 to 1.5 looked identical, and the
-                # ranges are the whole point of the measurement behind them:
-                # a knob at the top of intensity means something different
-                # from a knob at the top of local tone. The middle word says
-                # what the tick is, which is otherwise a thing to remember.
-                note = (s["mark_zero"] if float(lo) < 0.0
-                        else s["mark_profile"])
                 slider(key, float(lo), float(hi), val, s[key],
-                       value_text=f"{val:.2f}", mark=defaults.get(key),
-                       ends=(f"{float(lo):g}", note, f"{float(hi):g}"))
+                       value_text=f"{val:.2f}", mark=defaults.get(key))
             # Save / Delete preset: the user presets live in the same list
             # as the built-in profiles. Delete is only offered while a user
             # preset is active - the built-in profiles are not deletable.

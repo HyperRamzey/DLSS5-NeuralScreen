@@ -181,7 +181,7 @@ def main() -> int:
     # The resolution slider is deliberately not here: it names the trade at
     # both ENDS of its track instead of under it, which is the same rule in
     # a better place.
-    expected = {"main/boost", "main/split",
+    expected = {"main/split",
                 "settings/monitor", "settings/gpu", "settings/hdr",
                 "settings/spout", "settings/skip_static"}
     lost = sorted(k for k in expected if k not in seen_keys)

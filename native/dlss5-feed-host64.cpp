@@ -1995,7 +1995,16 @@ static void RevealOnFirstPresent()
 static bool PresentFrame(VideoState &v)
 {
     if (g_hdr_capture) return PresentHdr(v, false);
-    if (!EnsurePresentFormat(false)) return false;
+    // Only when HDR compatibility is on. With it off there is nothing to put
+    // back: the swap chain was created R8G8B8A8 and no HDR frame has ever
+    // touched it, so the call has nothing to do - and it is not free. 1.8.0
+    // ran it in front of every ordinary present, which put a SetColorSpace1
+    // into a path that had never made one, and a reporter on a hybrid laptop
+    // with an external monitor got a flicker on every cursor move that 1.7.0
+    // did not have (#58). An explicit colour space makes the compositor
+    // re-decide how the window is presented; on that hardware it decided
+    // differently. Off means byte-identical to 1.7.x.
+    if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
     ID3D12Resource *bb = nullptr;
     if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource),
@@ -2038,7 +2047,8 @@ static bool PresentFrame(VideoState &v)
 static bool PresentBypass(VideoState &v)
 {
     if (g_hdr_capture) return PresentHdr(v, true);
-    if (!EnsurePresentFormat(false)) return false;
+    // Same as PresentFrame: nothing to restore unless HDR has been on (#58).
+    if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
     ID3D12Resource *bb = nullptr;
     if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource),

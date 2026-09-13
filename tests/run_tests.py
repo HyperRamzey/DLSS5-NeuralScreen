@@ -124,6 +124,7 @@ ABOUT = {
     "test_window_filter.py": "the window list holds only real taskbar windows",
     "test_windows_page.py": "the windows page lists, highlights and switches",
     "test_window_mode.py": "the one-window hotkey switches the pipeline and back",
+    "test_window_surround.py": "a window-sized frame's surround is keyed, the layer is really keyed",
     "test_window_mode_menu.py": "the menu stays fully visible across the window-mode switch",
     "test_switch_veil.py": "the mode-switch veil eases in/out and owns the layer",
 }

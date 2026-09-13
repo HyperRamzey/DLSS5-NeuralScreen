@@ -131,6 +131,14 @@ CHROMA_KEY = (0xFF, 0x00, 0xFF)
 LWA_COLORKEY = 0x1
 LWA_ALPHA = 0x2
 
+# The layer's appearance - see Display.set_layer_state. Exactly one of the
+# three is in force. The mode-switch veil borrows the layer and writes its
+# own alpha for the duration of a switch; everything else goes through the
+# one writer (_write_layer_attrs).
+LAYER_OPAQUE = "opaque"                # alpha 255, no key: Python shows a full-layer picture
+LAYER_HUD = "hud"                      # key + BG_ALPHA: the worker shows the frame, only the HUD here
+LAYER_PICTURE_KEYED = "picture_keyed"  # key + alpha 255: Python shows a window-sized picture, surround cut out
+
 # Which faces the program draws with lives in fonts.py - including the
 # per-script CJK families, re-exported here because the docs renderer and
 # the offscreen menu renderer import them from this module.
@@ -335,8 +343,13 @@ class Display:
             self._set_click_through()
         # NOTE: _visible/_reveal_pending are set right after set_mode - the
         # window starts hidden and reveal() shows it after the first frame.
-        # HUD mode: the worker draws the frame, the window shows only the HUD
-        self._hud_only = False
+        # The layer's appearance: ONE state variable and ONE writer. Every
+        # pipeline SetLayeredWindowAttributes call goes through
+        # _write_layer_attrs(); show() only REQUESTS a state. Two writers
+        # overwriting each other was the blink of d10cfd4/e46a24b; a keyed
+        # fill on an unkeyed layer was the magenta screen of ca1801d.
+        self._layer_state = LAYER_OPAQUE
+        self._menu_opaque = False
         self._last_overlay = 0.0
         self._last_alert_count = 0
         # The mode-switch veil (blur + assembling mark): shown while the
@@ -704,7 +717,7 @@ class Display:
         # A set_mode can recreate the physical window; put it back on the
         # chosen monitor (the origin belongs to the pipeline, not to SDL).
         self._move_to_origin()
-        self.set_hud_only(self._hud_only, force=True)
+        self.set_layer_state(self._layer_state, force=True)
         self.set_menu_opaque(self.menu.visible)
         self.set_excluded_from_capture(self._excluded)
         self.set_menu_input(self._menu_input)
@@ -744,7 +757,7 @@ class Display:
             self._set_topmost()
             # The recreated window lost EVERYTHING: the layered attributes
             # (colorkey + alpha), the capture affinity and the input styles.
-            self.set_hud_only(self._hud_only, force=True)
+            self.set_layer_state(self._layer_state, force=True)
             self.set_menu_opaque(self.menu.visible)
             self.set_excluded_from_capture(self._excluded)
             self.set_menu_input(self._menu_input)
@@ -788,59 +801,107 @@ class Display:
     def set_menu_opaque(self, opaque: bool) -> None:
         """Drop the global window translucency while the menu is open.
 
-        The layer lives at BG_ALPHA so the HUD does not plaster over the
-        picture. But the menu panel is nearly black and a bright frame shows
-        through it - it reads as "too transparent". While the menu is up we set
-        255.
+        A sub-state of LAYER_HUD: the layer lives at BG_ALPHA so the HUD
+        does not plaster over the picture, but the menu panel is nearly
+        black and a bright frame shows through it - it reads as "too
+        transparent". While the menu is up the HUD alpha goes to 255. The
+        other two layer states are opaque by construction, so nothing is
+        written for them; the flag is remembered for the next HUD apply,
+        and the single writer turns it into the alpha.
         """
-        if not self._hud_only:
+        opaque = bool(opaque)
+        if opaque == self._menu_opaque:
             return
-        try:
-            hwnd = pygame.display.get_wm_info()["window"]
-        except Exception:
+        self._menu_opaque = opaque
+        if self._layer_state == LAYER_HUD:
+            self._write_layer_attrs()
+
+    def set_layer_state(self, state: str, force: bool = False) -> None:
+        """Request the layer's appearance - the ONE entry point for it.
+
+        LAYER_OPAQUE: alpha 255, no key. Python shows a picture that
+        covers the layer on a plain opaque window.
+        LAYER_HUD: the colour key plus BG_ALPHA (255 while the menu is
+        open - the panel would read as translucent over a bright frame
+        otherwise). The worker draws the frame in its own window, only
+        the HUD stays here.
+        LAYER_PICTURE_KEYED: the colour key plus alpha 255. Python shows
+        a window-sized picture and the surround is cut out, so the live
+        desktop shows through around it. Alpha stays 255: this layer
+        carries the picture, and BG_ALPHA would make the processed frame
+        see-through.
+
+        Idempotent: the same request twice writes nothing, so a
+        per-frame caller (show) cannot flap the attributes - two
+        writers with different values was the blink of d10cfd4/e46a24b.
+        force=True re-applies the value even when it did not change: a
+        window recreation (set_mode) drops every layered attribute, and
+        the re-assert must restore the state that is actually in force.
+        """
+        if state == self._layer_state and not force:
             return
-        r, g, b = CHROMA_KEY
-        key = (b << 16) | (g << 8) | r
-        alpha = 255 if opaque else BG_ALPHA
-        user32.SetLayeredWindowAttributes(hwnd, key, alpha, LWA_COLORKEY | LWA_ALPHA)
+        self._layer_state = state
+        self._write_layer_attrs()
 
     def set_hud_only(self, enabled: bool, force: bool = False) -> None:
-        """HUD mode: the worker draws the frame in its own window, only the HUD
-        stays here.
+        """The pipeline's HUD switch: True - LAYER_HUD, False - LAYER_OPAQUE.
 
-        The background is filled with CHROMA_KEY and made transparent through
-        SetLayeredWindowAttributes(LWA_COLORKEY) - the worker's overlay shows
-        through it, while the HUD, alerts and watermark are drawn on top as
-        before. Turning it off restores the ordinary opaque mode (LWA_ALPHA).
-        force=True: reapply the attributes even when the mode did not change -
-        z-order operations (SetWindowPos/TopMost after the settings menu) can
-        drop LWA_COLORKEY, and an early return would leave the window opaque.
+        HUD mode: the worker's window carries the picture, and only the
+        HUD, alerts and menu stay here, cut out of what is below by the
+        colour key. Off: this window owns the picture again, on a plain
+        opaque layer. (The third state, LAYER_PICTURE_KEYED, is requested
+        by show() when a window-sized frame leaves a surround; it is never
+        asked for through this switch.)
         """
-        if enabled == self._hud_only and not force:
+        self.set_layer_state(LAYER_HUD if enabled else LAYER_OPAQUE, force)
+
+    def _write_layer_attrs(self) -> None:
+        """The ONE writer of SetLayeredWindowAttributes for the pipeline.
+
+        Resolves the layer's state into a (key, alpha, flags) triple and
+        applies it. Every appearance change - the state request, the
+        menu-opaque sub-state, the re-applies after a window recreation -
+        goes through here, so no two calls can fight over the window.
+
+        Skipped while the mode-switch veil is up: for the duration of a
+        switch the veil owns the window's attributes (its own alpha ramp,
+        no key - see _apply_switch_window_alpha), and a pipeline write
+        here would cut the fade short. The teardown re-applies the state
+        once the veil comes down.
+        """
+        if self._switch_active:
             return
-        self._hud_only = enabled
         try:
             hwnd = pygame.display.get_wm_info()["window"]
         except Exception as exc:
-            print(f"Display: WARNING cannot get hwnd for HUD mode: {exc}")
+            print(f"Display: WARNING cannot get hwnd for the layer: {exc}")
             return
-        if enabled:
-            # COLORREF is 0x00BBGGRR, not RGB
+        if self._layer_state == LAYER_HUD:
+            # COLORREF is 0x00BBGGRR, not RGB.
             r, g, b = CHROMA_KEY
             key = (b << 16) | (g << 8) | r
             # The panel translucency comes from the window's GLOBAL alpha
             # (LWA_ALPHA), NOT from the alpha of the panel pixels: a
-            # semi-transparent SRCALPHA blend with the magenta background would
-            # give a colour != key and a pink slab (the colour key does not cut
-            # out a blended colour). The colour key removes the background
-            # entirely, and the opaque panel (plus text) becomes slightly
-            # see-through through the global alpha.
-            ok = user32.SetLayeredWindowAttributes(hwnd, key, BG_ALPHA, LWA_COLORKEY | LWA_ALPHA)
+            # semi-transparent SRCALPHA blend with the magenta background
+            # would give a colour != key and a pink slab (the colour key
+            # does not cut out a blended colour). The colour key removes
+            # the background entirely, and the opaque panel (plus text)
+            # becomes slightly see-through through the global alpha.
+            alpha = 255 if self._menu_opaque else BG_ALPHA
+            ok = user32.SetLayeredWindowAttributes(
+                hwnd, key, alpha, LWA_COLORKEY | LWA_ALPHA)
+        elif self._layer_state == LAYER_PICTURE_KEYED:
+            # The key with NO translucency: the frame is the picture and
+            # must not become see-through - only the surround is cut out.
+            r, g, b = CHROMA_KEY
+            key = (b << 16) | (g << 8) | r
+            ok = user32.SetLayeredWindowAttributes(
+                hwnd, key, 255, LWA_COLORKEY | LWA_ALPHA)
         else:
             ok = user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
         if not ok:
             print(f"Display: WARNING SetLayeredWindowAttributes failed "
-                  f"(HUD mode {'on' if enabled else 'off'})")
+                  f"(layer state {self._layer_state})")
         self._last_overlay = 0.0  # the next draw_overlay redraws immediately
 
     def raise_topmost(self) -> None:
@@ -926,9 +987,11 @@ class Display:
         # (LWA_ALPHA): the live desktop stays visible behind it, so when no
         # frozen frame exists (WNDO mode - the pixels never come to Python)
         # the user sees the desktop through a light veil instead of a black
-        # screen (user: the switch overlay must not go dark). The window is
-        # set directly - set_hud_only() would rewrite self._hud_only, which
-        # must keep the pipeline's state for exit_switch_mode().
+        # screen (user: the switch overlay must not go dark). The window's
+        # alpha is written directly, not through _write_layer_attrs(): for
+        # the duration of a switch the veil owns the window's attributes
+        # (its own ramp, no key), and the state setter must not fight it -
+        # _layer_state keeps the pipeline's state for the teardown.
         try:
             self.screen = pygame.display.set_mode((fw, fh), self._flags)
             hwnd = pygame.display.get_wm_info()["window"]
@@ -1037,19 +1100,18 @@ class Display:
             if not self.menu.visible and \
                     (self.screen.get_width(), self.screen.get_height()) != ret:
                 self.resize(ret[0], ret[1])
-        # The layer is back to its regular appearance: transparent for the HUD
-        # mode, or an opaque fullscreen layer, whatever the pipeline wants.
-        # In HUD mode the surface still holds the veil's pixels; wipe them
-        # first, or the attribute swap (alpha -> BG_ALPHA) shows the frozen
-        # dim for one frame.
-        if self._hud_only:
+        # The layer is back to its regular appearance - the state that is
+        # actually in force, which may have changed while the veil owned the
+        # window (a HUD request from a present enable, a window-sized
+        # picture). In HUD mode the surface still holds the veil's pixels;
+        # wipe them first, or the attribute swap (alpha -> BG_ALPHA) shows
+        # the frozen dim for one frame.
+        if self._layer_state == LAYER_HUD:
             try:
                 self.screen.fill(CHROMA_KEY)
             except Exception:
                 pass
-        self.set_hud_only(self._hud_only, force=True)
-        if not self._hud_only:
-            self.set_menu_opaque(self.menu.visible)
+        self.set_layer_state(self._layer_state, force=True)
         self._last_overlay = 0.0  # the next draw_overlay redraws immediately
 
     def is_switch_active(self) -> bool:
@@ -1132,15 +1194,15 @@ class Display:
             a = 255.0
         elif ph == "out":
             v = max(0.0, min(1.0, self._switch_alpha / float(SWITCH_ALPHA)))
-            if self._hud_only:
+            if self._layer_state == LAYER_HUD:
                 # Dissolve the veil to nothing, uncovering the new
                 # worker's window below it.
                 a = float(SWITCH_ALPHA) * v
             else:
-                # Plain path: land on the opaque layer the pipeline
-                # expects - the pixel fade inside it lifts the dim off
-                # the fresh frame, and the window ends where the
-                # teardown picks it up.
+                # Plain path (an opaque or a keyed picture layer): land
+                # on the opaque window the pipeline expects - the pixel
+                # fade inside it lifts the dim off the fresh frame, and
+                # the window ends where the teardown picks it up.
                 a = 255.0 - (255.0 - float(SWITCH_ALPHA)) * v
         else:
             # "in" and "on": the established veil look - translucent, the
@@ -1198,7 +1260,7 @@ class Display:
         if self._switch_dim_soft is not None:
             if ph == "in":
                 a = int(round(255 * strength))
-            elif ph == "out" and not self._hud_only:
+            elif ph == "out" and self._layer_state != LAYER_HUD:
                 # Plain path: the dim lifts off the fresh frame; on the
                 # HUD path the window's dissolve carries it instead.
                 a = int(round(255 * strength))
@@ -1209,7 +1271,7 @@ class Display:
         elif self._switch_fill is not None:
             # No picture to freeze: the flat fill is the veil's body and
             # rides the same crossfade the dim does.
-            if ph == "in" or (ph == "out" and not self._hud_only):
+            if ph == "in" or (ph == "out" and self._layer_state != LAYER_HUD):
                 a = int(round(255 * strength))
             else:
                 a = 255
@@ -1220,7 +1282,7 @@ class Display:
         # Layer 2: the mark.
         t = now - self._switch_mark_t0
         appear = min(1.0, t / 0.2)
-        if ph == "out" and not self._hud_only:
+        if ph == "out" and self._layer_state != LAYER_HUD:
             # Plain path: the mark goes with the dim, or the tiles would
             # hang over the fresh frame after everything else dissolved.
             mark_a = appear * strength
@@ -1253,22 +1315,14 @@ class Display:
 
 
     def refresh_colorkey(self) -> None:
-        """Reapply LWA_COLORKEY on the pygame window (the HUD layer).
+        """Reapply the layer's attributes after something dropped them.
 
         Needed after operations that can drop the window's layered attributes
         (z-order shuffling with the tkinter settings menu: the window stays
-        opaque and the HUD is not visible). Recreates nothing - only
-        SetLayeredWindowAttributes, unlike set_hud_only(force=True).
+        opaque and the HUD is not visible). Goes through the single writer
+        like every other appearance change; recreates nothing.
         """
-        if not self._hud_only:
-            return
-        try:
-            hwnd = pygame.display.get_wm_info()["window"]
-        except Exception:
-            return
-        r, g, b = CHROMA_KEY
-        key = (b << 16) | (g << 8) | r
-        user32.SetLayeredWindowAttributes(hwnd, key, BG_ALPHA, LWA_COLORKEY | LWA_ALPHA)
+        self._write_layer_attrs()
 
     def draw_capture_overlay(self, surface: pygame.Surface) -> None:
         """Bake the open menu into a recorded or screenshot frame.
@@ -1394,6 +1448,26 @@ class Display:
         """
         self._alerts.append((text, time.monotonic() + duration))
 
+    def _fill_around(self, keep: "pygame.Rect") -> None:
+        """Paint the layer with the key everywhere outside `keep`.
+
+        Four rectangles rather than one full-screen fill: the frame is about
+        to be blitted over the middle anyway, and at 4K the difference is a
+        whole 8-megapixel fill per frame.
+        """
+        w, h = self.width, self.height
+        keep = keep.clip(pygame.Rect(0, 0, w, h))
+        if keep.width <= 0 or keep.height <= 0:
+            self.screen.fill(CHROMA_KEY)
+            return
+        for rect in (pygame.Rect(0, 0, w, keep.top),
+                     pygame.Rect(0, keep.bottom, w, h - keep.bottom),
+                     pygame.Rect(0, keep.top, keep.left, keep.height),
+                     pygame.Rect(keep.right, keep.top, w - keep.right,
+                                 keep.height)):
+            if rect.width > 0 and rect.height > 0:
+                self.screen.fill(CHROMA_KEY, rect)
+
     def show(self, frame_rgba: np.ndarray) -> None:
         """Blit frame (RGBA uint8) fullscreen and draw the HUD on top.
 
@@ -1430,10 +1504,27 @@ class Display:
         # is. Only reachable when the worker is NOT presenting - with the
         # worker's own window up, Python draws no frames at all.
         at = (0, 0)
-        if (self._window_layer is not None
-                and surface.get_width() < self.width):
+        windowed = (self._window_layer is not None
+                    and surface.get_width() < self.width)
+        if windowed:
             ox, oy = getattr(self, "_origin", (0, 0))
             at = (self._window_layer[0] - ox, self._window_layer[1] - oy)
+            # Everything the frame does not cover is the desktop, not our
+            # stale back buffer - the swap chain is flip-discard. The fill
+            # only reads as a cut-out while the layer is KEYED, so the
+            # state request below is part of the fix, not an extra: a keyed
+            # fill on an unkeyed layer is a solid magenta screen (what
+            # ca1801d shipped). Idempotent, so this cannot flap.
+            self._fill_around(surface.get_rect(topleft=at))
+        # The layer follows the frame's geometry: a window-sized frame on a
+        # screen-sized layer leaves a surround that must be cut out; a frame
+        # covering the layer goes back to the plain opaque window. Whenever
+        # show() is reached, PYTHON paints the picture (with the worker's own
+        # window up, no frame is blitted here at all), so the geometry is the
+        # right answer and a stale HUD state from an empty frame is corrected
+        # on the next real one. Idempotent, so this cannot flap.
+        self.set_layer_state(
+            LAYER_PICTURE_KEYED if windowed else LAYER_OPAQUE)
         self.screen.blit(surface, at)
         self._draw_alerts()
         self.menu.set_stats(self._hud)

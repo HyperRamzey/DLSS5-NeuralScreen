@@ -841,14 +841,11 @@ def main() -> int:
                 else:
                     st.display.exit_switch_mode()  # the next frame replaces the overlay
                     st.display.reveal()  # a real frame exchange happened
-                    # The other half of the same invariant - but only when
-                    # Python owns the picture. With the capture inside the
-                    # worker a frame comes back for a screenshot or the
-                    # recorder and means nothing about who paints the layer;
-                    # flipping the key on it made the menu blink once per
-                    # returned frame.
-                    if not st.dda_mode and not st.present_mode:
-                        st.display.set_hud_only(False)
+                    # The layer's own state is decided inside show(): it knows
+                    # whether the frame covers the layer (opaque) or only a
+                    # window on it (the surround is keyed out). Asking for it
+                    # here as well is how the key used to flip once per
+                    # returned frame - the blink.
                     st.display.show(st.output_rgba)
                     if st.pending_shot is not None:
                         commands.save_screenshot(st, st.pending_shot, st.output_rgba)

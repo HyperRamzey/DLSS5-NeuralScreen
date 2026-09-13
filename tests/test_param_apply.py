@@ -161,7 +161,12 @@ def main() -> int:
     text = Path(log.name).read_text(encoding="utf-8", errors="replace")
     Path(log.name).unlink(missing_ok=True)
     params_only = text.count("RNSZ: parameters only")
-    rebuilt = text.count("RNSZ applied: feature ready")
+    # "RNSZ applied at WxH: ..." is printed only by the rebuild path - the
+    # parameters-only path says "parameters only" and returns. Matching the
+    # prefix rather than the old fixed phrase: the line now also reports
+    # whether the feature really came up and which composite is live, and a
+    # create that FAILED used to be announced as "feature ready" anyway.
+    rebuilt = text.count("RNSZ applied at ")
     print(f"    log: {params_only} parameter-only, {rebuilt} rebuilt")
     if params_only != 1:
         failures.append(f"expected one parameter-only RNSZ in the log, "

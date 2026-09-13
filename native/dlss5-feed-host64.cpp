@@ -5393,7 +5393,16 @@ static int RunVideo()
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             g_force_next_frame = true;   // the new setting must be shown on the next frame
-            Log("[video] RNSZ applied: feature ready at %ux%u", rc.width, rc.height);
+            // Not always ready: CreateFeature may have failed four lines up
+            // and said SAFE PASSTHROUGH, and this line then contradicted it
+            // in the same breath. It also names the composite now - the
+            // parameters-only path has said which one is live since A7, and
+            // the rebuild path stayed silent about it.
+            Log("[video] RNSZ applied at %ux%u: %s, %s", rc.width, rc.height,
+                h.feature != nullptr ? "feature ready" : "SAFE PASSTHROUGH",
+                !v.nr_small ? "no composite"
+                            : (v.residual ? "matched residual"
+                                          : "direct reconstruction"));
             continue;
         }
         if (msg == 3)

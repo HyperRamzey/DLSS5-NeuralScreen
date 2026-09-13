@@ -2252,6 +2252,49 @@ static bool ReadExact(FILE *f, void *p, size_t n)
     return true;
 }
 
+// The protocol pipe, and nobody else's.
+//
+// stdout carries the binary protocol, so anything else in this process that
+// prints lands in the middle of it - NVIDIA's own logging, an injected
+// overlay, a library's stray printf. A user's log showed the SHMI reply
+// coming back as 0x3230325B, which is the bytes "[202": the first four
+// characters of somebody's timestamped line. Every handshake after that
+// timed out at 15 seconds while this worker cheerfully logged OK for each
+// one, and the program spent its life restarting a worker that was
+// answering into a stream nobody could read any more (issue #61).
+//
+// So fd 1 is duplicated into a private handle for the protocol and the real
+// fd 1 is pointed at stderr: our writes go down the pipe, everyone else's
+// go into the log, where they are merely noise.
+static FILE *g_wire = nullptr;
+
+static void OwnTheProtocolPipe()
+{
+    {
+        // NS_SHARED_STDOUT=1: do not take the pipe, the way it was before
+        // this existed. Only test_stdout_noise sets it, and it sets it to
+        // prove that its other half means something - a check that passes
+        // both with and without the thing it is checking is not a check.
+        char v[8] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_SHARED_STDOUT", v, sizeof(v));
+        if (got > 0 && got < sizeof(v) && v[0] == '1')
+        {
+            g_wire = stdout;
+            Log("[video] NS_SHARED_STDOUT=1: the protocol shares stdout");
+            return;
+        }
+    }
+    const int copy = _dup(_fileno(stdout));
+    if (copy < 0) { g_wire = stdout; return; }
+    g_wire = _fdopen(copy, "wb");
+    if (g_wire == nullptr) { g_wire = stdout; return; }
+    _setmode(copy, _O_BINARY);
+    setvbuf(g_wire, nullptr, _IONBF, 0);
+    // From here a printf to stdout is a line in the log, not four bytes in
+    // the middle of a reply.
+    _dup2(_fileno(stderr), _fileno(stdout));
+}
+
 static bool WriteExact(FILE *f, const void *p, size_t n)
 {
     if (g_submission_failed) return false;
@@ -3279,13 +3322,13 @@ static bool DeliverPixels(const std::vector<BYTE> &output, uint32_t index,
         memcpy(g_out_map, &seq, sizeof(seq));
         VideoResultHeader out = { OUT_MAGIC, index, 1u, OUT_BYTES_IN_SHM,
                                   g_last_eval_result, pts };
-        return WriteExact(stdout, &out, sizeof(out));
+        return WriteExact(g_wire, &out, sizeof(out));
     }
     VideoResultHeader out = { OUT_MAGIC, index, 1u,
                               static_cast<uint32_t>(output.size()),
                               g_last_eval_result, pts };
-    return WriteExact(stdout, &out, sizeof(out))
-        && WriteExact(stdout, output.data(), output.size());
+    return WriteExact(g_wire, &out, sizeof(out))
+        && WriteExact(g_wire, output.data(), output.size());
 }
 
 static bool OpenGray(const VideoGrayCmd &gc)
@@ -4995,6 +5038,20 @@ static int RunVideo()
 {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
+    OwnTheProtocolPipe();
+    {
+        // NS_STDOUT_NOISE=1: print into stdout on purpose, the way the
+        // thing that broke issue #61 did. With the protocol on its own
+        // handle this is a line in the log; without it, it is four bytes
+        // in the middle of the next reply. test_stdout_noise drives it.
+        char v[8] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_STDOUT_NOISE", v, sizeof(v));
+        if (got > 0 && got < sizeof(v) && v[0] == '1')
+        {
+            printf("[2026-09-13 00:00:00.000][NOISE] a stray line on stdout\n");
+            fflush(stdout);
+        }
+    }
     VideoHeader vh = {};
     // Accept both the legacy 56-byte header (magic 0x32563544, no full_w/full_h)
     // and the extended 64-byte header (magic 0x33563544, with full_w/full_h).
@@ -5098,7 +5155,7 @@ static int RunVideo()
             {
                 Log("[video] RNSZ rejected: invalid work size %ux%u", rc.width, rc.height);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0xBAD00005u, 0u, fh.pts };
-                if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
+                if (!WriteExact(g_wire, &bad, sizeof(bad))) return 10;
                 continue;
             }
             const bool rup = rc.full_w > 0 && rc.full_h > 0 &&
@@ -5108,7 +5165,7 @@ static int RunVideo()
             {
                 Log("[video] RNSZ rejected: invalid full size %ux%u", rc.full_w, rc.full_h);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0xBAD00005u, 0u, fh.pts };
-                if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
+                if (!WriteExact(g_wire, &bad, sizeof(bad))) return 10;
                 continue;
             }
             // Nothing but the parameters changed? Then nothing has to be
@@ -5135,7 +5192,7 @@ static int RunVideo()
                 VideoResizeAck ok = { RESIZE_ACK_MAGIC, 1u,
                                       static_cast<uint32_t>(NVSDK_NGX_Result_Success),
                                       0u, fh.pts };
-                if (!WriteExact(stdout, &ok, sizeof(ok))) return 10;
+                if (!WriteExact(g_wire, &ok, sizeof(ok))) return 10;
                 Log("[video] RNSZ: parameters only at %ux%u - the feature stays",
                     v.w, v.hgt);
                 continue;
@@ -5158,7 +5215,7 @@ static int RunVideo()
             {
                 Log("[video] RNSZ: resource creation failed at %ux%u", rc.width, rc.height);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0x7FFFFFFFu, 0u, fh.pts };
-                if (!WriteExact(stdout, &bad, sizeof(bad))) return 3;
+                if (!WriteExact(g_wire, &bad, sizeof(bad))) return 3;
             }
             NVSDK_NGX_Result rr = NVSDK_NGX_Result_Fail;
             if (!CreateFeature(rc.width, rc.height, flags, &rr,
@@ -5172,7 +5229,7 @@ static int RunVideo()
             }
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             g_force_next_frame = true;   // the new setting must be shown on the next frame
             Log("[video] RNSZ applied: feature ready at %ux%u", rc.width, rc.height);
             continue;
@@ -5216,7 +5273,7 @@ static int RunVideo()
                 }
             }
             VideoShmAck ack = { SHM_ACK_MAGIC, ok, 0u, 0u, sc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 4)
@@ -5233,7 +5290,7 @@ static int RunVideo()
                 ok = OpenPresent(wc.width, wc.height, wc.flags) ? 1u : 0u;
             if (ok) g_force_next_frame = true;   // a fresh window gets a picture at once
             VideoWindowAck ack = { WINDOW_ACK_MAGIC, ok, 0u, 0u, wc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 5)
@@ -5242,7 +5299,7 @@ static int RunVideo()
             // upscale it on the GPU.
             const uint32_t ok = OpenMotionScaler(mc.width, mc.height) ? 1u : 0u;
             VideoMotionAck ack = { MOTION_ACK_MAGIC, ok, 0u, 0u, mc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 6)
@@ -5258,7 +5315,7 @@ static int RunVideo()
                 ok = OpenDda(dc.width, dc.height) ? 1u : 0u;
             Log("[video] DDA1 %s (%ux%u)", ok ? "OK" : "FAIL", dc.width, dc.height);
             VideoDdaAck ack = { DDA_ACK_MAGIC, ok, 0u, 0u, dc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 7)
@@ -5274,7 +5331,7 @@ static int RunVideo()
                 ok = OpenGray(gc) ? 1u : 0u;
             Log("[video] GRAY %s (%ux%u)", ok ? "OK" : "FAIL", gc.width, gc.height);
             VideoGrayAck ack = { GRAY_ACK_MAGIC, ok, 0u, 0u, gc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 8)
@@ -5283,7 +5340,7 @@ static int RunVideo()
             const uint32_t ok = OpenOut(oc) ? 1u : 0u;
             Log("[video] OUTS %s (%ux%u)", ok ? "OK" : "FAIL", oc.width, oc.height);
             VideoOutAck ack = { OUTS_ACK_MAGIC, ok, 0u, 0u, oc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 9)
@@ -5300,7 +5357,7 @@ static int RunVideo()
                                 ok ? g_dda_h : 0u, g_wgc_cmd.pts };
             Log("[video] WGCW %s (%p -> %ux%u)", ok ? "OK" : "FAIL",
                 (void *)hwnd, ack.width, ack.height);
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         const double t_frame = PhaseNow();
@@ -5375,7 +5432,7 @@ static int RunVideo()
                 // paired with an empty OUT1 and wait for the screen to change,
                 // WITHOUT running NGX on an empty colour (evaluate on zero hangs).
                 VideoResultHeader empty = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
-                if (!WriteExact(stdout, &empty, sizeof(empty))) return 10;
+                if (!WriteExact(g_wire, &empty, sizeof(empty))) return 10;
                 ProfileFrameResult(v, fh, false, "idle");
                 if (phase_on) ++g_ph_idle;
                 PhaseReport((fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr);
@@ -5417,7 +5474,7 @@ static int RunVideo()
                     FollowCapturedWindow();
                     ReassertPresentTopmost();
                     VideoResultHeader idle = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
-                    if (!WriteExact(stdout, &idle, sizeof(idle))) return 10;
+                    if (!WriteExact(g_wire, &idle, sizeof(idle))) return 10;
                     ProfileFrameResult(v, fh, false, "idle");
                     if (phase_on) ++g_ph_idle;
                     PhaseReport(want_bypass);
@@ -5551,7 +5608,7 @@ static int RunVideo()
             else
             {
                 VideoResultHeader out = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
-                if (!WriteExact(stdout, &out, sizeof(out))) return 10;
+                if (!WriteExact(g_wire, &out, sizeof(out))) return 10;
             }
         }
         else

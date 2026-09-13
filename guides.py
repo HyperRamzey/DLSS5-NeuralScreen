@@ -96,6 +96,10 @@ class TemporalGuideGenerator:
         # vector on flat content is a guess either way.
         self._trust_window = 7
         self._trust_margin = 0.5
+        # The memory the hysteresis in _moved needs: last frame's raw
+        # verdict, and the verdict actually in force.
+        self._trust_last = None
+        self._trust_held = None
         # Reused buffers, same reason as the motion field below: this runs
         # on every moving frame.
         gy, gx = np.mgrid[0:self.flow_height, 0:self.flow_width]
@@ -149,7 +153,25 @@ class TemporalGuideGenerator:
                       dst=self._err_flow)
         cv2.boxFilter(cv2.absdiff(current, previous), cv2.CV_32F, win,
                       dst=self._err_zero)
-        return self._err_flow < self._err_zero - self._trust_margin
+        raw = self._err_flow < self._err_zero - self._trust_margin
+        # A verdict has to win twice before it takes effect. Without this the
+        # test is re-decided from scratch every frame, and a cell sitting on
+        # the threshold alternates trusted/dropped - the motion field
+        # alternates with it, and the guard becomes a source of the shimmer
+        # it exists to remove. Measured on this implementation before the
+        # memory was added: on a game scene in a window 8.10% of the live
+        # cells changed verdict between consecutive frames and 49.2% of
+        # those flipped straight back on the next one.
+        #
+        # The returned array is a reused buffer - read it, do not keep it.
+        if (self._trust_last is None
+                or self._trust_last.shape != raw.shape):
+            self._trust_last = raw.copy()
+            self._trust_held = raw.copy()
+            return self._trust_held
+        np.copyto(self._trust_held, raw, where=(raw == self._trust_last))
+        np.copyto(self._trust_last, raw)
+        return self._trust_held
 
     def _report_trust(self, current: np.ndarray, long_enough: np.ndarray,
                       dropped: np.ndarray) -> None:

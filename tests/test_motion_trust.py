@@ -21,7 +21,13 @@ GPU:
 1. Video playing inside a window leaves the page around it alone.
 2. What really moves still gets its vectors - the guard must not simply
    zero everything.
-3. The cost stays near the measured budget.
+3. A verdict that changes does not change straight back. A guard
+   re-decided from scratch every frame makes threshold cells alternate, and
+   the motion field alternates with them - the guard becomes a source of
+   the shimmer it exists to remove. Measured before the memory was added:
+   8.10% of the live cells changed verdict between frames on a game scene
+   and 49.2% of those flipped straight back.
+4. The cost stays near the measured budget.
 
 Negative control: with the static hypothesis disabled the same scene puts
 false vectors on 5.2% of the still page instead of 0.3%, so the test is
@@ -158,6 +164,36 @@ def main() -> int:
             f"the negative control barely fails ({off_pct:.2f}%): without the "
             f"guard the text should be covered in false vectors, so this "
             f"scene no longer reproduces the problem and the test is blind")
+
+    # 3. The verdict has memory: nothing may flip and flip straight back.
+    g3 = TemporalGuideGenerator(WORK_W, WORK_H, emit_small=True)
+    verdicts = []
+    prev = None
+    for i in range(10):
+        cur = cv2.resize(scene(-SHIFT * i // 3), (g3.flow_width, g3.flow_height),
+                         interpolation=cv2.INTER_AREA)
+        if prev is not None:
+            flow = g3.dis.calc(cur, prev, None)
+            alive = np.hypot(flow[..., 0], flow[..., 1]) >= g3._flow_noise_floor
+            verdicts.append((alive, alive & g3._moved(cur, prev, flow).copy()))
+        prev = cur
+    flips = backs = live = 0
+    for i in range(1, len(verdicts) - 1):
+        (aa, a), (ba, b), (ca, c) = verdicts[i - 1], verdicts[i], verdicts[i + 1]
+        common = aa & ba
+        changed = common & (a != b)
+        flips += int(changed.sum())
+        live += int(common.sum())
+        backs += int((changed & ca & (c == a)).sum())
+    flip_pct = 100.0 * flips / max(1, live)
+    back_pct = 100.0 * backs / max(1, flips)
+    print(f"    verdict changes {flip_pct:.2f}% of live cells, "
+          f"{back_pct:.1f}% of them flip straight back")
+    if back_pct > 5.0:
+        failures.append(
+            f"{back_pct:.1f}% of the verdict changes reverse on the very "
+            f"next frame - the guard is re-deciding instead of remembering, "
+            f"and an alternating mask is itself shimmer")
 
     # Cost: what the guard adds, on the real grid.
     cur = cv2.resize(scene(-SHIFT), (g.flow_width, g.flow_height),

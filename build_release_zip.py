@@ -270,9 +270,36 @@ for want in (75, 86, 89, 120):
 # The user can verify which build they have without asking anyone.
 commit = subprocess.check_output(
     ["git", "rev-parse", "HEAD"], text=True).strip()
+# One tag, one set of bytes. The archive is rebuilt after every commit so the
+# static checks can compare it against HEAD - which means a zip built today
+# still carries yesterday's version number, passes every gate, and would be
+# accepted by a release that was tagged a dozen commits ago. Nothing caught
+# that: autocheck compares the zip with HEAD, verify_github compares it with
+# what is published, and neither has ever looked at the tag. So the manifest
+# says which it is, and the build says it out loud.
+try:
+    tagged = subprocess.check_output(
+        ["git", "rev-parse", "v" + VERSION + "^{commit}"], text=True,
+        stderr=subprocess.DEVNULL).strip()
+except Exception:
+    tagged = ""
+if not tagged:
+    tag_line = "tag: v" + VERSION + " does not exist yet - release candidate\n"
+elif tagged == commit:
+    tag_line = "tag: v" + VERSION + "\n"
+else:
+    ahead = subprocess.check_output(
+        ["git", "rev-list", "--count", "v" + VERSION + "..HEAD"],
+        text=True).strip()
+    tag_line = ("tag: NOT v" + VERSION + " - " + ahead
+                + " commits past it (tagged " + tagged[:9] + ")\n")
+    print("  NOTE: this archive is " + ahead + " commits past v" + VERSION
+          + ". It is a development build - do NOT upload it to that tag. "
+            "Bump the version, build, then tag.")
 version_txt = (
     f"NeuralScreen {VERSION}\n"
     f"commit: {commit}\n"
+    + tag_line +
     f"runtime: nvngx_dlssnr.dll sha256 {dll_sha}\n"
     f"kernel archs: {', '.join(sorted(SM_NAMES.get(a, f'sm_{a}') for a in archs))}\n"
     f"targets: {TARGET_ARCHS}\n"

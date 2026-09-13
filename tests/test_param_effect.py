@@ -56,7 +56,7 @@ SHADOW = 48           # luma below this is "the shadows", in 0..255
 
 # The defaults every case starts from - the shipped Natural, minus the fields
 # the menu does not expose.
-DEFAULTS = dict(profile=0, preset=0, style=1, auto_mask=0, ui_correction=0,
+DEFAULTS = dict(profile=0, preset=0, style=1, auto_mask=1, ui_correction=0,
                 intensity=1.0, local_tone=1.0, local_structure=1.0,
                 skin_structure=-1.0)
 
@@ -68,8 +68,9 @@ LIVE = (
     ("local_tone", dict(local_tone=0.0), dict(local_tone=1.5), {}),
     ("local_structure", dict(local_structure=0.0),
      dict(local_structure=1.5), {}),
-    # Without the auto mask this one is inert, and a test that swept it at
-    # auto_mask=0 would call a working parameter dead.
+    # Inert without the auto mask - which is one of the reasons the mask is
+    # on in every profile now. The explicit extra stays: this test must not
+    # depend on what the shipped defaults happen to be.
     ("skin_structure", dict(skin_structure=-1.0), dict(skin_structure=2.0),
      dict(auto_mask=1)),
     ("auto_mask", dict(auto_mask=0), dict(auto_mask=1), {}),
@@ -263,6 +264,12 @@ def main() -> int:
 # changes - and this is with Boost off, so it is the network itself and not
 # our composite. That is the shimmer users report, and A3 on the roadmap is
 # where it gets treated rather than measured.
+#
+# Those two rows were measured with the auto mask off, which is what the
+# profiles carried at the time. With it on - the default since step 3 - the
+# plateau is 0.95 and 1.08, and the shadows 1.10 and 1.15. The mask is
+# worth between a tenth and a quarter of the trembling, measured on three
+# real frames; the numbers are in settings_io beside the profiles.
 #
 # The ceilings sit above the plateau with enough room for another machine's
 # noise and little enough to catch a doubling.

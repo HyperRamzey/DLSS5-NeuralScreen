@@ -145,10 +145,32 @@ CHANNEL_LABEL = "@perseval_BLR"
 # Extreme's local_structure comes down from 2.00 to the new 1.50 ceiling,
 # which is the one real change here: measured, that is a detail metric of
 # -14.4% against -13.5%, about a percent of the picture.
+#
+# The auto mask is on in every profile. Measured here on three real frames,
+# a frozen input so anything moving between consecutive outputs is the
+# network trembling rather than the picture changing:
+#
+#   source  mask   wiggle  shadows  peak   edges  detail  ms/frame
+#   text       0    0.209    0.167    10   1.110   0.965      5.26
+#   text       1    0.158    0.131    10   1.096   0.932      5.15
+#   film       0    0.363    0.207     9   0.971   0.666      5.26
+#   film       1    0.314    0.176     7   0.959   0.669      5.30
+#   game       0    0.335    0.304     8   1.225   1.176      5.28
+#   game       1    0.308    0.286     6   1.213   1.157      5.26
+#
+# It damps the trembling by 8-24% and the shadows by 6-22%, takes the peaks
+# down (9->7, 8->6), and costs nothing in time - the per-frame figures are
+# the same within noise. It is not free: on text it costs 3.4% of the fine
+# detail. Text is also where it damps the most, and shimmering text is what
+# people report, so that is the trade taken.
+#
+# The other reason is arithmetic: skin_structure is inert without it. With
+# the mask off in two of the four profiles, the fourth slider in the menu
+# did nothing at all in those two.
 PROFILES = {
-    "Faithful": dict(style=0, auto_mask=0,
+    "Faithful": dict(style=0, auto_mask=1,
                      intensity=0.70, local_tone=0.25, local_structure=0.75, skin_structure=-1.0),
-    "Natural": dict(style=1, auto_mask=0,
+    "Natural": dict(style=1, auto_mask=1,
                     intensity=1.00, local_tone=0.50, local_structure=1.00, skin_structure=-1.0),
     "Strong / Cinematic": dict(style=2, auto_mask=1,
                                intensity=1.00, local_tone=0.90, local_structure=1.50, skin_structure=1.0),

@@ -86,6 +86,14 @@ class TemporalGuideGenerator:
         # vectors where something moved. A uniform scroll keeps 79.2%, and
         # the fifth it drops sits on flat content - texture 0.7 against 8.1
         # for what it keeps - where a zero vector carries away nothing.
+        #
+        # On a real desktop the share is much higher than any of those
+        # cases: 18-45% of the surviving vectors go, and briefly up to 94%.
+        # That is not the guard misfiring. Over 29 samples of a live
+        # session the texture under the dropped cells was 4.5-15.3 against
+        # 10.1-33.3 under the kept ones - lower every single time, usually
+        # by a factor of two and a half. A desktop is mostly flat, and a
+        # vector on flat content is a guess either way.
         self._trust_window = 7
         self._trust_margin = 0.5
         # Reused buffers, same reason as the motion field below: this runs
@@ -98,12 +106,18 @@ class TemporalGuideGenerator:
         self._warped = np.empty((self.flow_height, self.flow_width), dtype=np.uint8)
         self._err_flow = np.empty((self.flow_height, self.flow_width), dtype=np.float32)
         self._err_zero = np.empty((self.flow_height, self.flow_width), dtype=np.float32)
-        # What the guard is actually doing, for a live check. Printed at most
-        # once every few seconds and only while something is moving: a
-        # per-frame line would be 60 lines a second of nothing.
+        # What the guard is actually doing, for a live check and for a log
+        # someone attaches to a ticket. One line per half minute, and only
+        # while something is moving. Costs 0.116 ms per moving frame with
+        # the texture half sampled - 0.7% of a 17 ms frame, and it is what
+        # answered the question below.
         self._trust_frames = 0
         self._trust_alive = 0
         self._trust_dropped = 0
+        self._trust_kept = 0
+        self._trust_tex_gone_n = 0
+        self._trust_tex_gone = 0.0
+        self._trust_tex_kept = 0.0
         self._trust_said = 0.0
 
     @property
@@ -137,25 +151,59 @@ class TemporalGuideGenerator:
                       dst=self._err_zero)
         return self._err_flow < self._err_zero - self._trust_margin
 
-    def _report_trust(self, long_enough: np.ndarray, dropped: np.ndarray) -> None:
-        """Say how much the guard is throwing away, every few seconds."""
+    def _report_trust(self, current: np.ndarray, long_enough: np.ndarray,
+                      dropped: np.ndarray) -> None:
+        """Say how much the guard is throwing away, every few seconds.
+
+        The share on its own does not say whether that is bad: on a desktop
+        most of the screen is flat, and a vector dropped on flat content
+        carries nothing away. So the texture under the dropped cells is
+        reported next to it - local standard deviation over the same window
+        the test uses. Low against the kept cells means the guard is
+        clearing out exactly the cells where any vector is a guess.
+        """
         alive = int(long_enough.sum())
         if alive == 0:
             return
+        gone = long_enough & dropped
         self._trust_frames += 1
         self._trust_alive += alive
-        self._trust_dropped += int((long_enough & dropped).sum())
+        self._trust_dropped += int(gone.sum())
+        # The texture half is sampled, not counted every frame: measured at
+        # 0.474 ms it costs almost three times the guard it is reporting on,
+        # and one moving frame in eight is plenty for a number that is read
+        # once every half minute.
+        if self._trust_frames % 8 == 0:
+            kept = long_enough & ~dropped
+            f = current.astype(np.float32)
+            win = (self._trust_window, self._trust_window)
+            mean = cv2.boxFilter(f, cv2.CV_32F, win)
+            sd = cv2.sqrt(np.maximum(cv2.boxFilter(f * f, cv2.CV_32F, win)
+                                     - mean * mean, 0.0))
+            self._trust_tex_gone += float(sd[gone].sum())
+            self._trust_tex_kept += float(sd[kept].sum())
+            self._trust_tex_gone_n += int(gone.sum())
+            self._trust_kept += int(kept.sum())
         now = time.monotonic()
         if self._trust_said == 0.0:
             self._trust_said = now
             return
-        if now - self._trust_said < 5.0:
+        # Half a minute, not five seconds: this is a health line, not a
+        # trace, and on a moving desktop the shorter period filled the log
+        # with twelve lines a minute.
+        if now - self._trust_said < 30.0:
             return
         share = 100.0 * self._trust_dropped / max(1, self._trust_alive)
+        tex_gone = self._trust_tex_gone / max(1, self._trust_tex_gone_n)
+        tex_kept = self._trust_tex_kept / max(1, self._trust_kept)
         print(f"[guides] motion trust: {share:.1f}% of the vectors dropped as "
-              f"'did not move', over {self._trust_frames} moving frames")
+              f"'did not move' over {self._trust_frames} moving frames; "
+              f"texture under them {tex_gone:.1f} against {tex_kept:.1f} "
+              f"under the ones kept")
         self._trust_said = now
         self._trust_frames = self._trust_alive = self._trust_dropped = 0
+        self._trust_kept = self._trust_tex_gone_n = 0
+        self._trust_tex_gone = self._trust_tex_kept = 0.0
 
     def zero_guide(self) -> GuideFrame:
         """Fallback for a persistent process() failure: zero motion, reset=True.
@@ -213,7 +261,7 @@ class TemporalGuideGenerator:
                               ~self._moved(current, self.previous_gray,
                                            cur_to_prev),
                               out=drop)
-                self._report_trust(mag >= self._flow_noise_floor, drop)
+                self._report_trust(current, mag >= self._flow_noise_floor, drop)
                 cur_to_prev[drop] = 0.0
                 # Scale BEFORE the upscale: 115k elements instead of 3M, and
                 # exactly equivalent because resize is linear (verified: the

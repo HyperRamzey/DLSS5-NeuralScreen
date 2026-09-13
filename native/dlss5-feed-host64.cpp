@@ -3840,12 +3840,33 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
     frame->GetDesc(&fd);
     if (out_w != nullptr) *out_w = fd.Width;
     if (out_h != nullptr) *out_h = fd.Height;
+    // R10G10B10A2 belongs here too. An output set to 10 bits per colour can
+    // hand the duplicated desktop back in it, and refusing the format means
+    // refusing every frame: nothing is ever captured again and the picture
+    // stops where it was. That is the shape of "it immediately turns into a
+    // black screen the moment I switch to 10bpc" (#58) - and before this
+    // check existed the same frame went through with an SRV hardcoded to
+    // BGRA, which is the other half of that report.
+    //
+    // Nothing downstream needs to change: the SRV takes the source's own
+    // format, and a UNORM format of any width reads as the same normalised
+    // floats in the capture shader, which writes into an 8-bit destination
+    // either way. The extra two bits per channel are lost there - the
+    // network is 8-bit - but a slightly flatter gradient beats no picture.
     if (fd.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
+        fd.Format != DXGI_FORMAT_R10G10B10A2_UNORM &&
         fd.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
     { Log("[hdr] unsupported capture format %u", fd.Format); return StageResult::Failed; }
     if (g_dda_shared == nullptr)
     {
         g_hdr_capture = fd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        // The format goes into the log every time the capture opens, not
+        // only when it is refused: the last report needed the reporter to
+        // find "10bpc" by trying settings until the symptom moved.
+        Log("[cap] capture format %u (%s)", (unsigned)fd.Format,
+            fd.Format == DXGI_FORMAT_B8G8R8A8_UNORM ? "BGRA8" :
+            fd.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? "RGB10A2 - a 10-bit output" :
+            "FP16");
         Log("[hdr] capture=%s; neural processing=SDR proxy; export=SDR",
             g_hdr_capture ? "FP16 scRGB" : "SDR");
         D3D11_TEXTURE2D_DESC sd = {};

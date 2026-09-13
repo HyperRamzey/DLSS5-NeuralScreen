@@ -96,11 +96,12 @@ running on it, red when it is not.
   brightened automatically so shadows keep their detail.
 - **Before / after wipe** — leaves the left part of the screen unprocessed so
   you can see what the effect is doing. Back to 0 when done.
-- **Boost** — off by default. With it on, the network runs at a reduced
-  resolution and a slider appears to choose which: measured on a 5070 Ti at
-  4K, **45.7 → 72.6 frames** at the default step and **83.4** at the lowest.
+- **Boost** — on by default. The network runs at a reduced resolution and a
+  slider under the switch chooses which: measured on a 5070 Ti at 4K,
+  **45.7 → 72.6 frames** at the default step and **83.4** at the lowest.
   The picture stays sharp — the network's result is composed onto your
-  original frame, so text and edges keep full resolution. Try it and look.
+  original frame, so text and edges keep full resolution. Turn it off to
+  compare.
 
 The interface speaks **12 languages** — English, Russian, French, German,
 Spanish, Italian, Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.

@@ -10,11 +10,33 @@ shipped one:
   * **direct reconstruction** - show what the network produced, stretched.
     A stronger, more obviously "processed" picture, and a softer one.
 
-Which is better is a question about pictures, not about code, and it has
-never been measured here on real content. So the switch has to be cheap
-enough to flip while looking at something: it travels in the resize flags
-(RESIZE_FLAG_NR_DIRECT) and must cost no NGX feature, exactly like the four
-sliders since C1.
+Which is better is a question about pictures, not about code, so the switch
+had to be cheap enough to flip while looking at something: it travels in the
+resize flags (RESIZE_FLAG_NR_DIRECT) and costs no NGX feature, exactly like
+the four sliders since C1.
+
+**It has now been measured, and residual wins on all three content types.**
+Boost 832x468 -> 1280x720, profile Natural, 1:1 crops of a browser page, a
+video frame and a game scene. Ratios are against the native input:
+
+    source  composite   deviation   edges  detail
+    text    residual         1.30   1.070   0.959
+    text    direct           2.21   0.782   0.211
+    film    residual        22.45   1.020   0.884
+    film    direct          23.01   0.872   0.180
+    game    residual         8.98   1.158   1.051
+    game    direct           9.40   0.973   0.361
+
+"detail" is the variance of the Laplacian - grain, texture, small type.
+Direct reconstruction keeps a fifth to a third of it. It is not a stronger
+picture in exchange, either: the deviation from native is the same within a
+few tenths, so the extra is softness, not effect. On the game scene residual
+even comes out above the native frame on both measures (1.158 / 1.051),
+which is what the composite is for.
+
+So: no menu control, and this stays a debug switch. The test keeps the
+switch working so the question can be reopened cheaply - at a lower Boost
+step, say, where the network's own output carries relatively more.
 
 What this pins:
 

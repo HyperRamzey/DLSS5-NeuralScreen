@@ -708,14 +708,17 @@ class OverlayMenu:
                    bool(self.state.get("rec_indicator", True)))
 
             section(s["sec_behaviour"], "app")
-            # Idle screens: no new frame arrives (the desktop did not change,
-            # the window did not redraw) - the network waits instead of
-            # chewing the same picture again. No visual price, a real one on
-            # an idle desktop. Set once and forgotten, which is why it lives
-            # here and not on the main page.
-            toggle("skip_static", s.get("skip_static", "Skip static frames"),
-                   bool(self.state.get("skip_static", True)),
-                   hint=s.get("skip_static_hint", ""))
+            # The static-frame skip is OFF and its switch is not drawn. The
+            # feature is suspected in the window-mode trouble and is on its
+            # way out (user, 13.09); the flag still works from config.json
+            # until it goes, so it can be measured rather than argued about.
+            # Nothing else here is hidden - do not grow the habit.
+            _skip_hidden = True
+            if not _skip_hidden:
+                toggle("skip_static",
+                       s.get("skip_static", "Skip static frames"),
+                       bool(self.state.get("skip_static", False)),
+                       hint=s.get("skip_static_hint", ""))
             toggle("open_on_start", s["open_on_start"],
                    bool(self.state.get("open_on_start")))
             toggle("autostart", s.get("autostart", "Autostart with Windows"),

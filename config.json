@@ -1,5 +1,5 @@
 {
-  "monitor": 0,
+  "monitor": "\\\\.\\DISPLAY1",
   "width": 3840,
   "height": 2160,
   "fullscreen": true,
@@ -7,10 +7,10 @@
   "work_scale": 0.65,
   "lang": "en",
   "profile": "Natural",
-  "intensity": null,
-  "local_tone": null,
-  "local_structure": null,
-  "skin_structure": null,
+  "intensity": 1.0,
+  "local_tone": 0.5,
+  "local_structure": 1.0,
+  "skin_structure": -1.0,
   "worker_present": true,
   "motion_on_gpu": true,
   "capture_in_worker": true,
@@ -24,7 +24,14 @@
   "record_audio": true,
   "nr_small": true,
   "spout": false,
-  "skip_static": true,
+  "skip_static": false,
   "menu_height": null,
-  "theme": "light"
+  "theme": "light",
+  "style": 1,
+  "rec_indicator": true,
+  "screenshot_dir": "",
+  "hdr": false,
+  "gpu": 0,
+  "gpu_no_nr": [],
+  "presets": {}
 }

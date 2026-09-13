@@ -610,7 +610,7 @@ def main() -> int:
                            no_color=bool(st.dda_mode),
                            bypass=bypass,
                            split=st.split_pos,
-                           skip_static=bool(st.cfg.get("skip_static", True)))
+                           skip_static=bool(st.cfg.get("skip_static", False)))
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1

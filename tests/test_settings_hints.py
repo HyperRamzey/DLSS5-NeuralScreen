@@ -183,7 +183,7 @@ def main() -> int:
     # a better place.
     expected = {"main/split",
                 "settings/monitor", "settings/gpu", "settings/hdr",
-                "settings/spout", "settings/skip_static"}
+                "settings/spout"}
     lost = sorted(k for k in expected if k not in seen_keys)
     if lost:
         failures.append(f"these hinted controls were not laid out: {lost} - "

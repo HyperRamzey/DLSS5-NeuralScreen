@@ -826,10 +826,24 @@ def main() -> int:
                     # WGCW works (fallback config) - without the call the HUD
                     # and the menu stay invisible forever in that setup.
                     st.display.reveal()
+                    # And the layer has to be colour-keyed here, because
+                    # draw_overlay() clears it with CHROMA_KEY. In this
+                    # configuration enable_present() failed, so set_hud_only
+                    # was last called with False - an OPAQUE window - and the
+                    # clear painted the whole screen magenta with the menu on
+                    # top of it. Nothing else fills this layer in this branch:
+                    # no frame reaches Python at all, which is why the desktop
+                    # underneath has to show through (audit I1).
+                    st.display.set_hud_only(True)
                     st.display.draw_overlay()
                 else:
                     st.display.exit_switch_mode()  # the next frame replaces the overlay
                     st.display.reveal()  # a real frame exchange happened
+                    # The other half of the same invariant: this branch paints
+                    # the layer with a real frame, so it must NOT be
+                    # colour-keyed - magenta pixels inside the picture would
+                    # punch holes in it.
+                    st.display.set_hud_only(False)
                     st.display.show(st.output_rgba)
                     if st.pending_shot is not None:
                         commands.save_screenshot(st, st.pending_shot, st.output_rgba)

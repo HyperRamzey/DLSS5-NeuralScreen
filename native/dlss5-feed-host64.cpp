@@ -1834,7 +1834,11 @@ static LRESULT CALLBACK PresentWndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_NCHITTEST:     return HTTRANSPARENT;
     case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
     case WM_ERASEBKGND:    return 1;
-    case WM_CLOSE:         ShowWindow(w, SW_HIDE); return 0;
+    // The window belongs to THIS thread and only this thread can destroy
+    // it. It used to hide instead, which left ClosePresent with nothing
+    // that could ever take the window down - see ClosePresent (audit).
+    case WM_CLOSE:         DestroyWindow(w); return 0;
+    case WM_DESTROY:       PostQuitMessage(0); return 0;
     default: break;
     }
     return DefWindowProcW(w, m, wp, lp);
@@ -1901,15 +1905,33 @@ static DWORD WINAPI PresentWindowThread(LPVOID)
 static void ClosePresent()
 {
     if (g_present_swap != nullptr) { g_present_swap->Release(); g_present_swap = nullptr; }
-    if (g_present_tid != 0) PostThreadMessageW(g_present_tid, WM_QUIT, 0, 0);
-    if (g_present_hwnd != nullptr) { PostMessageW(g_present_hwnd, WM_CLOSE, 0, 0); }
+    // Only the thread that created the window can destroy it. This used to
+    // post WM_QUIT to the thread FIRST, which ended the message loop before
+    // the WM_CLOSE behind it could be dispatched, and then called
+    // DestroyWindow from here - which fails across threads, silently. The
+    // handle was nulled anyway, so a hidden, topmost, click-through window
+    // survived with nothing left able to destroy it: one per mode switch.
+    // And FindWindowW(L"NeuralScreenPresent", L"NeuralScreen") - how the HUD
+    // is kept above the picture - would happily find a dead one (audit).
+    //
+    // So: ask the window to close, and let its own thread do the work. Its
+    // WM_CLOSE destroys, WM_DESTROY posts the quit, the loop ends.
+    if (g_present_hwnd != nullptr) PostMessageW(g_present_hwnd, WM_CLOSE, 0, 0);
     if (g_present_thread != nullptr)
     {
-        WaitForSingleObject(g_present_thread, 2000);
+        if (WaitForSingleObject(g_present_thread, 2000) != WAIT_OBJECT_0)
+        {
+            // It never got there - the window may not exist yet, or the
+            // thread is stuck. End the loop the blunt way, and say so:
+            // a window left behind here is exactly what this avoids.
+            Log("[present] the window thread did not exit on WM_CLOSE");
+            if (g_present_tid != 0) PostThreadMessageW(g_present_tid, WM_QUIT, 0, 0);
+            WaitForSingleObject(g_present_thread, 1000);
+        }
         CloseHandle(g_present_thread);
         g_present_thread = nullptr;
     }
-    if (g_present_hwnd != nullptr) { DestroyWindow(g_present_hwnd); g_present_hwnd = nullptr; }
+    g_present_hwnd = nullptr;
     g_present_tid = 0;
     g_present_w = g_present_h = 0;
     g_present_state = 0;

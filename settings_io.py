@@ -642,7 +642,27 @@ def _worker_idle(st) -> bool:
 def menu_payload(st) -> dict:
     """The current state for the menu - a single source of truth."""
     refresh_gpu_ok(st)
-    wins = list_capturable_windows()
+    # The list is FROZEN while the page that shows it is open, and sorted by
+    # title rather than by z-order.
+    #
+    # EnumWindows answers in z-order, this payload is rebuilt on every frame
+    # the menu is up, and z-order changes whenever anything takes the focus -
+    # including the window the pointer is travelling towards. So the rows
+    # re-ordered under the cursor between the hover and the click, and the
+    # click landed on whatever had moved into that position: picked
+    # WireGuard, got Claude (user, 13.09).
+    #
+    # Frozen means frozen: a window that appears or closes while the list is
+    # up does not shuffle the rows either. Closing the page and opening it
+    # again takes a fresh reading - which is the only way to take one, and
+    # enough: the picker is a few clicks, not a live monitor.
+    _menu = getattr(getattr(st, "display", None), "menu", None)
+    if getattr(_menu, "page", "") == "windows" and getattr(st, "window_list", None):
+        wins = st.window_list
+    else:
+        wins = sorted(list_capturable_windows(),
+                      key=lambda hw: (str(hw[1]).casefold(), hw[0]))
+        st.window_list = wins
     # The devicename is the stable identity: the menu hands it back
     # on a switch, so a reorder cannot redirect the capture.
     monitor_entries = [f"{i}: {w}x{h} ({dev})"

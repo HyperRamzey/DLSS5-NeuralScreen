@@ -510,6 +510,8 @@ def bring_up(st) -> None:
     st.dda_attempted = False     # already tried for the current worker (do not spam)
     st.window_hwnd = None        # WGCW target; None = the whole desktop (DDA1)
     st.last_foreground = 0       # the last focused window that was not ours
+    #: The window list the picker shows, held still while that page is open.
+    st.window_list: list = []
     st.follow_pos = None         # where the overlay currently sits (window mode)
     st.follow_resize = None      # a pending size change, waiting to settle
     # A pending MONITOR size change, same idea. follow_monitor assigns it on

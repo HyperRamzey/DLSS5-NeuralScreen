@@ -257,6 +257,7 @@ class _Pipeline:
         "hotkeys",
         "lang",
         "last_foreground",
+        "window_list",
         "last_restart",
         "mon_h",
         "mon_w",

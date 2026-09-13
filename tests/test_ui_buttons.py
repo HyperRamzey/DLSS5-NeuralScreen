@@ -281,6 +281,46 @@ def main() -> int:
                 failures.append(f"style Cinematic: expected [('style', '2')], "
                                 f"got {out}")
 
+    # 3a3. "modified - revert" appears only when the live values have left
+    #      the profile they came from, and reverting is picking the same
+    #      profile again - which is what replaces every parameter with the
+    #      profile's own.
+    menu.page = "main"
+    menu.set_state({"profile": "Natural",
+                    "param_defaults": {"intensity": 1.0, "local_tone": 0.5,
+                                       "local_structure": 1.0,
+                                       "skin_structure": -1.0, "style": 1},
+                    "params": {"intensity": 1.0, "local_tone": 0.5,
+                               "local_structure": 1.0, "skin_structure": -1.0},
+                    "style": 1})
+    menu.layout(3840, 2160)
+    if find(menu, "button", "revert_profile") is not None:
+        failures.append("revert is offered while the profile is untouched")
+    menu.set_state({"params": {"intensity": 1.0, "local_tone": 1.2,
+                               "local_structure": 1.0, "skin_structure": -1.0}})
+    menu.layout(3840, 2160)
+    paint(menu)
+    rev = find(menu, "button", "revert_profile")
+    if rev is None:
+        failures.append("a moved slider must offer revert")
+    else:
+        out = click(menu, rev)
+        if out != [("profile", "Natural")]:
+            failures.append(f"revert: expected [('profile', 'Natural')], "
+                            f"got {out}")
+    # The model is part of the profile too.
+    menu.set_state({"params": {"intensity": 1.0, "local_tone": 0.5,
+                               "local_structure": 1.0, "skin_structure": -1.0},
+                    "style": 2})
+    menu.layout(3840, 2160)
+    if find(menu, "button", "revert_profile") is None:
+        failures.append("a changed model must offer revert too")
+    menu.set_state({"style": 1})
+    # Back to a painted layout: the source segment below reads the cells the
+    # drawer fills, and the state changes above invalidated them.
+    menu.layout(3840, 2160)
+    paint(menu)
+
     # 3b. The source segment carries what the Actions buttons used to: the
     #     left cell returns to the whole screen (nothing to do when it is
     #     already there), the right cell opens the window list.

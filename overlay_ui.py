@@ -865,6 +865,19 @@ class OverlayMenu:
             section(s["sec_effect"])
             choice("profile", s["profile"], str(self.state.get("profile", "")),
                    list(self.state.get("profiles") or []))
+            # "modified - revert", and only when it is true. A profile is a
+            # starting point, and until now the menu gave no way to tell
+            # whether you were still on one: the tick under each slider says
+            # where the profile put THAT value, and nothing said "you have
+            # moved four of them". Reverting is picking the same profile
+            # again, which is exactly what the command already does.
+            if self._profile_modified():
+                items.append(Item("button", "revert_profile",
+                                  pygame.Rect(pad, cy, inner_w,
+                                              self._u(SMALL_SIZE) + self._u(6)),
+                                  extra={"label": s["profile_modified"],
+                                         "flat": True}))
+                cy += self._u(SMALL_SIZE) + self._u(6) + self._u(4)
             # Called "Model" in the interface and `style` in the code: the
             # three values really do select three different networks, and
             # "style" next to the visual styles of a picture reads as a look
@@ -1361,6 +1374,28 @@ class OverlayMenu:
             return [("capture", None)]
         return [("button", key)]
 
+    def _profile_modified(self) -> bool:
+        """Do the live values still match the profile they came from?
+
+        `param_defaults` is the chosen profile's own numbers, sent with every
+        payload. Floats are compared with a tolerance a slider cannot land
+        inside: the sliders step in hundredths, and a saved config comes back
+        through float() twice.
+        """
+        defaults = self.state.get("param_defaults") or {}
+        if not defaults:
+            return False
+        params = self.state.get("params") or {}
+        for key in PARAM_KEYS:
+            if key not in defaults:
+                continue
+            if abs(float(params.get(key, 0.0))
+                   - float(defaults[key])) > 0.005:
+                return True
+        if "style" in defaults:
+            return int(self.state.get("style", 1)) != int(defaults["style"])
+        return False
+
     def _button_click(self, key: str) -> list[tuple]:
         """A plain button. The windows button opens the window list page,
         the fullscreen button returns the capture to the whole screen (the
@@ -1372,6 +1407,8 @@ class OverlayMenu:
             return [("capture", None)]
         if key == "fullscreen":
             return [("button", "window_mode")]
+        if key == "revert_profile":
+            return [("profile", str(self.state.get("profile", "")))]
         return [("button", key)]
 
     def _pick(self, key: str, value: str) -> list[tuple]:
@@ -2167,6 +2204,16 @@ class OverlayMenu:
     def _draw_button(self, surface, item: Item, s: dict) -> None:
         hot = self.hover == f"button:{item.key}"
         disabled = bool(item.extra.get("disabled"))
+        if item.extra.get("flat"):
+            # Text only, right-aligned, in the accent: this is a link in
+            # weight, and a bordered box here would compete with the two
+            # real buttons under the sliders.
+            img = self._clip(self._small_font,
+                             item.extra.get("label", item.key),
+                             _rgb(self.c["accent"]), item.rect.w)
+            surface.blit(img, (item.rect.right - img.get_width(),
+                               item.rect.centery - img.get_height() // 2))
+            return
         pygame.draw.rect(surface, _rgb(self.c["surface"]), item.rect,
                          border_radius=self._u(RADIUS // 2))
         pygame.draw.rect(surface,

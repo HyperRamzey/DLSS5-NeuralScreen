@@ -671,7 +671,7 @@ def menu_payload(st) -> dict:
             (PROFILES.get(st.cfg["profile"])
              or st.presets.get(st.cfg["profile"]) or {}).items()
             if k in ("intensity", "local_tone", "local_structure",
-                     "skin_structure")},
+                     "skin_structure", "style")},
         "lang": st.lang,
         "recording": st.recorder is not None,
         "work_size": f"{st.work_w}x{st.work_h}",

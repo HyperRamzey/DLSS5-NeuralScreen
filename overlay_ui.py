@@ -573,10 +573,9 @@ class OverlayMenu:
                                      "labels": list(labels or options)}))
             cy += seg_h + gap
 
-        def toggle(key: str, label: str, on: bool, hint: str = "",
-                   key_text: str = "") -> None:
+        def toggle(key: str, label: str, on: bool, hint: str = "") -> None:
             nonlocal cy
-            extra = {"label": label, "key_text": key_text}
+            extra = {"label": label}
             hint_h = 0
             if hint:
                 extra["hint"] = hint
@@ -739,9 +738,12 @@ class OverlayMenu:
         else:
             section(s["sec_processing"])
             nr_on = bool(self.state.get("nr"))
-            hk_nr = self.hotkeys.get("toggle", "")
-            toggle("nr", s["nr_on"] if nr_on else s["nr_off"], nr_on,
-                   key_text=hk_nr)
+            # No key name here. The main page used to print "Num1" beside the
+            # switch, and every control that had a key printed it - furniture
+            # nobody reads twice, in the one place where the picture is being
+            # judged. The keys live on the settings page, which is where you
+            # go when you want to know or change them (user, 13.09).
+            toggle("nr", s["nr_on"] if nr_on else s["nr_off"], nr_on)
 
             # Boost: the network runs at a reduced resolution and the detail
             # comes back off the native frame (the matched residual
@@ -1723,25 +1725,12 @@ class OverlayMenu:
         text = item.extra.get("label")
         if not text:
             text = s["nr_on"] if on else s["nr_off"]
-        # The key caption is a reading, not language: it takes the
-        # monospaced face and sits after the label, so "Num1" here matches
-        # the key fields on the settings page.
-        key_text = item.extra.get("key_text") or ""
-        key_img = (self._mono.render(key_text, True, _rgb(self.c["muted"]))
-                   if key_text else None)
         room = item.rect.right - box.right - self._u(12)
-        if key_img is not None:
-            room -= key_img.get_width() + self._u(12)
         label = self._clip(self._font, text,
                            _rgb(self.c["text"] if on else self.c["muted"]),
                            room)
         surface.blit(label, (box.right + self._u(12),
                              box.y + (box.h - label.get_height()) // 2))
-        if key_img is not None:
-            surface.blit(key_img,
-                         (box.right + self._u(12) + label.get_width()
-                          + self._u(12),
-                          box.y + (box.h - key_img.get_height()) // 2))
         if hint:
             y = box.bottom + self._u(8)
             for line in str(hint).split("\n"):

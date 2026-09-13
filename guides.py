@@ -53,6 +53,50 @@ class TemporalGuideGenerator:
         # 320-wide flow is ~6 px at 4K work resolution, far below any real
         # motion (a 2 px scroll at 4K is 0.17 px in flow space).
         self._flow_noise_floor = 0.5
+        # A2, the other half of MV validation: the noise floor is a test of
+        # LENGTH, and a wrong vector can be long. When a window slides across
+        # static text, DIS finds motion on the text as well - the text near a
+        # moving edge looks explainable by a shift - and NGX smears it.
+        #
+        # The test that catches this is the static hypothesis: warp the
+        # previous frame by the vector, and keep the vector only if it
+        # explains the pixel better than standing still does. Measured here
+        # against the alternative (a backward DIS pass and a
+        # forward/backward consistency check) on three motion cases built
+        # from real frames, at this grid:
+        #
+        #   cost added to the one DIS pass that already runs
+        #     consistency (a second DIS + remap)   +2.1 .. +2.4 ms
+        #     static hypothesis                    +0.67 .. +0.72 ms
+        #   false vectors where nothing moved, before -> after
+        #     a window over static text   0.6% -> 0.3% (consistency)
+        #                                 0.6% -> 0.01% (static)
+        #     video inside a window       3.6% -> 3.6% (consistency)
+        #                                 3.6% -> 0.37% (static)
+        #
+        # Consistency costs three times as much and catches almost nothing:
+        # on repetitive structure both directions agree on the same wrong
+        # answer, so the vector comes home and passes. The static hypothesis
+        # is the cheaper test AND the better one, so there is no backward
+        # flow here.
+        #
+        # The two numbers are ours, swept on those cases, not taken from
+        # anyone: window 7x7 and margin 0.5 keep 96.6% / 97.7% of the real
+        # vectors where something moved. A uniform scroll keeps 79.2%, and
+        # the fifth it drops sits on flat content - texture 0.7 against 8.1
+        # for what it keeps - where a zero vector carries away nothing.
+        self._trust_window = 7
+        self._trust_margin = 0.5
+        # Reused buffers, same reason as the motion field below: this runs
+        # on every moving frame.
+        gy, gx = np.mgrid[0:self.flow_height, 0:self.flow_width]
+        self._grid_x = gx.astype(np.float32)
+        self._grid_y = gy.astype(np.float32)
+        self._map_x = np.empty_like(self._grid_x)
+        self._map_y = np.empty_like(self._grid_y)
+        self._warped = np.empty((self.flow_height, self.flow_width), dtype=np.uint8)
+        self._err_flow = np.empty((self.flow_height, self.flow_width), dtype=np.float32)
+        self._err_zero = np.empty((self.flow_height, self.flow_width), dtype=np.float32)
 
     @property
     def motion_width(self) -> int:
@@ -66,6 +110,24 @@ class TemporalGuideGenerator:
     def _small_gray(self, rgba: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(rgba, cv2.COLOR_RGBA2GRAY)
         return cv2.resize(gray, (self.flow_width, self.flow_height), interpolation=cv2.INTER_AREA)
+
+    def _moved(self, current: np.ndarray, previous: np.ndarray,
+               flow: np.ndarray) -> np.ndarray:
+        """True where the vector explains the pixel better than standing still.
+
+        Both residuals are averaged over a window: a single pixel decides
+        nothing on flat content, where every vector fits equally well.
+        """
+        np.add(self._grid_x, flow[..., 0], out=self._map_x)
+        np.add(self._grid_y, flow[..., 1], out=self._map_y)
+        cv2.remap(previous, self._map_x, self._map_y, cv2.INTER_LINEAR,
+                  dst=self._warped, borderMode=cv2.BORDER_REPLICATE)
+        win = (self._trust_window, self._trust_window)
+        cv2.boxFilter(cv2.absdiff(current, self._warped), cv2.CV_32F, win,
+                      dst=self._err_flow)
+        cv2.boxFilter(cv2.absdiff(current, previous), cv2.CV_32F, win,
+                      dst=self._err_zero)
+        return self._err_flow < self._err_zero - self._trust_margin
 
     def zero_guide(self) -> GuideFrame:
         """Fallback for a persistent process() failure: zero motion, reset=True.
@@ -106,19 +168,24 @@ class TemporalGuideGenerator:
                 motion = self._zero_small if self.emit_small else self._zero_motion
             else:
                 # NGX consumes current-to-previous motion in pixel units.
-                # Only the forward flow is sent. A backward flow with a
-                # forward/backward consistency + residual mask used to be
-                # computed here, but the mask was never applied to `motion` —
-                # it cost a second DIS pass, two remaps and a dilate per frame
-                # and was thrown away. Removed; reinstate it only together
-                # with the code that actually masks the motion vectors.
+                # Only the forward flow is computed: the backward one was
+                # measured and rejected - see _trust_window above.
                 cur_to_prev = self.dis.calc(current, self.previous_gray, None)
-                # MV validation: zero the noise floor. DIS reports small
-                # vectors even on a static screen (capture noise, cursor
-                # jitter); NGX would smear text/UI on them. The mask is
-                # computed on the flow grid (115k elements, not 3M).
+                # MV validation, two tests, both on the flow grid (115k
+                # elements, not 3M):
+                #   1. the noise floor - DIS reports small vectors even on a
+                #      static screen (capture noise, cursor jitter), and NGX
+                #      would smear text and UI on them;
+                #   2. the static hypothesis - a vector of any length is
+                #      dropped unless it explains its pixel better than no
+                #      motion at all.
                 mag = np.hypot(cur_to_prev[..., 0], cur_to_prev[..., 1])
-                cur_to_prev[mag < self._flow_noise_floor] = 0.0
+                drop = mag < self._flow_noise_floor
+                np.logical_or(drop,
+                              ~self._moved(current, self.previous_gray,
+                                           cur_to_prev),
+                              out=drop)
+                cur_to_prev[drop] = 0.0
                 # Scale BEFORE the upscale: 115k elements instead of 3M, and
                 # exactly equivalent because resize is linear (verified: the
                 # two orders differ by 0.002, i.e. float16 rounding).

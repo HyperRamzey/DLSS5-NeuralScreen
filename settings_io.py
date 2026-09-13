@@ -222,21 +222,6 @@ PRESET_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
 DEFAULT_LANG = "en"
 
 
-def _valid_preset_value(key: str, value) -> bool:
-    """A preset value is a finite number inside the slider range.
-
-    The config is user-editable: a hand-typed "intensity": "abc" or 99.0
-    must not crash the program - the preset is dropped instead (the
-    built-in profiles always survive).
-    """
-    try:
-        value = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    lo, hi = param_range(key)
-    return lo <= value <= hi
-
-
 # The NGX plumbing a preset carries along with the four sliders: the range
 # it must be in, and what to use when it is not there at all. Presets saved
 # by builds up to 1.8.2 also carry profile/preset/ui_correction; those are
@@ -278,7 +263,8 @@ def load_presets(cfg: dict) -> dict:
             except (TypeError, ValueError, OverflowError):
                 ok = False
                 break
-            if isinstance(values[key], bool) or v != v:
+            if (isinstance(values[key], bool) or v != v
+                    or v in (float("inf"), float("-inf"))):
                 ok = False
                 break
             # Out of range is an older build, not a broken preset: the

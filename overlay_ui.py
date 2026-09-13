@@ -1626,11 +1626,17 @@ class OverlayMenu:
         # here with no upper bound - "NVIDIA GeForce RTX 5070 Ti Laptop GPU"
         # is a real one - so it is the only thing that gets elided, and it
         # disappears rather than collide when the room runs out.
+        # The frame rate stays a frame rate. It used to be replaced by the
+        # word "idle" while the network skipped an unchanged screen, and the
+        # reading jumped between a number and a word as the screen came and
+        # went - a counter that twitches instead of counting (user, 13.09).
+        # The loop keeps running through a skipped stretch, so the number is
+        # true the whole time. State belongs in the sentence on the left;
+        # numbers stay numbers.
         fps = st.get("fps")
         readings = []
         if not paused:
-            readings.append(s.get("idle_short", "idle") if idling
-                            else f"{fps:.1f} fps"
+            readings.append(f"{fps:.1f} fps"
                             if isinstance(fps, (int, float)) else "— fps")
             readings.append(str(st.get("resolution", "—")))
         x = rect.right - pad

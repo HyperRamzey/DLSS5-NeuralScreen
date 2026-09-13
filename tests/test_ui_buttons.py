@@ -321,6 +321,27 @@ def main() -> int:
     menu.layout(3840, 2160)
     paint(menu)
 
+    # 3a4. The row that names the captured window opens the picker. It was
+    #      the one line on the page that looked like a control and was not.
+    menu.page = "main"
+    menu.state["window_mode"] = True
+    menu.set_state({"window_current": "1A2B3C: Firefox"})
+    menu.layout(3840, 2160)
+    row = next((i for i in menu.items
+                if i.kind == "info" and i.key == "source_now"), None)
+    if row is None:
+        failures.append("no captured-window row in window mode")
+    else:
+        out = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, {"pos": row.rect.center, "button": 1}))
+        if menu.page != "windows" or out != [("capture", None)]:
+            failures.append(f"the captured-window row must open the picker, "
+                            f"got page={menu.page!r} out={out}")
+    menu.page = "main"
+    menu.state["window_mode"] = False
+    menu.layout(3840, 2160)
+    paint(menu)
+
     # 3b. The source segment carries what the Actions buttons used to: the
     #     left cell returns to the whole screen (nothing to do when it is
     #     already there), the right cell opens the window list.

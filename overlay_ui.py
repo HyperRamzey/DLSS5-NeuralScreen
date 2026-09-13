@@ -1172,7 +1172,11 @@ class OverlayMenu:
             else:
                 self.hover = None
                 for it in self.items:
-                    if it.kind in ("action", "hotkey", "button") and \
+                    # "info" is in the list for one row: the captured
+                    # window, which opens the picker.
+                    if (it.kind in ("action", "hotkey", "button")
+                        or (it.kind == "info"
+                            and it.key == "source_now")) and \
                             it.rect.collidepoint(event.pos):
                         self.hover = f"{it.kind}:{it.key}"
                         break
@@ -1252,6 +1256,18 @@ class OverlayMenu:
                     if cr.collidepoint(event.pos) and idx < len(item.payload or []):
                         out.extend(self._pick(item.key, str(item.payload[idx])))
                         break
+            elif item.kind == "info" and item.key == "source_now":
+                # The row that names the captured window is the obvious place
+                # to click when you want a different one, and it was the one
+                # line on the page that looked like a control and was not.
+                # The list itself stays on its own page: a desktop can have
+                # twenty windows, and a list that long inside this panel
+                # would push the picture controls off the bottom - the same
+                # unbounded column the settings tabs were made to stop.
+                self.page = "windows"
+                self.scroll = 0
+                self.capturing = None
+                out.append(("capture", None))
             elif item.kind == "toggle":
                 out.append(("nr",) if item.key == "nr" else ("toggle", item.key))
             elif item.kind == "button":
@@ -2020,12 +2036,19 @@ class OverlayMenu:
 
 
     def _draw_info(self, surface, item: Item, s: dict) -> None:
-        """A read-only line: what on the left, how big on the right."""
+        """A line: what on the left, how big on the right.
+
+        The captured-window row is clickable (it opens the list); it takes
+        the accent under the pointer so that it reads as one.
+        """
         value = str(item.extra.get("value") or "")
         val = self._mono_small.render(value, True, _rgb(self.c["muted"]))
         room = item.rect.w - val.get_width() - self._u(12)
+        hot = (item.key == "source_now"
+               and self.hover == f"info:{item.key}")
         label = self._clip(self._font, str(item.extra.get("label") or ""),
-                           _rgb(self.c["text"]), room)
+                           _rgb(self.c["accent"] if hot else self.c["text"]),
+                           room)
         y = item.rect.centery
         surface.blit(label, (item.rect.x, y - label.get_height() // 2))
         if value:

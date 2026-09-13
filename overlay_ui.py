@@ -478,19 +478,17 @@ class OverlayMenu:
         # the other pages do the work). The rects are still computed for the
         # main page - the drawers check the page before drawing.
         if self.page == "main":
-            # The readings block
-            stat_h = self._u(STAT_LINE_H) * 2 + self._u(STAT_PAD) * 2
-            self._stats_rel = pygame.Rect(pad, cy, inner_w, stat_h)
-            cy += stat_h + self._u(6)
-
-            # The GPU line: a status dot and the card model. A separate line
-            # rather than a cell in the readings block - this is not a
-            # pipeline reading but the answer to "does this work on my card
-            # at all". The capture mode (fullscreen / window) sits on the
-            # second line below it.
-            gpu_h = self._u(SMALL_SIZE) * 2 + self._u(10)
-            self._gpu_rel = pygame.Rect(pad, cy, inner_w, gpu_h)
-            cy += gpu_h + gap
+            # ONE status line, where a six-cell readings grid and a separate
+            # card row used to be. Four of those six said what the page below
+            # already says: MODE is the source segment, PROFILE is the
+            # profile picker, REC is the Record button and the red dot on
+            # screen, and FRAMES was a counter nobody acts on. What is left is
+            # what you actually want at a glance - is it working, how fast,
+            # at what size, on which card.
+            status_h = self._u(SMALL_SIZE) + self._u(18)
+            self._stats_rel = pygame.Rect(pad, cy, inner_w, status_h)
+            self._gpu_rel = pygame.Rect(0, 0, 0, 0)   # folded into the line
+            cy += status_h + gap
 
         # The content is split into titled blocks: eight identical rows in a
         # row gave the eye nothing to hold on to. The titles are not
@@ -1497,7 +1495,6 @@ class OverlayMenu:
         # computed there, so the drawers must not run.
         if self.page == "main":
             self._draw_stats(surface, s)
-            self._draw_gpu(surface, s)
         self._draw_sections(surface)
         self._draw_rules(surface, s)
         # The resize corner: three short strokes, as resize handles usually go
@@ -1595,65 +1592,60 @@ class OverlayMenu:
                          border_radius=radius)
 
     def _draw_stats(self, surface, s: dict) -> None:
-        st = self.stats or {}
+        """The status line: is it working, how fast, how big, on what.
+
+        The dot is the same signal it has always been - green when the
+        network really runs on that card, red when it does not - and it now
+        sits next to a sentence instead of above a grid.
+        """
         rect = self._stats_rect
+        if rect.w <= 0:
+            return
         pygame.draw.rect(surface, _rgb(self.c["surface"]), rect,
                          border_radius=self._u(RADIUS // 2))
-        fps = st.get("fps")
-        mode = (s["mode_window"] if self.state.get("window_mode")
-                else s["mode_fullscreen"])
-        # An idle network is not a stalled one: the loop still runs at full
-        # speed, it just does not process an unchanged screen. Saying so
-        # here is the only visible sign that the skip is doing its job.
-        idling = bool(self.state.get("idle"))
-        rows = (
-            (("FPS", s.get("idle_short", "idle") if idling
-              else f"{fps:.1f}" if isinstance(fps, (int, float)) else "—"),
-             ("RES", str(st.get("resolution", "—"))),
-             ("MODE", mode)),
-            (("FRAMES", str(st.get("frames", "—"))),
-             ("REC", self._rec_text(s)),
-             ("PROFILE", str(self.state.get("profile", "—")).split(" /")[0])),
-        )
+        st = self.stats or {}
         pad = self._u(STAT_PAD)
-        cell = (rect.w - pad * 2) // 3
-        for ri, row in enumerate(rows):
-            y = rect.y + pad + ri * self._u(STAT_LINE_H)
-            for ci, (name, value) in enumerate(row):
-                cx = rect.x + pad + ci * cell
-                k = self._mono_small.render(name, True, _rgb(self.c["muted"]))
-                v = self._mono_small.render(value, True, _rgb(self.c["accent"]))
-                surface.blit(k, (cx, y))
-                surface.blit(v, (cx + k.get_width() + self._u(6), y))
-
-    def _draw_gpu(self, surface, s: dict) -> None:
-        """Status dot and card model: green - NR works, red - it does not."""
-        rect = getattr(self, "_gpu_rect", None)
-        if rect is None:
-            return
         ok = self.state.get("gpu_ok")
-        color = (self.c["muted"] if ok is None
-                 else self.c["ok"] if ok else self.c["danger"])
-        r = max(3, self._u(5))
-        cy = rect.y + rect.h // 2
-        pygame.draw.circle(surface, _rgb(color), (rect.x + r, cy), r)
-        text = self.state.get("gpu_text") or "—"
-        name = self._small_font.render(text, True, _rgb(self.c["text"]))
-        # The status text next to the card is gone: the dot colour already
-        # answers "does it work" (user rule 10.09). The capture mode moved
-        # into the stats block (MODE cell) - no duplicate line under the
-        # card. The name gets the full row width now.
-        avail = rect.right - (rect.x + r * 2 + self._u(8)) - self._u(8)
-        if avail < self._u(24):
-            avail = self._u(24)  # never let the name vanish entirely
-        if name.get_width() > avail:
-            clip = self._small_font.render(text + "…", True, _rgb(self.c["text"]))
-            while clip.get_width() > avail and len(text) > 1:
-                text = text[:-1]
-                clip = self._small_font.render(text + "…", True, _rgb(self.c["text"]))
-            name = clip
-        surface.blit(name, (rect.x + r * 2 + self._u(8),
-                            cy - name.get_height() // 2))
+        paused = not bool(self.state.get("nr"))
+        idling = bool(self.state.get("idle"))
+        dot = (self.c["muted"] if paused or ok is None
+               else self.c["ok"] if ok else self.c["danger"])
+        r = max(3, self._u(4))
+        cyr = rect.centery
+        pygame.draw.circle(surface, _rgb(dot), (rect.x + pad + r, cyr), r)
+
+        text = (s.get("status_off", "not processing") if paused
+                else s.get("idle_short", "idle") if idling
+                else s.get("status_on", "processing"))
+        label = self._small_font.render(str(text), True, _rgb(self.c["text"]))
+        lx = rect.x + pad + r * 2 + self._u(9)
+        surface.blit(label, (lx, cyr - label.get_height() // 2))
+
+        # The readings hug the right edge, shortest first, and the card name
+        # takes whatever is left in the middle. A card name is the one value
+        # here with no upper bound - "NVIDIA GeForce RTX 5070 Ti Laptop GPU"
+        # is a real one - so it is the only thing that gets elided, and it
+        # disappears rather than collide when the room runs out.
+        fps = st.get("fps")
+        readings = []
+        if not paused:
+            readings.append(s.get("idle_short", "idle") if idling
+                            else f"{fps:.1f} fps"
+                            if isinstance(fps, (int, float)) else "— fps")
+            readings.append(str(st.get("resolution", "—")))
+        x = rect.right - pad
+        for value in reversed(readings):
+            img = self._mono_small.render(value, True, _rgb(self.c["muted"]))
+            x -= img.get_width()
+            surface.blit(img, (x, cyr - img.get_height() // 2))
+            x -= self._u(14)
+
+        name = str(self.state.get("gpu_text") or "")
+        room = x - (lx + label.get_width() + self._u(14))
+        if name and room > self._u(40):
+            img = self._clip(self._small_font, name, _rgb(self.c["muted"]), room)
+            surface.blit(img, (x - img.get_width(),
+                               cyr - img.get_height() // 2))
 
     def _rec_text(self, s: dict) -> str:
         """Recording state: the duration is more useful than a bare "on"."""

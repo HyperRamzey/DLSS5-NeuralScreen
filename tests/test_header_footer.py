@@ -199,27 +199,26 @@ def main() -> int:
                 failures.append(f"the theme segment should emit a theme "
                                 f"action, got {out}")
 
-    # 9. The live indicators (stats block + GPU line) are main-page only
-    #    (user rule 10.09): the settings and windows pages are about
-    #    configuration - FPS/RES/WORK/FRAMES/REC/PROFILE and the GPU dot
-    #    are noise there. The rects must be empty on those pages and real
-    #    on the main one.
+    # 9. The status line is main-page only (user rule 10.09): the settings
+    #    and windows pages are about configuration, and a live reading is
+    #    noise there. It used to be two blocks - a six-cell readings grid and
+    #    a separate card row - and it is one line since the redesign, so the
+    #    card rect is empty on every page now.
     menu.page = "main"
     menu.layout(3840, 2160)
     main_stats = menu._stats_rect
-    main_gpu = menu._gpu_rect
-    print(f"main stats rect: {main_stats}, gpu rect: {main_gpu}")
-    if main_stats.w <= 0 or main_gpu.h <= 0:
-        failures.append("the main page must show the stats block and the "
-                        "GPU line")
+    print(f"main status rect: {main_stats}, card rect: {menu._gpu_rect}")
+    if main_stats.w <= 0 or main_stats.h <= 0:
+        failures.append("the main page must show the status line")
+    if menu._gpu_rect.h > 0:
+        failures.append("the separate card row is gone - its dot and its "
+                        "name live in the status line")
     for page in ("settings", "windows"):
         menu.page = page
         menu.layout(3840, 2160)
-        print(f"{page} stats rect: {menu._stats_rect}, "
-              f"gpu rect: {menu._gpu_rect}")
-        if menu._stats_rect.w > 0 or menu._gpu_rect.h > 0:
-            failures.append(f"the {page} page must not show the live "
-                            f"indicators")
+        print(f"{page} status rect: {menu._stats_rect}")
+        if menu._stats_rect.w > 0:
+            failures.append(f"the {page} page must not show the status line")
 
     # 10. The windows page: its own title ("Select window") and NO header
     #     icons - the Back button in the footer is the only way out (user

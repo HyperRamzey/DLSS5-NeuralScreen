@@ -559,9 +559,68 @@ static bool InitDirectNr(const wchar_t *data_path)
 
 static void LogDeviceRemoved(const char *where);   // defined below BeginCommands
 static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms);  // defined below
+static bool PhaseEnabled();
+static double PhaseNow();
+static LARGE_INTEGER g_qpf;
+static void AbortCommands();
+static bool g_submission_failed;
+
+struct ProfileFrameStamp {
+    double acquire_start, acquired, present_call, source_time;
+    UINT64 source_qpc, capture;
+    const char *kind = "none";
+    UINT64 fence;
+    bool reported;
+};
+static ProfileFrameStamp g_frame_stamp;
+static UINT64 g_capture_generation, g_capture_serial, g_previous_source_qpc;
+static char g_frame_records[256][480];
+static unsigned g_frame_record_count;
+
+static void FlushProfileFrames()
+{
+    for (unsigned i = 0; i < g_frame_record_count; ++i) Log("%s", g_frame_records[i]);
+    g_frame_record_count = 0;
+}
+
+static void ProfileCapture(double acquire_start, UINT64 source_qpc, const char *kind)
+{
+    if (!PhaseEnabled()) return;
+    g_frame_stamp.acquire_start = acquire_start;
+    g_frame_stamp.acquired = PhaseNow();
+    g_frame_stamp.kind = kind;
+    g_frame_stamp.source_qpc = source_qpc;
+    g_frame_stamp.capture = ++g_capture_serial;
+    if (source_qpc && g_qpf.QuadPart > 0 && source_qpc >= g_previous_source_qpc)
+    {
+        const double source_ms = static_cast<double>(source_qpc) * 1000.0 / g_qpf.QuadPart;
+        if (source_ms <= g_frame_stamp.acquired) g_frame_stamp.source_time = source_ms;
+    }
+    if (source_qpc) g_previous_source_qpc = source_qpc;
+}
+
+enum ProfileStage { PS_SWIZZLE, PS_GRAY, PS_MOTION, PS_EVAL, PS_PRESENT, PS_COUNT, PS_NONE = -1 };
+static const char *kProfileStageNames[PS_COUNT] = { "swizzle", "gray", "motion", "eval", "present" };
+static double g_ps_submit_sum[PS_COUNT], g_ps_submit_max[PS_COUNT];
+static double g_ps_wait_sum[PS_COUNT], g_ps_wait_max[PS_COUNT];
+static double g_ps_gpu_sum[PS_COUNT], g_ps_gpu_max[PS_COUNT];
+static double g_ps_gap_sum[PS_COUNT], g_ps_gap_max[PS_COUNT];
+static unsigned g_ps_submit_n[PS_COUNT], g_ps_wait_n[PS_COUNT], g_ps_gpu_n[PS_COUNT], g_ps_gap_n[PS_COUNT];
+static unsigned g_ps_allocator_waits;
+static double g_ps_allocator_wait_sum, g_ps_allocator_wait_max;
+static unsigned g_ps_outstanding_max;
+static int g_ps_active = PS_NONE;
+static int g_ps_slot_stage[Host::kFrames] = { PS_NONE, PS_NONE, PS_NONE };
+static UINT64 g_ps_slot_fence[Host::kFrames];
+static void CollectProfileGpuTimes();
+
+static bool ProfileGpuBegin(ProfileStage stage);
+static void ProfileGpuEnd(ProfileStage stage, unsigned query_count = 2);
+static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms);
 
 static bool BeginCommands()
 {
+    if (g_submission_failed || h.list == nullptr) return false;
     const int slot = h.frame_slot;
     const UINT64 retire = h.alloc_fence[slot];
     if (retire != 0 && h.fence->GetCompletedValue() < retire)
@@ -569,9 +628,19 @@ static bool BeginCommands()
         // Through the same helper as every other wait: this one carried a
         // second copy of the shared-event bug, and it also left a
         // registration behind on a timeout for the next wait to trip over.
+        const bool phase = PhaseEnabled();
+        const double t_wait = phase ? PhaseNow() : 0.0;
         if (!WaitFenceValue(h.fence, retire, 2000))
         { Log("[host] GPU did not retire allocator slot %d", slot); return false; }
+        if (phase)
+        {
+            const double elapsed = PhaseNow() - t_wait;
+            ++g_ps_allocator_waits;
+            g_ps_allocator_wait_sum += elapsed;
+            if (elapsed > g_ps_allocator_wait_max) g_ps_allocator_wait_max = elapsed;
+        }
     }
+    if (PhaseEnabled()) CollectProfileGpuTimes();
     if (FAILED(h.alloc[slot]->Reset()))
     {
         // The allocator Reset() is where a removed device surfaces first
@@ -610,7 +679,17 @@ static void LogDeviceRemoved(const char *where)
 
 static UINT64 EndCommands()
 {
-    h.list->Close();
+    const bool phase = PhaseEnabled();
+    const double t_submit = phase ? PhaseNow() : 0.0;
+    const HRESULT closed = h.list->Close();
+    if (FAILED(closed))
+    {
+        Log("[host] command list Close failed 0x%08X; nothing submitted", closed);
+        g_submission_failed = true;
+        g_ps_active = PS_NONE;
+        AbortCommands();
+        return 0;
+    }
     ID3D12CommandList *lists[] = { h.list };
     h.queue->ExecuteCommandLists(1, lists);
     const UINT64 v = ++h.fence_value;
@@ -619,9 +698,33 @@ static UINT64 EndCommands()
     // the failure instead of pretending the commands were submitted
     // (code review finding).
     const HRESULT sig = h.queue->Signal(h.fence, v);
-    if (FAILED(sig)) { Log("[host] queue Signal failed 0x%08X", sig); return 0; }
+    if (FAILED(sig))
+    {
+        Log("[host] queue Signal failed 0x%08X", sig);
+        g_submission_failed = true;
+        g_ps_active = PS_NONE;
+        return 0;
+    }
     h.alloc_fence[h.frame_slot] = v;
+    if (g_ps_active != PS_NONE && g_ps_slot_stage[h.frame_slot] != PS_NONE)
+        g_ps_slot_fence[h.frame_slot] = v;
     h.frame_slot = (h.frame_slot + 1) % Host::kFrames;
+    if (phase)
+    {
+        g_frame_stamp.fence = v;
+        if (g_ps_active >= 0 && g_ps_active < PS_COUNT)
+        {
+            const double elapsed = PhaseNow() - t_submit;
+            g_ps_submit_sum[g_ps_active] += elapsed;
+            if (elapsed > g_ps_submit_max[g_ps_active]) g_ps_submit_max[g_ps_active] = elapsed;
+            ++g_ps_submit_n[g_ps_active];
+        }
+        const UINT64 completed = h.fence->GetCompletedValue();
+        const UINT64 outstanding = completed == UINT64_MAX || completed >= v ? 0 : v - completed;
+        if (outstanding > g_ps_outstanding_max)
+            g_ps_outstanding_max = static_cast<unsigned>(outstanding);
+    }
+    g_ps_active = PS_NONE;
     return v;
 }
 
@@ -674,12 +777,24 @@ static void CloseListGuarded()
 static void AbortCommands()   // never execute a list NGX crashed in
 {
     if (h.list == nullptr) return;
+    UINT64 retire = 0;
+    for (int i = 0; i < Host::kFrames; ++i)
+        if (h.alloc_fence[i] > retire) retire = h.alloc_fence[i];
+    if (retire && !WaitFenceValue(h.fence, retire, 60000))
+    { g_submission_failed = true; Log("[host] cannot retire commands before list replacement"); return; }
     CloseListGuarded();
     h.list->Release();
     h.list = nullptr;
-    if (SUCCEEDED(h.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, h.alloc[h.frame_slot], nullptr,
-                                           __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&h.list))))
-        h.list->Close();
+    HRESULT hr = h.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, h.alloc[h.frame_slot], nullptr,
+                                        __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&h.list));
+    if (SUCCEEDED(hr)) hr = h.list->Close();
+    if (FAILED(hr))
+    {
+        Log("[host] command list replacement failed 0x%08X", hr);
+        if (h.list) h.list->Release();
+        h.list = nullptr;
+        g_submission_failed = true;
+    }
 }
 
 static NVSDK_NGX_Result SafeCreateDLSS(NVSDK_NGX_DLSS_Create_Params *cp, DWORD *code)
@@ -854,7 +969,10 @@ static void InitBanner()
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         h.list->ResourceBarrier(1, &b);
         const UINT64 v = EndCommands();
-        WaitFenceValue(h.fence, v, 2000);
+        // The upload buffer goes back either way: the early return added here
+        // to stop using a banner the GPU never finished copying would
+        // otherwise walk out holding it.
+        if (!WaitFenceValue(h.fence, v, 2000)) { staging->Release(); return; }
     }
     staging->Release();
 
@@ -1992,8 +2110,9 @@ static void RevealOnFirstPresent()
     Log("[present] window revealed on the first Present");
 }
 
-static bool PresentFrame(VideoState &v)
+static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
 {
+    if (submitted) *submitted = 0;
     if (g_hdr_capture) return PresentHdr(v, false);
     // Only when HDR compatibility is on. With it off there is nothing to put
     // back: the swap chain was created R8G8B8A8 and no HDR frame has ever
@@ -2014,6 +2133,7 @@ static bool PresentFrame(VideoState &v)
     bool ok = false;
     if (BeginCommands())
     {
+        ProfileGpuBegin(PS_PRESENT);
         D3D12_RESOURCE_BARRIER pre[] = {
             Transition(bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
             Transition(v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
@@ -2027,14 +2147,21 @@ static bool PresentFrame(VideoState &v)
             Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
         };
         h.list->ResourceBarrier(_countof(post), post);
+        ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
-        if (WaitFenceValue(h.fence, fv, 2000))
+        if (submitted) *submitted = fv;
+        if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000))
         {
+            if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
             ok = SUCCEEDED(g_present_swap->Present(0, 0));
+            if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();
         }
         else
-            Log("[present] fence wait timed out");
+        {
+            Log("[present] fence wait failed");
+            return false; // Retain the backbuffer until failing-process teardown.
+        }
     }
     bb->Release();
     if (ok) RevealOnFirstPresent();
@@ -2058,6 +2185,7 @@ static bool PresentBypass(VideoState &v)
     bool ok = false;
     if (BeginCommands())
     {
+        ProfileGpuBegin(PS_PRESENT);
         D3D12_RESOURCE_BARRIER pre[] = {
             Transition(bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
             Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -2073,10 +2201,13 @@ static bool PresentBypass(VideoState &v)
                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
         };
         h.list->ResourceBarrier(_countof(post), post);
+        ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
-        if (WaitFenceValue(h.fence, fv, 2000))
+        if (ProfileWait(PS_PRESENT, fv, 2000))
         {
+            if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
             ok = SUCCEEDED(g_present_swap->Present(0, 0));
+            if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();
         }
         else
@@ -2101,6 +2232,7 @@ static bool ReadExact(FILE *f, void *p, size_t n)
 
 static bool WriteExact(FILE *f, const void *p, size_t n)
 {
+    if (g_submission_failed) return false;
     const BYTE *src = static_cast<const BYTE *>(p);
     while (n != 0)
     {
@@ -2845,6 +2977,7 @@ static bool ScaleMotionInto(VideoState &v, const BYTE *mv, bool mv_was_ready)
 // ---------------------------------------------------------------------------
 static bool                    g_dda_hdr_mode = false;
 static bool                    g_dda_active = false;   // DDA1 with w>0 has been acked
+static bool                    g_capture_visual_changed = false;
 static UINT                    g_dda_w = 0, g_dda_h = 0;
 static ID3D11Device           *g_dda_d11 = nullptr;
 static ID3D11DeviceContext    *g_dda_ctx = nullptr;
@@ -2887,6 +3020,7 @@ static void CloseGray()
 
 static void CloseDda()
 {
+    if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
     g_dda_active = false;
     g_dda_ready = false;
     g_hdr_capture = false;
@@ -3184,6 +3318,7 @@ static bool AreaToGray()
 {
     if (!g_gray_mapped || !g_dda_dst) return false;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_GRAY);
     // Is g_dda_dst in COPY_SOURCE after the copy into v.color? No - after the
     // swizzle it goes back to UNORDERED_ACCESS (see DdaGrab). We read it as an SRV.
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_dst, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -3235,8 +3370,9 @@ static bool AreaToGray()
                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     D3D12_RESOURCE_BARRIER backs[2] = { back_uav, back_uav2 };
     h.list->ResourceBarrier(2, backs);
+    ProfileGpuEnd(PS_GRAY);
     const UINT64 fence = EndCommands();
-    if (!WaitFenceValue(h.fence, fence, 10000)) { Log("[gray] fence timeout"); return false; }
+    if (!ProfileWait(PS_GRAY, fence, 10000)) { Log("[gray] fence timeout"); return false; }
     // map the readback -> memcpy into the client mapping. The readback
     // rows are pitch-aligned; the client mapping is packed w*h, so the
     // copy is row by row (code review finding).
@@ -3690,6 +3826,7 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     }
     g_hdr_frame_white = g_capture_display.white;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_SWIZZLE);
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_d12, D3D12_RESOURCE_STATE_COMMON,
                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     h.list->ResourceBarrier(1, &to_srv);
@@ -3742,10 +3879,12 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
                                                   D3D12_RESOURCE_STATE_COMMON);
     D3D12_RESOURCE_BARRIER post_c[3] = { to_uav, to_nps, to_common };
     h.list->ResourceBarrier(3, post_c);
+    ProfileGpuEnd(PS_SWIZZLE);
     const UINT64 fence = EndCommands();
-    if (!WaitFenceValue(h.fence, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
+    if (!ProfileWait(PS_SWIZZLE, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
     // Hand the client the luminance frame (320x180) for the optical flow
     if (!AreaToGray()) { /* best effort: guides go without a fresh frame */ }
+    if (g_submission_failed) return false;
     UpdateAdaptiveExposure();
     g_dda_ready = true;
     return true;
@@ -3757,6 +3896,7 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
 static bool DdaGrab(VideoState &v)
 {
     if (!g_dda_active) return false;
+    g_capture_visual_changed = false;
     static ULONGLONG last_mode_query = 0;
     if (GetTickCount64() - last_mode_query > 1000)
     {
@@ -3781,6 +3921,11 @@ static bool DdaGrab(VideoState &v)
         OpenDda(g_dda_w, g_dda_h);
         return false;
     }
+    // LastPresentTime is zero for pointer-only updates. Keep processing them
+    // exactly as before, but do not count them as fresh desktop pictures in
+    // the opt-in performance report.
+    g_capture_visual_changed = fi.LastPresentTime.QuadPart != 0;
+    ProfileCapture(t_acq, static_cast<UINT64>(fi.LastPresentTime.QuadPart), "dda");
     ID3D11Texture2D *frame = nullptr;
     if (FAILED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void **)&frame)))
     {
@@ -3949,6 +4094,7 @@ static bool OpenWgc(HWND hwnd)
 static bool WgcGrab(VideoState &v)
 {
     if (!g_wgc_active || g_wgc == nullptr) return false;
+    g_capture_visual_changed = false;
     const HMONITOR monitor = MonitorFromWindow(g_wgc_hwnd, MONITOR_DEFAULTTONEAREST);
     static ULONGLONG last_mode_query = 0;
     if (monitor != g_capture_monitor || GetTickCount64() - last_mode_query > 1000)
@@ -3973,6 +4119,8 @@ static bool WgcGrab(VideoState &v)
         // DXGI_ERROR_WAIT_TIMEOUT on the duplication path - the caller keeps
         // the previous frame.
         if (frame == nullptr) return false;
+        ProfileCapture(t_acq, 0, "wgc");
+        g_capture_visual_changed = true;
         auto access = frame.Surface().as<INsDxgiInterfaceAccess>();
         ID3D11Texture2D *tex = nullptr;
         if (FAILED(access->GetInterface(__uuidof(ID3D11Texture2D), (void **)&tex)) ||
@@ -4006,6 +4154,7 @@ static bool UploadVideoFrame(VideoState &v, const BYTE *color, const BYTE *mv, b
     if (!FillUpload(v.color, color, cw * 4, ch)) return false;
     if (!motion_small && !FillUpload(v.mv, mv, v.w * 4, v.hgt)) return false;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_MOTION);
     if (v.inputs_ready)
     {
         // The colour always goes as a copy; in downscaled-field mode it is
@@ -4034,16 +4183,21 @@ static bool UploadVideoFrame(VideoState &v, const BYTE *color, const BYTE *mv, b
         };
         h.list->ResourceBarrier(_countof(post), post);
     }
+    ProfileGpuEnd(PS_MOTION);
     const UINT64 fence = EndCommands();
+    if (fence == 0) return false;
     v.inputs_ready = true;
-    return WaitFenceValue(h.fence, fence, 30000);
+    return ProfileWait(PS_MOTION, fence, 30000);
 }
 
 // DDA mode: the colour is already in v.color.tex (DdaGrab), we upload only motion.
-static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small)
+static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small,
+                             UINT64 *submitted = nullptr)
 {
+    if (submitted) *submitted = 0;
     if (!motion_small && !FillUpload(v.mv, mv, v.w * 4, v.hgt)) return false;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_MOTION);
     if (v.inputs_ready)
     {
         D3D12_RESOURCE_BARRIER pre = Transition(v.mv.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -4061,13 +4215,16 @@ static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small)
                                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         h.list->ResourceBarrier(1, &post);
     }
+    ProfileGpuEnd(PS_MOTION);
     const UINT64 fence = EndCommands();
+    if (fence == 0) return false;
     v.inputs_ready = true;
-    return WaitFenceValue(h.fence, fence, 30000);
+    if (submitted) { *submitted = fence; return true; }
+    return ProfileWait(PS_MOTION, fence, 30000);
 }
 
 // ---------------------------------------------------------------------------
-// How much of the Evaluate time the GPU actually spends computing
+// GPU time for each serial submission boundary, plus the network itself.
 //
 // PH_EVAL measures submit plus the CPU wait on the fence: it includes both
 // queueing the work and waking the thread. Timestamps on the queue answer how
@@ -4094,15 +4251,15 @@ static bool EnsureTimestamps()
     if (h.dev == nullptr || h.queue == nullptr) return false;
     D3D12_QUERY_HEAP_DESC qd = {};
     qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-    qd.Count = 2;
+    qd.Count = 4 * Host::kFrames;
     if (FAILED(h.dev->CreateQueryHeap(&qd, __uuidof(ID3D12QueryHeap),
                                       reinterpret_cast<void **>(&g_ts_heap))))
-    { Log("[phase] CreateQueryHeap failed - nothing to measure eval GPU time with"); return false; }
+    { Log("[phase] CreateQueryHeap failed - no GPU stage timings"); return false; }
     D3D12_HEAP_PROPERTIES rb = {};
     rb.Type = D3D12_HEAP_TYPE_READBACK;
     D3D12_RESOURCE_DESC bd = {};
     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bd.Width = sizeof(UINT64) * 2; bd.Height = 1; bd.DepthOrArraySize = 1;
+    bd.Width = sizeof(UINT64) * 4 * Host::kFrames; bd.Height = 1; bd.DepthOrArraySize = 1;
     bd.MipLevels = 1; bd.SampleDesc.Count = 1;
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     if (FAILED(h.dev->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd,
@@ -4110,20 +4267,59 @@ static bool EnsureTimestamps()
         reinterpret_cast<void **>(&g_ts_readback)))) return false;
     if (FAILED(h.queue->GetTimestampFrequency(&g_ts_freq)) || g_ts_freq == 0) return false;
     g_ts_state = 1;
-    Log("[phase] GPU timestamps around Evaluate are on (frequency %llu Hz)", g_ts_freq);
+    Log("[phase] GPU stage timestamps are on (frequency %llu Hz)", g_ts_freq);
     return true;
 }
 
-static void ReadEvalGpuTime()
+static UINT64 g_ps_previous_gpu_end;
+
+static bool ProfileGpuBegin(ProfileStage stage)
+{
+    if (!PhaseEnabled()) return false;
+    g_ps_active = stage;
+    if (!EnsureTimestamps()) return false;
+    g_ps_slot_stage[h.frame_slot] = stage;
+    h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4);
+    return true;
+}
+
+static void ProfileGpuEnd(ProfileStage, unsigned query_count)
 {
     if (g_ts_state != 1) return;
-    D3D12_RANGE r = { 0, sizeof(UINT64) * 2 };
+    const UINT base = h.frame_slot * 4;
+    h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, base + 1);
+    h.list->ResolveQueryData(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, base, query_count,
+                             g_ts_readback, sizeof(UINT64) * base);
+}
+
+static void ReadProfileGpuTime(int slot)
+{
+    if (g_ts_state != 1) return;
+    const int stage = g_ps_slot_stage[slot];
+    D3D12_RANGE r = { sizeof(UINT64) * slot * 4, sizeof(UINT64) * (slot + 1) * 4 };
     void *mapped = nullptr;
     if (FAILED(g_ts_readback->Map(0, &r, &mapped)) || mapped == nullptr) return;
-    const UINT64 *ts = static_cast<const UINT64 *>(mapped);
+    const UINT64 *ts = static_cast<const UINT64 *>(mapped) + slot * 4;
     if (ts[1] > ts[0])
     {
         const double ms = static_cast<double>(ts[1] - ts[0]) * 1000.0
+                          / static_cast<double>(g_ts_freq);
+        g_ps_gpu_sum[stage] += ms;
+        if (ms > g_ps_gpu_max[stage]) g_ps_gpu_max[stage] = ms;
+        ++g_ps_gpu_n[stage];
+        if (g_ps_previous_gpu_end != 0 && ts[0] >= g_ps_previous_gpu_end)
+        {
+            const double gap = static_cast<double>(ts[0] - g_ps_previous_gpu_end) * 1000.0
+                               / static_cast<double>(g_ts_freq);
+            g_ps_gap_sum[stage] += gap;
+            if (gap > g_ps_gap_max[stage]) g_ps_gap_max[stage] = gap;
+            ++g_ps_gap_n[stage];
+        }
+        g_ps_previous_gpu_end = ts[1];
+    }
+    if (stage == PS_EVAL && ts[3] > ts[2])
+    {
+        const double ms = static_cast<double>(ts[3] - ts[2]) * 1000.0
                           / static_cast<double>(g_ts_freq);
         g_ts_sum += ms;
         if (ms > g_ts_max) g_ts_max = ms;
@@ -4133,9 +4329,43 @@ static void ReadEvalGpuTime()
     g_ts_readback->Unmap(0, &none);
 }
 
-static bool EvaluateVideo(VideoState &v, int reset)
+static void CollectProfileGpuTimes()
 {
+    if (g_ts_state != 1) return;
+    const UINT64 completed = h.fence->GetCompletedValue();
+    if (completed == UINT64_MAX) return;
+    // Three slots, consumed in submission order before any region is reused.
+    for (int n = 0; n < Host::kFrames; ++n)
+    {
+        int first = -1;
+        for (int i = 0; i < Host::kFrames; ++i)
+            if (g_ps_slot_fence[i] && g_ps_slot_fence[i] <= completed &&
+                (first < 0 || g_ps_slot_fence[i] < g_ps_slot_fence[first])) first = i;
+        if (first < 0) break;
+        ReadProfileGpuTime(first);
+        g_ps_slot_fence[first] = 0;
+        g_ps_slot_stage[first] = PS_NONE;
+    }
+}
+
+static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms)
+{
+    const double t_wait = PhaseEnabled() ? PhaseNow() : 0.0;
+    const bool ok = WaitFenceValue(h.fence, fence, ms);
+    if (!PhaseEnabled()) return ok;
+    const double elapsed = PhaseNow() - t_wait;
+    g_ps_wait_sum[stage] += elapsed;
+    if (elapsed > g_ps_wait_max[stage]) g_ps_wait_max[stage] = elapsed;
+    ++g_ps_wait_n[stage];
+    if (ok) CollectProfileGpuTimes();
+    return ok;
+}
+
+static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
+{
+    if (submitted) *submitted = 0;
     if (!BeginCommands()) return false;
+    const bool ts = ProfileGpuBegin(PS_EVAL);
     const UINT cw = v.upscale ? v.full_w : v.w;
     const UINT ch = v.upscale ? v.full_h : v.hgt;
     // What the network is actually handed. In nr_small mode that is the work
@@ -4157,8 +4387,7 @@ static bool EvaluateVideo(VideoState &v, int reset)
     // The timestamps go around the network alone: the scaling passes are our
     // own cost, and folding them into "eval on GPU" would make the number
     // incomparable with every measurement taken so far.
-    const bool ts = PhaseEnabled() && EnsureTimestamps();
-    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 2);
     ID3D12Resource *nr_color = v.nr_small ? v.nr_in : v.color.tex;
     ID3D12Resource *nr_result = v.nr_small ? v.nr_out : v.output;
     h.params->Reset();
@@ -4187,7 +4416,7 @@ static bool EvaluateVideo(VideoState &v, int reset)
     __except (EXCEPTION_EXECUTE_HANDLER) { code = GetExceptionCode(); }
     g_last_eval_result = static_cast<uint32_t>(result);
     if (code != 0) { AbortCommands(); Log("[pure] direct evaluate exception 0x%08X", code); return false; }
-    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 3);
     if (v.nr_small)
     {
         // The result is work-sized; stretch it into the full-res output the
@@ -4210,14 +4439,14 @@ static bool EvaluateVideo(VideoState &v, int reset)
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         h.list->ResourceBarrier(1, &back);
     }
-    if (ts)
-        h.list->ResolveQueryData(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2,
-                                 g_ts_readback, 0);
+    if (ts) ProfileGpuEnd(PS_EVAL, 4);
     const UINT64 fence = EndCommands();
+    if (submitted) *submitted = fence;
+    if (fence == 0) return false;
     if (NVSDK_NGX_FAILED(result)) { Log("[pure] direct evaluate failed 0x%08X (%s)", result, NgxResultName(result)); return false; }
+    if (submitted) return true;
+    if (!ProfileWait(PS_EVAL, fence, 60000)) return false;
     ++g_eval_count;
-    if (!WaitFenceValue(h.fence, fence, 60000)) return false;
-    if (ts) ReadEvalGpuTime();
     return true;
 }
 
@@ -4519,6 +4748,7 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
 
 static void ReleaseVideoTextures(VideoState &v)
 {
+    if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
     // The shader descriptors referenced these resources - after they are
     // released the descriptors must be reissued (see BindScaleDescriptors).
     if (v.mv.tex == g_scale_dst_bound) g_scale_dst_bound = nullptr;
@@ -4570,7 +4800,12 @@ static unsigned g_ph_n[PH_COUNT];
 // Present buckets, ms: <5, 5-12, 12-20 (~1 vblank), 20-28, 28-40 (~2 vblank), 40+
 static const double kPresentBins[] = { 5.0, 12.0, 20.0, 28.0, 40.0 };
 static unsigned g_ph_bins[6];
-static LARGE_INTEGER g_qpf;
+static unsigned g_ph_requests;
+static unsigned g_ph_fresh_sources;
+static unsigned g_ph_evaluated;
+static unsigned g_ph_fresh_evaluated;
+static unsigned g_ph_processed;
+static unsigned g_ph_idle;
 static UINT64 g_ph_tick;
 
 // The profiler is turned on by the NS_PHASE=1 environment variable. Off by
@@ -4612,13 +4847,51 @@ static void PhaseAdd(int idx, double t0)
     }
 }
 
+static void ProfileFrameResult(const VideoState &v, const VideoFrameHeader &fh,
+                               bool fresh, const char *disposition)
+{
+    if (!PhaseEnabled()) return;
+    if (g_frame_record_count == _countof(g_frame_records)) FlushProfileFrames();
+    g_frame_stamp.reported = true;
+    const double age = fresh && g_frame_stamp.present_call > 0 && g_frame_stamp.acquired > 0
+        ? g_frame_stamp.present_call - g_frame_stamp.acquired : -1.0;
+    const double source_age = age >= 0 && g_frame_stamp.source_time > 0
+        ? g_frame_stamp.present_call - g_frame_stamp.source_time : -1.0;
+    const UINT cw = v.upscale ? v.full_w : v.w, ch = v.upscale ? v.full_h : v.hgt;
+    sprintf_s(g_frame_records[g_frame_record_count++],
+        "[phase] frame index=%u pts=%lld generation=%llu capture=%llu kind=%s fresh=%u result=%s "
+        "acquire-start=%.3f acquired=%.3f present-call=%.3f age=%.3f source-qpc=%llu source-age=%.3f "
+        "clock=%s fence=%llu color=%ux%u neural=%ux%u output=%ux%u",
+        fh.index, static_cast<long long>(fh.pts), g_capture_generation, g_frame_stamp.capture,
+        g_frame_stamp.kind, fresh ? 1u : 0u, disposition, g_frame_stamp.acquire_start,
+        g_frame_stamp.acquired, g_frame_stamp.present_call, age, g_frame_stamp.source_qpc, source_age,
+        source_age >= 0 ? "dda-qpc" : "acquisition-to-present-call", g_frame_stamp.fence,
+        cw, ch, v.nr_small ? v.nr_w : cw, v.nr_small ? v.nr_h : ch, cw, ch);
+}
+
+struct ProfileRequest
+{
+    const VideoState &video;
+    const VideoFrameHeader &frame;
+    ~ProfileRequest()
+    {
+        if (PhaseEnabled() && !g_frame_stamp.reported)
+        {
+            ProfileFrameResult(video, frame, false, "failure");
+            FlushProfileFrames();
+        }
+    }
+};
+
 static void PhaseReport(bool bypass)
 {
     if (!PhaseEnabled()) return;
     const UINT64 now = GetTickCount64();
     if (g_ph_tick == 0) { g_ph_tick = now; return; }
     if (now - g_ph_tick < 2000) return;
+    const double seconds = static_cast<double>(now - g_ph_tick) / 1000.0;
     g_ph_tick = now;
+    FlushProfileFrames();
 
     char line[640];
     int off = _snprintf_s(line, sizeof(line), _TRUNCATE, "[phase] %s", bypass ? "bypass" : "NR");
@@ -4636,6 +4909,33 @@ static void PhaseReport(bool bypass)
         g_ts_sum = 0.0; g_ts_max = 0.0; g_ts_n = 0;
     }
     Log("%s (mean/max, ms)", line);
+    for (int i = 0; i < PS_COUNT; ++i)
+    {
+        if (g_ps_submit_n[i] == 0 && g_ps_wait_n[i] == 0 && g_ps_gpu_n[i] == 0) continue;
+        Log("[phase] boundary %s: submit %.3f/%.3f wait %.3f/%.3f GPU %.3f/%.3f gap %.3f/%.3f ms",
+            kProfileStageNames[i],
+            g_ps_submit_n[i] ? g_ps_submit_sum[i] / g_ps_submit_n[i] : 0.0, g_ps_submit_max[i],
+            g_ps_wait_n[i] ? g_ps_wait_sum[i] / g_ps_wait_n[i] : 0.0, g_ps_wait_max[i],
+            g_ps_gpu_n[i] ? g_ps_gpu_sum[i] / g_ps_gpu_n[i] : 0.0, g_ps_gpu_max[i],
+            g_ps_gap_n[i] ? g_ps_gap_sum[i] / g_ps_gap_n[i] : 0.0, g_ps_gap_max[i]);
+        g_ps_submit_sum[i] = g_ps_submit_max[i] = 0.0; g_ps_submit_n[i] = 0;
+        g_ps_wait_sum[i] = g_ps_wait_max[i] = 0.0; g_ps_wait_n[i] = 0;
+        g_ps_gpu_sum[i] = g_ps_gpu_max[i] = 0.0; g_ps_gpu_n[i] = 0;
+        g_ps_gap_sum[i] = g_ps_gap_max[i] = 0.0; g_ps_gap_n[i] = 0;
+    }
+    Log("[phase] queue: outstanding-max=%u allocator-waits=%u allocator-wait %.3f/%.3f ms",
+        g_ps_outstanding_max, g_ps_allocator_waits,
+        g_ps_allocator_waits ? g_ps_allocator_wait_sum / g_ps_allocator_waits : 0.0,
+        g_ps_allocator_wait_max);
+    g_ps_outstanding_max = g_ps_allocator_waits = 0;
+    g_ps_allocator_wait_sum = g_ps_allocator_wait_max = 0.0;
+    Log("[phase] activity %.2fs: requests=%u fresh-source=%u evaluated=%u "
+        "fresh-enhanced=%u (%.1f/s) processed=%u idle=%u",
+        seconds, g_ph_requests, g_ph_fresh_sources, g_ph_evaluated,
+        g_ph_fresh_evaluated, g_ph_fresh_evaluated / seconds,
+        g_ph_processed, g_ph_idle);
+    g_ph_requests = g_ph_fresh_sources = g_ph_evaluated = 0;
+    g_ph_fresh_evaluated = g_ph_processed = g_ph_idle = 0;
     Log("[phase] present by bucket, ms: <5=%u 5-12=%u 12-20=%u 20-28=%u 28-40=%u 40+=%u",
         g_ph_bins[0], g_ph_bins[1], g_ph_bins[2], g_ph_bins[3], g_ph_bins[4], g_ph_bins[5]);
     for (int b = 0; b < 6; ++b) g_ph_bins[b] = 0;
@@ -4684,6 +4984,7 @@ static int RunVideo()
                        (v.nr_small || !upscale) ? 0 : vh.full_w,
                        (v.nr_small || !upscale) ? 0 : vh.full_h))
     {
+        if (g_submission_failed) return 3;
         // A feature-create refusal is not a reason to kill the desktop
         // overlay. Keep the worker alive and pass raw frames through (the
         // bypass path below shows v.color). This prevents the restart storm
@@ -4715,6 +5016,7 @@ static int RunVideo()
         {
             if (live)
             {
+                FlushProfileFrames();
                 Log("[live] input stream closed after %u frames; %u direct evaluations", frame, g_eval_count);
                 // Explicit NGX resource cleanup BEFORE exiting: without
                 // ReleaseFeature/Shutdown1 the GPU resources (the D3D12 device,
@@ -4813,6 +5115,7 @@ static int RunVideo()
                                (v.nr_small || !rup) ? 0 : rc.full_w,
                                (v.nr_small || !rup) ? 0 : rc.full_h))
             {
+                if (g_submission_failed) return 3;
                 h.feature = nullptr;
                 Log("[video] RNSZ: feature create failed at %ux%u - SAFE PASSTHROUGH",
                     rc.width, rc.height);
@@ -4951,6 +5254,13 @@ static int RunVideo()
             continue;
         }
         const double t_frame = PhaseNow();
+        const bool phase_on = PhaseEnabled();
+        if (phase_on) g_frame_stamp = {};
+        ProfileRequest profile_request{ v, fh };
+        if (phase_on) ++g_ph_requests;
+        bool source_fresh = true;
+        bool defer_tail = false;
+        UINT64 upload_done = 0, eval_done = 0, present_done = 0;
         if (CaptureActive())
         {
             // Capture mode: the colour comes from the desktop (DDA1) or from
@@ -4958,6 +5268,9 @@ static int RunVideo()
             // sent in (the client keeps sending pairs).
             const double t_dda = PhaseNow();
             const bool got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+            if (g_submission_failed) return 6;
+            source_fresh = got && g_capture_visual_changed;
+            if (phase_on && source_fresh) ++g_ph_fresh_sources;
             PhaseAdd(PH_DDA, t_dda);
             if (!got && !g_dda_ready)
             {
@@ -4966,6 +5279,9 @@ static int RunVideo()
                 // WITHOUT running NGX on an empty colour (evaluate on zero hangs).
                 VideoResultHeader empty = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
                 if (!WriteExact(stdout, &empty, sizeof(empty))) return 10;
+                ProfileFrameResult(v, fh, false, "idle");
+                if (phase_on) ++g_ph_idle;
+                PhaseReport((fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr);
                 continue;
             }
             if (!got)
@@ -5005,6 +5321,9 @@ static int RunVideo()
                     ReassertPresentTopmost();
                     VideoResultHeader idle = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
                     if (!WriteExact(stdout, &idle, sizeof(idle))) return 10;
+                    ProfileFrameResult(v, fh, false, "idle");
+                    if (phase_on) ++g_ph_idle;
+                    PhaseReport(want_bypass);
                     continue;
                 }
             }
@@ -5015,6 +5334,9 @@ static int RunVideo()
                 g_skip_static_count = 0;
                 g_skip_static_logged = false;
             }
+            defer_tail = !g_hdr_capture && warmup_done && h.feature != nullptr &&
+                !v.nr_small && PresentModeActive(v) &&
+                (fh.reserved & (FRAME_FLAG_BYPASS | FRAME_FLAG_SPLIT | FRAME_FLAG_WANT_PIXELS)) == 0;
             // This frame is being processed: remember what it will show, so the
             // next unchanged frame can tell whether anything differs.
             g_last_out_bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
@@ -5024,12 +5346,14 @@ static int RunVideo()
             g_force_next_frame = false;
             const double t_up = PhaseNow();
             const bool up_ok = UploadMotionOnly(v, mv_ptr,
-                                  (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0);
+                                  (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0,
+                                  defer_tail ? &upload_done : nullptr);
             PhaseAdd(PH_UPLOAD, t_up);
-            if (!up_ok) return 6;
+            if (!up_ok || (defer_tail && upload_done == 0)) return 6;
         }
         else
         {
+            if (phase_on) ++g_ph_fresh_sources;
             const double t_up = PhaseNow();
             const bool up_ok = UploadVideoFrame(v, color_ptr, mv_ptr,
                                    (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0);
@@ -5062,9 +5386,17 @@ static int RunVideo()
         if (!bypass)
         {
             const double t_eval = PhaseNow();
-            const bool ev_ok = EvaluateVideo(v, (frame == 0 || fh.reset != 0) ? 1 : 0);
+            const bool ev_ok = EvaluateVideo(v, (frame == 0 || fh.reset != 0) ? 1 : 0,
+                                             defer_tail ? &eval_done : nullptr);
             PhaseAdd(PH_EVAL, t_eval);
             if (!ev_ok) return 9;
+            if (defer_tail && eval_done <= upload_done)
+            { Log("[video] tail token order failed: upload=%llu eval=%llu", upload_done, eval_done); return 9; }
+            if (phase_on && !defer_tail)
+            {
+                ++g_ph_evaluated;
+                if (source_fresh) ++g_ph_fresh_evaluated;
+            }
             if ((fh.reserved & FRAME_FLAG_SPLIT) != 0)
             {
                 // In bypass the wipe is meaningless: both halves would be the
@@ -5083,9 +5415,20 @@ static int RunVideo()
             // NGX evaluate is skipped but the pipeline is alive (window, HUD).
             FollowCapturedWindow();
             ReassertPresentTopmost();
-            const bool pres_ok = bypass ? PresentBypass(v) : PresentFrame(v);
+            const bool pres_ok = bypass ? PresentBypass(v) : PresentFrame(v, defer_tail ? &present_done : nullptr);
             PhaseAdd(PH_PRESENT, t_pres);
             if (!pres_ok) return 9;
+            if (defer_tail)
+            {
+                if (present_done <= eval_done)
+                { Log("[video] tail token order failed: eval=%llu present=%llu", eval_done, present_done); return 9; }
+                ++g_eval_count;
+                if (phase_on)
+                {
+                    ++g_ph_evaluated;
+                    if (source_fresh) ++g_ph_fresh_evaluated;
+                }
+            }
             // Pixels for the client (screenshot/recording) - in bypass mode
             // too: the recording needs exactly the frame that is on screen
             // (the raw capture).
@@ -5124,12 +5467,15 @@ static int RunVideo()
             if (!DeliverPixels(output, fh.index, fh.pts)) return 10;
         }
         PhaseAdd(PH_FRAME, t_frame);
+        ProfileFrameResult(v, fh, source_fresh && !bypass, bypass ? "bypass" : "enhanced");
+        if (phase_on) ++g_ph_processed;
         PhaseReport(bypass);
         if (frame < 3 || ((frame + 1) % 30) == 0)
             Log("[video] delivered frame %u%s", frame + 1, live ? " (live)" : "");
         ++frame;
         if (!live && frame >= vh.frame_count) break;
     }
+    FlushProfileFrames();
     Log("[pure] complete: %u frames delivered, %u direct evaluations", frame, g_eval_count);
     CleanupVideoNgx();
     CloseOut();
@@ -5343,14 +5689,14 @@ static int Serve(DWORD game_pid)
                     dst.Type      = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
                     D3D12_BOX box = { 0, 0, 0, h.width / 2, h.height, 1 };
                     h.list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
-                    EndCommands();
-                    done = true;
+                    done = EndCommands() != 0;
                 }
             }
             else
                 done = Evaluate(h.tex[FEED_COLOR], h.tex[FEED_OUTPUT], h.tex[FEED_DEPTH], h.tex[FEED_MV],
                                 h.width, h.height, fm.reset ? 1 : 0, mvsx, mvsy);
 
+            if (g_submission_failed) return 1;
             if (done)
             {
                 h.queue->Signal(h.fence_out, fm.n);

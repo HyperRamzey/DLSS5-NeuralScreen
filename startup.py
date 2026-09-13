@@ -153,6 +153,12 @@ def _apply_gpu_env(cfg: dict) -> None:
         os.environ["NS_GPU"] = str(int(gpu))
 
 
+#: What _log_environment found, kept for the About block. The log header
+#: is what users are asked to paste into an issue, and the same four facts
+#: belong where a user can read them without finding the log first.
+ENVIRONMENT: dict = {}
+
+
 def _log_environment(cfg: dict) -> None:
     """Print the environment header into the log: version, OS, HDR, driver.
 
@@ -166,6 +172,8 @@ def _log_environment(cfg: dict) -> None:
         import platform
         import sys as _sys
         win = _sys.getwindowsversion()
+        ENVIRONMENT["version"] = APP_VERSION
+        ENVIRONMENT["windows"] = f"{win.major}.{win.minor} ({win.build})"
         print(f"[env] NeuralScreen {APP_VERSION} | Windows {win.major}.{win.minor} "
               f"(build {win.build}) | {platform.platform()}")
     except Exception:
@@ -188,6 +196,7 @@ def _log_environment(cfg: dict) -> None:
                     desc, _ = winreg.QueryValueEx(key, "DriverDesc")
                     if "NVIDIA" in str(desc):
                         ver, _ = winreg.QueryValueEx(key, "DriverVersion")
+                        ENVIRONMENT["driver"] = str(ver)
                         print(f"[env] driver: {ver}")
                         break
             except OSError:
@@ -242,6 +251,9 @@ def configure(st) -> None:
     st.presets = load_presets(st.cfg)
     _apply_nr_dll(st.cfg)
     _log_environment(st.cfg)
+    # A copy for the About block: the module-level dict is filled by the
+    # probe above, and the menu reads it off the state like everything else.
+    st.environment = dict(ENVIRONMENT)
     st.width, st.height = int(st.cfg["width"]), int(st.cfg["height"])
     monitor_cfg = st.cfg["monitor"]
     if isinstance(monitor_cfg, str):

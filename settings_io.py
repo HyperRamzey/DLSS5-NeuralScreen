@@ -714,6 +714,12 @@ def menu_payload(st) -> dict:
         "autostart": _autostart_enabled(),
         "split": st.split_pos,
         "gpu_text": st.gpu_text,
+        # The four facts the log header carries, for the About block. A
+        # reporter can read them off the menu instead of being asked which
+        # version and which driver - which is the first exchange on almost
+        # every issue.
+        "about": dict(getattr(st, "environment", None) or {},
+                      gpu=st.gpu_text or ""),
         "gpu_ok": st.gpu_ok,
         "window_mode": st.window_hwnd is not None,
         "monitor_devicename": st.capture.devicename,

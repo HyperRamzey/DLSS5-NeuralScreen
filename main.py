@@ -243,6 +243,7 @@ class _Pipeline:
         "follow_resize",
         "follow_size",
         "mon_resize",
+        "environment",
         "frame_index",
         "gpu_ok",
         "gpu_alerted",

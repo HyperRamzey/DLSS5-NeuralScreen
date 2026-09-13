@@ -192,6 +192,8 @@ class OverlayMenu:
             # parameter slider (see _draw_slider).
             # (low, high) per parameter, from settings_io.
             "param_ranges": {},
+            # version / windows / driver / gpu, from the log header.
+            "about": {},
             "style": 1,
             "param_defaults": {},
             "preset_active": False,
@@ -762,8 +764,27 @@ class OverlayMenu:
             # non-interactive kind the drawer supports - with the label as
             # its caption.
             channel = self.state.get("channel") or ""
-            if channel:
+            about = self.state.get("about") or {}
+            if channel or about:
                 section(s["sec_about"], "app")
+                # The same four facts the log header opens with. Every issue
+                # starts by asking which version and which driver; this is
+                # the answer, where it can be read without finding the log.
+                for key, label in (("version", s["about_version"]),
+                                   ("gpu", s["gpu"]),
+                                   ("driver", s["about_driver"]),
+                                   ("windows", s["about_windows"])):
+                    value = str(about.get(key) or "")
+                    if not value or not show:
+                        continue
+                    items.append(Item("info", f"about_{key}",
+                                      pygame.Rect(pad, cy, inner_w,
+                                                  self._u(LABEL_H)),
+                                      extra={"label": label, "value": value}))
+                    cy += self._u(LABEL_H) + self._u(4)
+                if show and about:
+                    cy += self._u(6)
+            if channel:
                 act_h = self._u(ACTION_H)
                 if show:
                     items.append(Item("button", "channel",

@@ -61,7 +61,7 @@ def main() -> int:
     pygame.display.set_mode((64, 64))
     import fonts
     from i18n import STRINGS
-    from overlay_ui import OverlayMenu
+    from overlay_ui import SETTINGS_TABS, OverlayMenu
 
     failures = []
     widest = (0.0, "")
@@ -72,8 +72,11 @@ def main() -> int:
         menu.lang = lang
         menu.set_state(dict(STATE, lang=lang))
         menu.visible = True
-        for page in ("main", "settings"):
+        for page, tab in [("main", None)] + [("settings", t)
+                                            for t in SETTINGS_TABS]:
             menu.page = page
+            if tab is not None:
+                menu.settings_tab = tab
             menu.layout(3840, 2160)
             for item in menu.items:
                 hint = item.extra.get("hint")
@@ -108,8 +111,11 @@ def main() -> int:
         menu.lang = lang
         menu.set_state(dict(STATE, lang=lang))
         menu.visible = True
-        for page in ("main", "settings"):
+        for page, tab in [("main", None)] + [("settings", t)
+                                            for t in SETTINGS_TABS]:
             menu.page = page
+            if tab is not None:
+                menu.settings_tab = tab
             menu.layout(3840, 2160)
             for item in menu.items:
                 if item.kind != "segmented":

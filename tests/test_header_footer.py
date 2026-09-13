@@ -124,6 +124,7 @@ def main() -> int:
 
     # 5. The settings page: only the back (close) icon, no min.
     menu.page = "settings"
+    menu.settings_tab = "app"      # where the language and the theme live
     menu.layout(3840, 2160)
     icons = [i for i in menu.items if i.kind == "icon"]
     keys = [i.key for i in icons]
@@ -172,6 +173,9 @@ def main() -> int:
     #    below the viewport - scroll it into view first (the real loop
     #    scrolls the same way).
     menu.page = "settings"
+    # Language and theme live on the "program" tab since the page became
+    # four tabs; the test used to see the whole page at once.
+    menu.settings_tab = "app"
     menu.layout(3840, 2160)
     theme_seg = next((i for i in menu.items
                       if i.kind == "segmented" and i.key == "theme"), None)

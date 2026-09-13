@@ -131,6 +131,12 @@ FONT_SIZE = 17
 TITLE_SIZE = 21
 SMALL_SIZE = 14
 
+#: The settings page, in the order the tabs are drawn. Four is the ceiling
+#: at this panel width - measured across twelve languages, Polish takes 96%
+#: of the strip - so a fifth subject needs a wider panel or a scrolling
+#: strip, not another tab squeezed in.
+SETTINGS_TABS = ("capture", "rec", "keys", "app")
+
 PARAM_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
 # The fallback range, used only if the state has no "param_ranges" - the
 # real ones are measured and live in settings_io, which owns them. A menu
@@ -255,6 +261,10 @@ class OverlayMenu:
         except Exception:
             self._cjk_fonts = {}
         self.panel_rect = pygame.Rect(0, 0, 0, 0)
+        #: Which settings tab is open. In-session only: the page is entered
+        #: to do one thing, and being returned to last week's tab is not
+        #: what anyone wants from it.
+        self.settings_tab = SETTINGS_TABS[0]
         self._stats_rect = pygame.Rect(0, 0, 0, 0)
         self._gpu_rect = pygame.Rect(0, 0, 0, 0)
         # The relative rects are computed in layout() for the main page
@@ -496,8 +506,16 @@ class OverlayMenu:
         self._sections: list[tuple[str, pygame.Rect]] = []
         sec_h = self._u(SMALL_SIZE) + self._u(10)
 
-        def section(title: str) -> None:
-            nonlocal cy
+        # Which tab the rows being built belong to. section() sets it and
+        # every builder below honours it, so a hidden tab costs no layout and
+        # no re-indentation of the page that was here before tabs.
+        show = True
+
+        def section(title: str, tab: str | None = None) -> None:
+            nonlocal cy, show
+            show = tab is None or tab == self.settings_tab
+            if not show:
+                return
             cy += self._u(6)
             self._sections.append((title, pygame.Rect(pad, cy, inner_w, sec_h)))
             cy += sec_h
@@ -507,6 +525,8 @@ class OverlayMenu:
                    mark: float | None = None,
                    ends: tuple | None = None) -> None:
             nonlocal cy
+            if not show:
+                return
             items.append(Item("slider", key,
                               pygame.Rect(pad, cy, inner_w, label_h + ctrl_h),
                               lo=lo, hi=hi, value=value,
@@ -522,6 +542,8 @@ class OverlayMenu:
         def choice(key: str, label: str, current: str, options: list,
                    labels: list | None = None, hint: str = "") -> None:
             nonlocal cy
+            if not show:
+                return
             extra = {"label": label, "current": current,
                      "labels": list(labels or options),
                      "label_h": label_h}
@@ -548,6 +570,8 @@ class OverlayMenu:
             expand/collapse machinery; here both options are visible at once.
             """
             nonlocal cy
+            if not show:
+                return
             if label:
                 # The control is as wide as its captions need, not a fixed
                 # 60 units per option. Those captions are real words in
@@ -575,6 +599,8 @@ class OverlayMenu:
 
         def toggle(key: str, label: str, on: bool, hint: str = "") -> None:
             nonlocal cy
+            if not show:
+                return
             extra = {"label": label}
             hint_h = 0
             if hint:
@@ -618,7 +644,15 @@ class OverlayMenu:
             cy += gap
 
         elif self.page == "settings":
-            section(s["sec_capture"])
+            # Four tabs where six sections used to run one after another. The
+            # page is where everything set once in a lifetime lives, and it
+            # is where every new setting will land - a single column of
+            # sections is what made the old menu grow without bound.
+            segmented("settings_tab", "", self.settings_tab,
+                      list(SETTINGS_TABS),
+                      labels=[s[f"tab_{t}"] for t in SETTINGS_TABS])
+            cy += self._u(4)
+            section(s["sec_capture"], "capture")
             monitors = self.state.get("monitors") or []
             if monitors:
                 # The hint is here because two people asked the same question
@@ -654,23 +688,24 @@ class OverlayMenu:
             label = s.get("shot_dir_btn", "Screenshot folder...")
             if shot_dir:
                 label = f"{label}  ·  {shot_dir}"
-            items.append(Item("button", "shot_dir",
-                              pygame.Rect(pad, cy, inner_w, ctrl_h),
-                              extra={"label": label}))
-            cy += ctrl_h + gap
+            if show:
+                items.append(Item("button", "shot_dir",
+                                  pygame.Rect(pad, cy, inner_w, ctrl_h),
+                                  extra={"label": label}))
+                cy += ctrl_h + gap
 
             # Recording: everything about what leaves the program besides
             # the screen itself. Spout2 (off by default) publishes the
             # processed picture for external recorders; the recording
             # indicator is a display preference of the same subject.
-            section(s["sec_recording"])
+            section(s["sec_recording"], "rec")
             toggle("spout", s.get("spout", "Spout2 output (OBS)"),
                    bool(self.state.get("spout")),
                    hint=s.get("spout_hint", ""))
             toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
                    bool(self.state.get("rec_indicator", True)))
 
-            section(s["sec_behaviour"])
+            section(s["sec_behaviour"], "app")
             # Idle screens: no new frame arrives (the desktop did not change,
             # the window did not redraw) - the network waits instead of
             # chewing the same picture again. No visual price, a real one on
@@ -684,12 +719,12 @@ class OverlayMenu:
             toggle("autostart", s.get("autostart", "Autostart with Windows"),
                    bool(self.state.get("autostart")))
 
-            section(s["sec_hotkeys"])
+            section(s["sec_hotkeys"], "keys")
             # The remapping fields. The captions on the buttons come from these
             # same values, so a key change is visible across the whole menu at
             # once.
             field_h = self._u(CTRL_H)
-            for cmd, label in HOTKEY_ROWS:
+            for cmd, label in HOTKEY_ROWS if show else ():
                 items.append(Item("hotkey", cmd,
                                   pygame.Rect(pad, cy, inner_w, field_h),
                                   extra={"label": s.get(label, label),
@@ -700,15 +735,16 @@ class OverlayMenu:
             # below: a full row gap on both sides left 96 px of nothing
             # before APPEARANCE.
             cy += self._u(8)
-            self._hint_rel = pygame.Rect(pad, cy, inner_w,
-                                         self._u(SMALL_SIZE) + self._u(6))
-            cy += self._hint_rel.h + gap
+            if show:
+                self._hint_rel = pygame.Rect(pad, cy, inner_w,
+                                             self._u(SMALL_SIZE) + self._u(6))
+                cy += self._hint_rel.h + gap
 
             # Appearance: language and theme moved here from the main page
             # (user rule 10.09: the main page is the main page - settings
             # live behind the gear). The segmented controls emit the same
             # ("lang", ...) / ("theme", ...) actions main already handles.
-            section(s["sec_view"])
+            section(s["sec_view"], "app")
             # The language list: a drop-down, not segments - the full set
             # of popular languages (12) cannot fit in a segmented row
             # (user rule 10.09: the list expands, it is not cycled).
@@ -727,14 +763,16 @@ class OverlayMenu:
             # its caption.
             channel = self.state.get("channel") or ""
             if channel:
-                section(s["sec_about"])
+                section(s["sec_about"], "app")
                 act_h = self._u(ACTION_H)
-                items.append(Item("button", "channel",
-                                  pygame.Rect(pad, cy, inner_w, act_h),
-                                  extra={"label": channel, "filled": False}))
-                # The footer below opens with its own rule and spacing; a
-                # full PAD on top of that was the second hole.
-                cy += act_h + self._u(6)
+                if show:
+                    items.append(Item("button", "channel",
+                                      pygame.Rect(pad, cy, inner_w, act_h),
+                                      extra={"label": channel,
+                                             "filled": False}))
+                    # The footer below opens with its own rule and spacing;
+                    # a full PAD on top of that was the second hole.
+                    cy += act_h + self._u(6)
         else:
             section(s["sec_processing"])
             nr_on = bool(self.state.get("nr"))
@@ -1336,6 +1374,13 @@ class OverlayMenu:
         if key == "theme":
             self.state["theme"] = value
             return [("theme", value)]
+        if key == "settings_tab":
+            # Navigation inside the page: nothing for main to do, and the
+            # menu redraws itself on the next frame.
+            if value in SETTINGS_TABS:
+                self.settings_tab = value
+                self.scroll = 0
+            return []
         if key == "style":
             # Optimistic, like the theme: the control shows the new choice
             # at once and main applies it. Without this the segment would

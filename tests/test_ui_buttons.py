@@ -110,8 +110,9 @@ def main() -> int:
         if menu.page != "settings" or out != [("capture", None)]:
             failures.append(f"gear: expected settings page, got {out}")
 
-    # 2. The settings page: the lang drop-down, the theme segment, hotkey
-    #    rows, back icon, back button.
+    # 2. The settings page: four tabs, and each control on the one it
+    #    belongs to. The page used to lay every control out at once.
+    menu.settings_tab = "app"      # the language and the theme
     menu.layout(3840, 2160)
     paint(menu)
     lang_choice = find(menu, "choice", "lang")
@@ -135,6 +136,9 @@ def main() -> int:
         # before clicking anything below the list.
         menu.layout(3840, 2160)
         paint(menu)
+    menu.settings_tab = "app"      # the theme segment lives here now
+    menu.layout(3840, 2160)
+    paint(menu)
     for key, want in (("theme", [("theme", "dark")]),):
         seg = find(menu, "segmented", key)
         if seg is None:
@@ -148,6 +152,9 @@ def main() -> int:
             pygame.MOUSEBUTTONDOWN, {"pos": cells[1].center, "button": 1}))
         if out != want:
             failures.append(f"segment {key}: expected {want}, got {out}")
+    # The key rows have their own tab now.
+    menu.settings_tab = "keys"
+    menu.layout(3840, 2160)
     for hk_cmd in ("toggle", "settings", "screenshot_menu", "record",
                    "window_mode", "scale_up", "scale_down", "quit"):
         hk = find(menu, "hotkey", hk_cmd)
@@ -159,7 +166,12 @@ def main() -> int:
             failures.append(f"hotkey row {hk_cmd}: expected capture, got {out}")
     # The switches on the settings page: each reports its own key. Two
     # of the three restart the worker when they fire (spout, hdr).
-    for tg_key in ("spout", "rec_indicator", "hdr"):
+    # The toggles are spread over the tabs now: capture holds hdr and the
+    # static skip, recording holds spout and the indicator.
+    for tg_key, tg_tab in (("spout", "rec"), ("rec_indicator", "rec"),
+                           ("hdr", "capture")):
+        menu.settings_tab = tg_tab
+        menu.layout(3840, 2160)
         tg = find(menu, "toggle", tg_key)
         if tg is None:
             failures.append(f"no {tg_key} toggle on the settings page")
@@ -177,6 +189,9 @@ def main() -> int:
     # The hint under a toggle is a caption, not a hit target: a click on
     # the explanation must emit nothing (the Spout2 toggle restarts the
     # worker, so a stray click there would freeze the screen for seconds).
+    menu.settings_tab = "rec"
+    menu.layout(3840, 2160)
+    paint(menu)
     spout_tg = find(menu, "toggle", "spout")
     if spout_tg is None:
         failures.append("no spout toggle for the hint hit-test")

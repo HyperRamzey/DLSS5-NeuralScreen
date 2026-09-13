@@ -312,6 +312,11 @@ def apply_menu_action(st, action: tuple) -> None:
     elif kind == "button":
         name = action[1]
         if name == "close":
+            # Whatever route got here, the keyboard comes back. suspend() has
+            # exactly one counterpart and closing the menu is the last moment
+            # it can be reached; resume() on a controller that was never
+            # suspended posts a message nobody acts on.
+            st.hotkeys.resume()
             st.display.menu.visible = False
             st.display.set_menu_opaque(False)
             st.display.set_menu_input(False)

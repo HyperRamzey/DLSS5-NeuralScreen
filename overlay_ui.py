@@ -1274,8 +1274,17 @@ class OverlayMenu:
             return [("capture", None)]
         if key == "min":
             # The collapse button: hide the menu, exactly like the old
-            # footer "Collapse" did.
-            return [("button", "close")]
+            # footer "Collapse" did - and let go of the keyboard first.
+            # Collapsing while a hotkey field was waiting for a key left
+            # `capturing` set and never sent ("capture", None), so the global
+            # hotkeys stayed suspended: no Num2 to reopen the menu, no Num1,
+            # nothing. The program looked dead (audit).
+            out: list[tuple] = []
+            if self.capturing is not None:
+                self.capturing = None
+                out.append(("capture", None))
+            out.append(("button", "close"))
+            return out
         if key == "close":
             self.page = "main"
             self.scroll = 0

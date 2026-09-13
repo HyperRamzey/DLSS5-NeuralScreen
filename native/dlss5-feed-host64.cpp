@@ -5634,12 +5634,21 @@ static int RunVideo()
                                   !out_changed;
                 if (skip)
                 {
-                    if (!g_skip_static_logged)
+                    ++g_skip_static_count;
+                    // Announce a STRETCH, not a frame. In one-window mode the
+                    // capture is event-driven and a window that is almost
+                    // still alternates skip/process frame after frame: a
+                    // user's log had the pair of lines repeating every 10-17
+                    // ms, "1 frames skipped" each time. That noise is also
+                    // what the menu reads to say "idle", so the word flipped
+                    // sixty times a second in front of whoever had it open.
+                    // Eight frames is a seventh of a second - far below any
+                    // real idle stretch, far above this churn.
+                    if (!g_skip_static_logged && g_skip_static_count >= 8)
                     {
                         g_skip_static_logged = true;
                         Log("[skip] no new frame - the network is idle until the screen changes");
                     }
-                    ++g_skip_static_count;
                     // The picture itself does not change, but in one-window mode
                     // the frame it sits in can still move - keep the overlay on it.
                     FollowCapturedWindow();
@@ -5654,8 +5663,12 @@ static int RunVideo()
             }
             else if (g_skip_static_count != 0)
             {
-                Log("[skip] the screen changed - %u frames skipped, the network resumes",
-                    g_skip_static_count);
+                // Only if the stretch was announced: an unannounced one was
+                // too short to be worth two lines, and a "resumes" with no
+                // "idle" before it reads as an event that never happened.
+                if (g_skip_static_logged)
+                    Log("[skip] the screen changed - %u frames skipped, "
+                        "the network resumes", g_skip_static_count);
                 g_skip_static_count = 0;
                 g_skip_static_logged = false;
             }

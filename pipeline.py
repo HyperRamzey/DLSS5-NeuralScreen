@@ -781,7 +781,18 @@ def follow_window(st) -> None:
     # the two agree, which is why it never showed up here.
     if st.follow_size is None:
         st.follow_size = (w, h)
-    if (w, h) != st.follow_size:
+    # A couple of pixels is not a resize worth a rebuild. Two numbers
+    # describe this window and they already disagree by a border on
+    # Windows 10 (issue #30), and a 4K log shows the pair 3840x2160 /
+    # 3840x2159 for one maximised browser. A rebuild costs a second of
+    # veil; being two pixels stale costs the overlay two pixels, and the
+    # worker re-opens its own capture when the window really changes size.
+    #
+    # Not the cause of the reported video dimming, though: watched at
+    # 100 Hz, a browser leaving fullscreen moves the frame 72 px in one
+    # step with no intermediate value at all. That one is a real resize
+    # and it does rebuild - see the warm-up commit for what it now costs.
+    if max(abs(w - st.follow_size[0]), abs(h - st.follow_size[1])) > 2:
         now = time.monotonic()
         if st.follow_resize is None or st.follow_resize[0] != (w, h):
             st.follow_resize = ((w, h), now)
@@ -869,8 +880,13 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
     # The order matters: work_w/work_h and guides change TOGETHER,
     # otherwise the motion size drifts away from what the worker
     # expects (see the docstring).
+    # A parameter change does not move the work size, and a fresh generator
+    # would throw away the optical-flow history for nothing: the next frame
+    # would come back as a scene cut and the network would start its
+    # temporal accumulation again, which is visible as a small settle.
+    if (new_w, new_h) != (st.work_w, st.work_h) or st.guides is None:
+        st.guides = TemporalGuideGenerator(new_w, new_h, emit_small=st.motion_small)
     st.work_w, st.work_h = new_w, new_h
-    st.guides = TemporalGuideGenerator(st.work_w, st.work_h, emit_small=st.motion_small)
     channels.sync_motion_size(st)  # the flow resolution may have changed
     channels.sync_gray(st)         # the gray channel lives in the worker, size = guides flow
     st.frame_index = 0

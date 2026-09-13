@@ -58,6 +58,7 @@ ABOUT = {
     "test_hdr_switch.py": "HDR compatibility is off by default and switchable in 12 languages",
     "test_settings_hints.py": "every hint is one line and fits its row, in 12 languages",
     "test_rebuild_warmup.py": "a rebuild warms up briefly; only a cold launch pays 120 frames",
+    "test_param_apply.py": "a parameter change applies without rebuilding the feature",
     "test_hdr_shaders.py": "the HDR capture and composite shaders, run on WARP",
     "test_hdr_capture.py": "the whole HDR path on real hardware (runs only on an HDR display)",
     "test_gpu_rollback.py": "a card that cannot run the network reverts itself",

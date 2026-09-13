@@ -4759,6 +4759,35 @@ static int RunVideo()
                 if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
                 continue;
             }
+            // Nothing but the parameters changed? Then nothing has to be
+            // built. The four sliders, the profile, the style, the mask and
+            // the UI correction are Set on h.params before EVERY Evaluate
+            // out of g_video_options - the NGX feature itself depends only
+            // on the sizes and the upscale mode (CreateFeature ignores its
+            // flags argument, and the preset hint is an environment
+            // variable read once per process). Until now a slider still
+            // drained the GPU, released the feature and the textures, and
+            // built them again: 113-148 ms of frozen picture per step, and
+            // it was this release/create pair that leaked 420 MB a time
+            // until 1.7.1 fixed which library does the releasing (#48).
+            const int want_small_now = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0 ? 1 : 0;
+            const bool same_size = rc.width == v.w && rc.height == v.hgt &&
+                                   want_small_now == (v.nr_small ? 1 : 0) &&
+                                   (rup ? (v.upscale && rc.full_w == v.full_w &&
+                                           rc.full_h == v.full_h)
+                                        : !v.upscale);
+            if (same_size && h.feature != nullptr)
+            {
+                memcpy(&g_video_options, &rc, sizeof(g_video_options));
+                g_force_next_frame = true;   // show it on the next frame
+                VideoResizeAck ok = { RESIZE_ACK_MAGIC, 1u,
+                                      static_cast<uint32_t>(NVSDK_NGX_Result_Success),
+                                      0u, fh.pts };
+                if (!WriteExact(stdout, &ok, sizeof(ok))) return 10;
+                Log("[video] RNSZ: parameters only at %ux%u - the feature stays",
+                    v.w, v.hgt);
+                continue;
+            }
             Log("[video] RNSZ: work %ux%u -> %ux%u (full %ux%u), warmup=%u",
                 v.w, v.hgt, rc.width, rc.height, rc.full_w, rc.full_h, rc.warmup);
             // 1. Drain the GPU: the old feature must be idle before release.

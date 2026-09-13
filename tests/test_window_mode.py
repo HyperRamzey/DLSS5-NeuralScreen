@@ -293,17 +293,32 @@ def main() -> int:
             failures.append("the HUD overlay window was not found")
 
         def check_on_target(what: str) -> None:
-            """Both layers within a couple of pixels of the target window."""
+            """The PICTURE sits on the target window; the HUD covers the screen.
+
+            The picture is the processed frame and belongs exactly on the
+            window it was made from. The HUD layer used to be put there too,
+            and that is what sent the menu and every alert inside somebody
+            else's window - and the shrinking and expanding around it cost a
+            set_mode each way, which is what the blinking was (user, 13.09).
+            It stays the size of the monitor now; everything drawn on it is
+            placed against the screen, and it is click-through and
+            colour-keyed, so a layer nobody has drawn on is not visible.
+            """
             want = frame_rect(hwnd)
-            for name, w in (("picture", pres), ("HUD", hud)):
-                if not w:
-                    continue
-                got = frame_rect(w)
+            if pres:
+                got = frame_rect(pres)
                 off = max(abs(got[0] - want[0]), abs(got[1] - want[1]))
-                print(f"     {what}: {name} at {got[:2]}, window at {want[:2]}")
+                print(f"     {what}: picture at {got[:2]}, window at {want[:2]}")
                 if off > 2:
-                    failures.append(f"{what}: the {name} layer is {off} px off "
+                    failures.append(f"{what}: the picture layer is {off} px off "
                                     f"the window ({got[:2]} vs {want[:2]})")
+            if hud:
+                got = frame_rect(hud)
+                print(f"     {what}: HUD at {got[:2]} sized {got[2]}x{got[3]}")
+                if got[2] < want[2] or got[3] < want[3]:
+                    failures.append(f"{what}: the HUD layer {got[2]}x{got[3]} is "
+                                    f"smaller than the window {want[2]}x{want[3]} "
+                                    f"- it must cover the screen")
 
         check_on_target("placed")
 

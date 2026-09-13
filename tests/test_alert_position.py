@@ -111,68 +111,54 @@ def main() -> int:
     if r.centerx != 1280 or r.y != margin:
         failures.append(f"the fallback is wrong: {r}")
 
-    # 7. The layer itself. In one-window mode the overlay is the size of
-    #    the captured window, so clamping alone would still put the alert
-    #    inside that window - which is the thing being fixed. An alert
-    #    expands the layer to the whole screen for as long as it is up, the
-    #    same way the menu already does, and puts it back afterwards.
+    # 7. The layer itself. In one-window mode it stays the size of the
+    #    SCREEN - it is not shrunk onto the captured window and not expanded
+    #    again for every alert. The shrinking cost a set_mode each way (the
+    #    SDL window is recreated and every attribute re-applied), and with
+    #    alerts needing the screen too it became several per second: "a lot
+    #    of blinking of both the alert and the menu when picking windows".
     import types
     calls = []
     d2 = object.__new__(D.Display)
     d2.ui_scale = 1.0
-    d2.width, d2.height = 1600, 900
+    d2.width, d2.height = 2560, 1440
     d2._alerts = []
-    d2._alert_expanded = False
     d2._window_layer = None
-    # The layer reads its own geometry rather than trusting whoever shrank
-    # it - set_window_layer is only one of the two roads onto a window.
-    d2._own_rect = lambda: (400, 100, 1600, 900)
+    d2._frame_size = None
+    d2._switch_active = False
     d2.menu = types.SimpleNamespace(visible=False, state={"theme": "light"})
-    # _draw_alerts renders when there is something to draw; give it a real
-    # font and surface so the expiry path can be reached the honest way.
     d2._alert_font = pygame.font.Font(None, 20)
-    d2.screen = pygame.Surface((1600, 900))
+    d2.screen = pygame.Surface((2560, 1440))
     d2._screen_rect = lambda: SCREEN
+    d2._own_rect = lambda: (0, 0, 2560, 1440)
     d2.set_fullscreen_layer = lambda w, h: calls.append(("expand", w, h))
-    d2.set_window_layer = lambda x, y, w, h: calls.append(("shrink", x, y, w, h))
 
     D.Display.alert(d2, "GPU", duration=0.0001)
-    if calls != [("expand", 2560, 1440)]:
-        failures.append(f"an alert in window mode did not take the layer to "
-                        f"the screen: {calls}")
     import time as _t
     _t.sleep(0.01)
     D.Display._draw_alerts(d2)
-    if calls[-1:] != [("shrink", 400, 100, 1600, 900)]:
-        failures.append(f"the layer did not go back on the window when the "
-                        f"alert expired: {calls}")
-    print(f"    layer in window mode: {calls}")
-
-    # 8. With the menu open the menu owns the expanded layer - an alert must
-    #    not expand it again, and must not shrink it away under the menu.
-    calls.clear()
-    d2.menu.visible = True
-    d2._alert_expanded = False
-    D.Display.alert(d2, "GPU", duration=0.0001)
-    _t.sleep(0.01)
-    D.Display._draw_alerts(d2)
     if calls:
-        failures.append(f"an alert touched the layer while the menu was open: "
+        failures.append(f"an alert resized the layer - that is the blinking: "
                         f"{calls}")
 
-    # 9. In full-screen mode there is no window layer to go back to, so
-    #    nothing is resized at all.
-    calls.clear()
-    d2.menu.visible = False
-    d2._window_layer = None
-    d2._alert_expanded = False
-    d2.width, d2.height = 2560, 1440
-    d2._own_rect = lambda: (0, 0, 2560, 1440)   # full screen: nothing to do
-    D.Display.alert(d2, "GPU", duration=0.0001)
-    _t.sleep(0.01)
-    D.Display._draw_alerts(d2)
+    # 8. Going onto a window records where it is and how big the frame is,
+    #    and leaves the layer alone.
+    D.Display.set_window_layer(d2, 400, 100, 1600, 900)
+    print(f"    after set_window_layer: layer {d2.width}x{d2.height}, "
+          f"window {d2._window_layer}, resizes {calls}")
+    if (d2.width, d2.height) != (2560, 1440):
+        failures.append(f"the layer left the screen: {d2.width}x{d2.height}")
+    if d2._window_layer != (400, 100, 1600, 900):
+        failures.append(f"the window position was not recorded: {d2._window_layer}")
     if calls:
-        failures.append(f"an alert resized the layer in full-screen mode: {calls}")
+        failures.append(f"going onto a window resized the layer: {calls}")
+
+    # 9. And an alert then lands at the top centre of the SCREEN, because
+    #    that is what the layer is.
+    r = D.Display._alert_rect(d2, W, H)
+    print(f"    alert in window mode: {r}")
+    if r.centerx != 1280 or r.y != margin:
+        failures.append(f"the alert is not at the screen's top centre: {r}")
 
     for f in failures:
         print("FAIL:", f)

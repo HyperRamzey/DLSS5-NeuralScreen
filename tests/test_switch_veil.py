@@ -148,17 +148,22 @@ def main() -> int:
         if not (px.g > 200 and px.r < 60):
             failures.append(f"the hold dim is not at full: {px}")
 
-        # 8. The layer is owned by the veil: a resize is deferred and the
-        #    shrink helper defers too - nothing touches the layer's
-        #    geometry until the veil is down (the reported slide).
+        # 8. The layer is owned by the veil: nothing touches its geometry
+        #    until the veil is down (the reported slide).
+        #
+        #    set_window_layer no longer shrinks the layer at all - in
+        #    one-window mode it stays the size of the screen, and only the
+        #    window's position is recorded - so there is nothing left for it
+        #    to defer. What still has to hold is that it does not resize
+        #    anything mid-veil, and that a resize does defer.
         before = disp.screen.get_size()
         disp.set_window_layer(10, 10, 640, 360)
         if disp.screen.get_size() != before:
             failures.append("set_window_layer shrank the layer mid-veil")
-        if disp._switch_pending != (640, 360):
-            failures.append("the window-layer size was not deferred")
+        if disp._window_layer != (10, 10, 640, 360):
+            failures.append("the window position was not recorded")
         disp.resize(1280, 720)
-        if disp._switch_pending != (1280, 720):
+        if disp._switch_pending is None:
             failures.append("a resize during the veil was not deferred")
 
         # 9. exit_switch_mode starts the fade-OUT - the layer is not given

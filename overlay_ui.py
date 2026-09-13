@@ -184,6 +184,7 @@ class OverlayMenu:
             # parameter slider (see _draw_slider).
             # (low, high) per parameter, from settings_io.
             "param_ranges": {},
+            "style": 1,
             "param_defaults": {},
             "preset_active": False,
             "recording": False,
@@ -548,8 +549,19 @@ class OverlayMenu:
             """
             nonlocal cy
             if label:
+                # The control is as wide as its captions need, not a fixed
+                # 60 units per option. Those captions are real words in
+                # twelve languages - "Натуральный" ran past a 60-unit cell
+                # and into its neighbour, and _draw_segmented centres the
+                # caption and lets it spill, so the overflow reads as a
+                # misspelling rather than as a clipped word.
+                # test_settings_hints measures this the way it measures
+                # hints; the label column keeps at least 150 units.
+                widest = max((self._small_font.size(str(t))[0]
+                              for t in (labels or options)), default=0)
+                need = max(self._u(60), widest + self._u(22))
                 seg_w = min(inner_w - self._u(150),
-                            self._u(60) * len(options) + self._u(60))
+                            need * len(options) + self._u(60))
             else:
                 # No label, no reason to squeeze: the captions are the
                 # control. "Window mode" ran off the panel at the old width.
@@ -813,6 +825,18 @@ class OverlayMenu:
             section(s["sec_effect"])
             choice("profile", s["profile"], str(self.state.get("profile", "")),
                    list(self.state.get("profiles") or []))
+            # Style picks WHICH look the network produces; the profile and
+            # the sliders under it say how strongly. Measured, it is the
+            # biggest lever there is - the three values are three different
+            # outputs, not three strengths - and until now it was buried
+            # inside the profile with no way to reach it. Default is the one
+            # that suits a desktop; the other two are tuned for games and
+            # soften photographs and text (README says so at length; a menu
+            # hint would not fit on one line).
+            segmented("style", s["style"],
+                      str(int(self.state.get("style", 1))),
+                      ["0", "1", "2"],
+                      labels=[s["style_0"], s["style_1"], s["style_2"]])
             params = self.state.get("params") or {}
             defaults = self.state.get("param_defaults") or {}
             for key in PARAM_KEYS:
@@ -1294,6 +1318,12 @@ class OverlayMenu:
         if key == "theme":
             self.state["theme"] = value
             return [("theme", value)]
+        if key == "style":
+            # Optimistic, like the theme: the control shows the new choice
+            # at once and main applies it. Without this the segment would
+            # snap back to the old cell until the next payload arrives.
+            self.state["style"] = int(value)
+            return [("style", value)]
         if key == "monitor":
             return [("monitor", value)]
         if key == "gpu":

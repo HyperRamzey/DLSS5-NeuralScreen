@@ -348,6 +348,11 @@ def resolve_params(cfg: dict) -> dict:
         params = dict(PROFILES[cfg["profile"]])
     else:
         params = dict(load_presets(cfg).get(cfg["profile"], PROFILES["Natural"]))
+    # The saved style overrides the profile's, the same way the four
+    # sliders do - the user picked it after picking the profile.
+    style = cfg.get("style")
+    if isinstance(style, int) and not isinstance(style, bool) and 0 <= style <= 2:
+        params["style"] = style
     for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
         # Saved presets are written by whatever build the user had, so they
         # are pulled into range here as well - validate_config only sees the
@@ -433,6 +438,9 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "local_tone": params["local_tone"],
         "local_structure": params["local_structure"],
         "skin_structure": params["skin_structure"],
+        # Style is a user choice now, not a property of the profile, so it
+        # has to survive a restart like the four sliders do.
+        "style": int(params.get("style", 1)),
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
         "screenshot_dir": cfg.get("screenshot_dir") or "",
@@ -647,6 +655,9 @@ def menu_payload(st) -> dict:
         # measurement that set it, rather than being a second copy of the
         # numbers inside the menu.
         "param_ranges": {k: list(v) for k, v in PARAM_RANGE.items()},
+        # Which of the three looks is live - its own control since the
+        # measurement showed it is the strongest lever we have.
+        "style": int(st.params.get("style", 1)),
         "param_defaults": {
             k: float(v) for k, v in
             (PROFILES.get(st.cfg["profile"])

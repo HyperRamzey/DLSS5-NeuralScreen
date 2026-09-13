@@ -239,6 +239,33 @@ def main() -> int:
         if out != want:
             failures.append(f"button {key}: expected {want}, got {out}")
 
+    # 3a2. Style is its own control now - the measurement says it is the
+    #      strongest lever there is, and it used to be reachable only by
+    #      picking a whole profile. Three cells, the middle one is Natural.
+    # The profile list above was expanded and collapsed; its rows move
+    # everything below, and a segment's cells are geometry the DRAWER
+    # fills. Lay out and paint again or the clicks land on the old rects.
+    menu.layout(3840, 2160)
+    paint(menu)
+    seg = find(menu, "segmented", "style")
+    if seg is None:
+        failures.append("no style segment on the main page")
+    else:
+        cells = seg.extra.get("cells") or []
+        if len(cells) != 3:
+            failures.append(f"the style segment has {len(cells)} cells, not 3")
+        else:
+            out = menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, {"pos": cells[0].center, "button": 1}))
+            if out != [("style", "0")]:
+                failures.append(f"style Default: expected [('style', '0')], "
+                                f"got {out}")
+            out = menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, {"pos": cells[2].center, "button": 1}))
+            if out != [("style", "2")]:
+                failures.append(f"style Cinematic: expected [('style', '2')], "
+                                f"got {out}")
+
     # 3b. The source segment carries what the Actions buttons used to: the
     #     left cell returns to the whole screen (nothing to do when it is
     #     already there), the right cell opens the window list.

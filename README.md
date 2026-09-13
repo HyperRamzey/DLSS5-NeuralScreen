@@ -97,6 +97,13 @@ running on it, red when it is not.
   detail. **Save preset** stores the current values under a name and puts it
   in the Profile list; **Delete preset** removes it. Dark scenes are
   brightened automatically so shadows keep their detail.
+- **Style** — *which* look the network produces, as opposed to how strongly.
+  Three of them, and they are three different outputs rather than three
+  strengths: **Default** is the one that suits a desktop, **Natural** and
+  **Cinematic** are tuned for games and soften photographs and small text.
+  Measured on a desktop capture, fine detail against the untouched frame:
+  Default **+18.7%**, Natural **−11.4%**, Cinematic **−23.4%**. Picking a
+  profile sets a style; this overrides it.
 - **Before / after wipe** — leaves the left part of the screen unprocessed so
   you can see what the effect is doing. Back to 0 when done.
 - **Boost** — on by default. The network runs at a reduced resolution and a

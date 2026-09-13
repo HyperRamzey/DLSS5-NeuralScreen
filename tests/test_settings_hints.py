@@ -97,6 +97,42 @@ def main() -> int:
                             f"{item.rect.w} px) and is clipped, not wrapped: "
                             f"{line[:40]}...")
 
+    # A segmented control has no hint - its captions ARE the control - so
+    # the same silent truncation applies to them, inside a cell a third the
+    # width of a row. _draw_segmented centres the caption and lets it spill,
+    # which reads as a misspelt word rather than as a clipped one.
+    widest_seg = (0.0, "")
+    for lang in STRINGS:
+        menu = OverlayMenu(1.0, lambda size=14, mono=False, bold=False, L=lang:
+                           fonts.load(size, mono=mono, bold=bold, lang=L))
+        menu.lang = lang
+        menu.set_state(dict(STATE, lang=lang))
+        menu.visible = True
+        for page in ("main", "settings"):
+            menu.page = page
+            menu.layout(3840, 2160)
+            for item in menu.items:
+                if item.kind != "segmented":
+                    continue
+                labels = item.extra.get("labels") or item.payload or []
+                if not labels:
+                    continue
+                cell = item.rect.w // len(labels)
+                for label in labels:
+                    width = menu._small_font.size(str(label))[0]
+                    share = width / max(1, cell)
+                    if share > widest_seg[0]:
+                        widest_seg = (share, f"{lang} {page}/{item.key} "
+                                             f"{label!r}")
+                    if share > ROOM:
+                        failures.append(
+                            f"{lang} {page}/{item.key}: the caption "
+                            f"{label!r} takes {share * 100:.0f}% of its cell "
+                            f"({width} of {cell} px) and spills over its "
+                            f"neighbour")
+    print(f"    widest segment caption: {widest_seg[1]} at "
+          f"{widest_seg[0] * 100:.0f}% of its cell")
+
     # The controls that carry a hint at all. If a page stops laying one of
     # these out, this test would go quiet about it - and the quiet would
     # look like a pass.
@@ -117,7 +153,7 @@ def main() -> int:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: every hint is one line and fits, in twelve languages")
+    print("OK: hints are one line, segment captions fit, in twelve languages")
     return 0
 
 

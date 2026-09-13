@@ -197,6 +197,20 @@ def apply_menu_action(st, action: tuple) -> None:
         # HDR compatibility: NS_HDR is read once per worker process too,
         # and it decides the capture format, so this is a restart as well.
         pipeline.apply_hdr(st, not bool(st.cfg.get("hdr", False)))
+    elif kind == "style":
+        # Style travels with the parameters, so it applies the same way they
+        # do since C1: a resize command with unchanged sizes, no feature
+        # rebuild. Measured in test_param_effect - the frame changes and the
+        # log says "parameters only".
+        try:
+            value = int(action[1])
+        except (TypeError, ValueError):
+            value = 1
+        if 0 <= value <= 2:
+            new_params = dict(st.params)
+            new_params["style"] = value
+            pipeline.request_apply(st, st.work_scale, st.cfg["profile"],
+                                   new_params)
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])

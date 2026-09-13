@@ -825,6 +825,13 @@ class OverlayMenu:
             section(s["sec_effect"])
             choice("profile", s["profile"], str(self.state.get("profile", "")),
                    list(self.state.get("profiles") or []))
+            # Called "Model" in the interface and `style` in the code: the
+            # three values really do select three different networks, and
+            # "style" next to the visual styles of a picture reads as a look
+            # rather than a choice of engine (user, 13.09). The key, the wire
+            # field and the config entry keep NVIDIA's name - DLSSNR.Style -
+            # because renaming those would break every saved config for a
+            # word.
             # Style picks WHICH look the network produces; the profile and
             # the sliders under it say how strongly. Measured, it is the
             # biggest lever there is - the three values are three different

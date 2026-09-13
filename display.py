@@ -27,6 +27,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import struct
 import sys
 import time
 from ctypes import wintypes
@@ -140,6 +141,11 @@ CJK_FONTS = fonts.CJK_FONTS
 FONT_SIZE = 18
 UI_BASE_HEIGHT = 1800
 ALERT_FONT_SIZE = 28
+# How far below the top of the SCREEN an alert sits, in unscaled pixels.
+# A fixed number, not a share of the height: 4.5% is 65 px on a 1440-tall
+# screen and 13 px on a 300-tall window, and neither of those is the same
+# margin (user, 13.09).
+ALERT_TOP_MARGIN = 28
 
 
 def ui_scale_for(height: int) -> float:
@@ -1447,12 +1453,81 @@ class Display:
         self.screen.blit(surf, (rect.x + dot_d + pad_x,
                                 rect.y + pad_y))
 
+    def _own_rect(self) -> tuple[int, int, int, int] | None:
+        """Where the overlay window itself sits on the desktop."""
+        try:
+            hwnd = pygame.display.get_wm_info()["window"]
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect)):
+                return None
+            return (rect.left, rect.top,
+                    rect.right - rect.left, rect.bottom - rect.top)
+        except Exception:
+            return None
+
+    def _screen_rect(self) -> tuple[int, int, int, int] | None:
+        """The monitor the overlay is on, in desktop coordinates."""
+        try:
+            hwnd = pygame.display.get_wm_info()["window"]
+            monitor = user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 2)  # NEAREST
+            if not monitor:
+                return None
+            info = ctypes.create_string_buffer(40 + 32 * 2)
+            ctypes.memmove(info, struct.pack("<I", len(info)), 4)
+            if not user32.GetMonitorInfoW(ctypes.c_void_p(monitor), info):
+                return None
+            left, top, right, bottom = struct.unpack_from("<4i", info, 4)
+            return (left, top, right - left, bottom - top)
+        except Exception:
+            return None
+
+    def _alert_rect(self, w: int, h: int) -> "pygame.Rect":
+        """Where an alert of this size goes, in overlay-local pixels.
+
+        Against the MONITOR, not the overlay: the two are the same thing
+        only in full-screen mode, and in one-window mode the overlay is the
+        size of the window and sits on it. Clamped into the overlay, because
+        an alert drawn outside it is an alert nobody sees - a window in the
+        bottom corner still gets one, as high and as central as that window
+        allows.
+        """
+        margin = int(round(ALERT_TOP_MARGIN * self.ui_scale))
+        screen, own = self._screen_rect(), self._own_rect()
+        if screen is not None and own is not None:
+            x = screen[0] + screen[2] // 2 - own[0] - w // 2
+            y = screen[1] + margin - own[1]
+        else:
+            x, y = (self.width - w) // 2, margin
+        edge = int(round(8 * self.ui_scale))
+        if self.width > w + 2 * edge:
+            x = max(edge, min(x, self.width - w - edge))
+        else:
+            x = 0
+        if self.height > h + 2 * edge:
+            y = max(edge, min(y, self.height - h - edge))
+        else:
+            y = 0
+        return pygame.Rect(x, y, w, h)
+
     def _draw_alerts(self) -> None:
-        """Pop-up alert: the menu palette, top centre.
+        """Pop-up alert: the menu palette, top centre OF THE SCREEN.
 
         It used to hang a third of the way down, centred, as a dark slab with
         an amber border - it clashed with the overall look and got into the
         middle of the frame.
+
+        And then it was centred on the OVERLAY, which is the whole monitor
+        only in full-screen mode. In one-window mode the overlay is the size
+        of the window and sits on it, so an alert about the GPU or the
+        monitor appeared in the middle of somebody's browser (user, 13.09).
+        It is placed against the monitor now, and clamped so that it stays
+        visible when the overlay does not reach that spot - a window in the
+        bottom corner still gets its alert, as high and as central as that
+        window allows.
+
+        The gap from the top is a fixed number of scaled pixels rather than
+        a share of the height: 4.5% of a 1440-tall screen is 65 px and of a
+        window 300 tall is 13, and neither of those is "a small margin".
         """
         now = time.monotonic()
         self._alerts = [(text, expires) for text, expires in self._alerts if expires > now]
@@ -1465,7 +1540,7 @@ class Display:
         pad_y = int(round(14 * self.ui_scale))
         w = surf.get_width() + pad_x * 2
         h = surf.get_height() + pad_y * 2
-        rect = pygame.Rect((self.width - w) // 2, int(round(self.height * 0.045)), w, h)
+        rect = self._alert_rect(w, h)
         radius = int(round(10 * self.ui_scale))
         # The panel is opaque: translucency would blend with the chroma key and
         # give a dirty tint (the colour key does not cut out a blended colour).

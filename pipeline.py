@@ -276,8 +276,20 @@ def rebuild_pipeline(st, note: str) -> None:
     full_w = st.width if (st.work_w != st.width or st.work_h != st.height) else 0
     full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
     st.shm = SharedFrameBuffer(st.width, st.height)
+    # The launch warm-up, not the rebuild's. st.effective_warmup is 120
+    # frames - it exists because a COLD card can take seconds to produce
+    # its first NGX frame and the frame watchdog would kill the worker on
+    # frame 0. By the time anything calls rebuild_pipeline the card has
+    # already been running the network, so those 120 frames are a second
+    # of veil for nothing: measured on a window resize, 1.85 s from the
+    # capture closing to the first real frame, of which ~1 s was the
+    # warm-up. do_restart has used RESTART_WARMUP for a full process
+    # restart since 1.6 and that is the same feature being recreated.
+    # min(), not the constant: a pre-Blackwell card gets 4 and must keep
+    # it (audit F3 - the restart storm the shortening exists to prevent).
+    warmup = min(st.effective_warmup, RESTART_WARMUP)
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-        st.params, st.work_w, st.work_h, st.effective_warmup, full_w, full_h,
+        st.params, st.work_w, st.work_h, warmup, full_w, full_h,
         st.shm)
     # The window and the menu are rebuilt, keeping the user settings.
     # A soft resize instead of close()+recreate: the old code went

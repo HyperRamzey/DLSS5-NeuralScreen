@@ -78,17 +78,20 @@ closed, clicks go straight through it.
 
 ### Whole screen or one window
 
-The whole screen is the default. To process one window instead, pick
-**Select window...** in the menu — hovering highlights it, and the overlay
-follows it. **Num5** is the shortcut when the window is already in front of
-you: point at it and press. Back to everything: **Fullscreen** in the menu.
-Minimising the window pauses processing.
+The whole screen is the default. **Source**, at the top of the menu, switches
+between **Fullscreen** and **Window mode**; choosing the second opens the list
+of windows, and hovering a row highlights that window on the screen. **Num5**
+is the shortcut when the window is already in front of you: point at it and
+press. The overlay follows the window as it moves, and resizing it — a video
+going fullscreen, a different player size — reconfigures the worker in place,
+with no black moment. Minimising the window pauses processing.
 
 ## The menu
 
 The dot next to your graphics card is green when neural rendering is really
 running on it, red when it is not.
 
+- **Source** — the whole screen or one window, and which window.
 - **Profile** — how strong the effect is, from *Faithful* to *Extreme*;
   *Natural* by default. The four sliders underneath are the same thing in
   detail. **Save preset** stores the current values under a name and puts it
@@ -103,10 +106,12 @@ running on it, red when it is not.
   original frame, so text and edges keep full resolution. Turn it off to
   compare.
 
-The interface speaks **12 languages** — English, Russian, French, German,
-Spanish, Italian, Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
-Everything else — the language, which monitor, the theme, autostart, key
-assignments — is behind the sliders icon.
+Everything else is behind the sliders icon: which monitor is processed and
+which card does it, HDR compatibility, the screenshot folder, Spout2 output,
+the recording indicator, leaving an unchanged screen alone, opening the menu
+on launch, autostart, the key assignments, the theme — and the language, of
+which there are **12**: English, Russian, French, German, Spanish, Italian,
+Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
 
 ## Recording and screenshots
 
@@ -150,7 +155,8 @@ under CAPTURE — it is experimental; see [HDR setup](https://github.com/perseva
 
 - **True fullscreen games** cannot have an overlay drawn over them — borderless or windowed only.
 - **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
-- **Windows 10, two NVIDIA cards and a rotated display are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
+- **Windows 10 and two NVIDIA cards are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
+- **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
 
 ## License

@@ -43,8 +43,11 @@ The capture is event-driven: a window that does not redraw produces one frame
 and then nothing, exactly like `DXGI_ERROR_WAIT_TIMEOUT` on the duplication
 path. The worker keeps the last frame.
 
-A resize rebuilds the worker, the shared memory and every texture, so it waits
-half a second for the new size to settle first. A move only moves the windows.
+A resize reconfigures the running worker over `RNSZ` - new capture size, new
+shared memory, new textures, same process - and still waits half a second for
+the size to settle first. It used to replace the worker, which cost 1.845 s and
+a veil over the picture; in place it is 0.112 s and nothing goes dark. A move
+only moves the windows.
 
 ## Recording (Num0)
 

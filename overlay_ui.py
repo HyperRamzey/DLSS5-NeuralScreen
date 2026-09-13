@@ -890,8 +890,17 @@ class OverlayMenu:
                 ranges = self.state.get("param_ranges") or {}
                 lo, hi = ranges.get(key) or PARAM_FALLBACK
                 val = float(params.get(key, 0.0))
+                # The scale under the track. A slider that runs from 0 to 1
+                # and one that runs from 0 to 1.5 looked identical, and the
+                # ranges are the whole point of the measurement behind them:
+                # a knob at the top of intensity means something different
+                # from a knob at the top of local tone. The middle word says
+                # what the tick is, which is otherwise a thing to remember.
+                note = (s["mark_zero"] if float(lo) < 0.0
+                        else s["mark_profile"])
                 slider(key, float(lo), float(hi), val, s[key],
-                       value_text=f"{val:.2f}", mark=defaults.get(key))
+                       value_text=f"{val:.2f}", mark=defaults.get(key),
+                       ends=(f"{float(lo):g}", note, f"{float(hi):g}"))
             # Save / Delete preset: the user presets live in the same list
             # as the built-in profiles. Delete is only offered while a user
             # preset is active - the built-in profiles are not deletable.
@@ -1827,7 +1836,10 @@ class OverlayMenu:
         # which way is more.
         ends = item.extra.get("ends")
         if ends:
-            left, right = ends
+            # Two captions (what the two ends mean) or three (the numeric
+            # scale, with a word in the middle for the tick).
+            left, middle, right = (ends if len(ends) == 3
+                                   else (ends[0], "", ends[1]))
             y = track.bottom + self._u(6)
             if left:
                 surface.blit(self._small_font.render(
@@ -1835,6 +1847,10 @@ class OverlayMenu:
             if right:
                 img = self._small_font.render(right, True, _rgb(self.c["muted"]))
                 surface.blit(img, (track.right - img.get_width(), y))
+            if middle:
+                img = self._small_font.render(middle, True,
+                                              _rgb(self.c["muted"]))
+                surface.blit(img, (track.centerx - img.get_width() // 2, y))
         pygame.draw.circle(surface, _rgb(self.c["bg"]), (cx, track.centery), self._u(KNOB_R) // 2)
         item.extra["track"] = track
 

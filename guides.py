@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import cv2
@@ -97,6 +98,13 @@ class TemporalGuideGenerator:
         self._warped = np.empty((self.flow_height, self.flow_width), dtype=np.uint8)
         self._err_flow = np.empty((self.flow_height, self.flow_width), dtype=np.float32)
         self._err_zero = np.empty((self.flow_height, self.flow_width), dtype=np.float32)
+        # What the guard is actually doing, for a live check. Printed at most
+        # once every few seconds and only while something is moving: a
+        # per-frame line would be 60 lines a second of nothing.
+        self._trust_frames = 0
+        self._trust_alive = 0
+        self._trust_dropped = 0
+        self._trust_said = 0.0
 
     @property
     def motion_width(self) -> int:
@@ -128,6 +136,26 @@ class TemporalGuideGenerator:
         cv2.boxFilter(cv2.absdiff(current, previous), cv2.CV_32F, win,
                       dst=self._err_zero)
         return self._err_flow < self._err_zero - self._trust_margin
+
+    def _report_trust(self, long_enough: np.ndarray, dropped: np.ndarray) -> None:
+        """Say how much the guard is throwing away, every few seconds."""
+        alive = int(long_enough.sum())
+        if alive == 0:
+            return
+        self._trust_frames += 1
+        self._trust_alive += alive
+        self._trust_dropped += int((long_enough & dropped).sum())
+        now = time.monotonic()
+        if self._trust_said == 0.0:
+            self._trust_said = now
+            return
+        if now - self._trust_said < 5.0:
+            return
+        share = 100.0 * self._trust_dropped / max(1, self._trust_alive)
+        print(f"[guides] motion trust: {share:.1f}% of the vectors dropped as "
+              f"'did not move', over {self._trust_frames} moving frames")
+        self._trust_said = now
+        self._trust_frames = self._trust_alive = self._trust_dropped = 0
 
     def zero_guide(self) -> GuideFrame:
         """Fallback for a persistent process() failure: zero motion, reset=True.
@@ -185,6 +213,7 @@ class TemporalGuideGenerator:
                               ~self._moved(current, self.previous_gray,
                                            cur_to_prev),
                               out=drop)
+                self._report_trust(mag >= self._flow_noise_floor, drop)
                 cur_to_prev[drop] = 0.0
                 # Scale BEFORE the upscale: 115k elements instead of 3M, and
                 # exactly equivalent because resize is linear (verified: the

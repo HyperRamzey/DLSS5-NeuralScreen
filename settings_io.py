@@ -547,9 +547,16 @@ def refresh_gpu_ok(st) -> None:
         # speak again.
         if not st.gpu_alerted:
             st.gpu_alerted = True
+            # Eight seconds, not the usual two and a half. This is not a
+            # notification that something was applied - it is the reason the
+            # picture will look untouched for the rest of the session, and
+            # the people who reported it as a black screen had not seen it
+            # at all. The standing version of the same fact is in the menu's
+            # status line, for whoever looks later.
             st.display.alert(UI_STRINGS[st.lang].get(
                 "gpu_nr_fail",
-                "This GPU cannot run the neural pass - the picture stays unprocessed"))
+                "This GPU cannot run the neural pass - the picture stays "
+                "unprocessed"), 8.0)
 
 
 def warn_hdr(st) -> None:

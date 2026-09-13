@@ -1698,6 +1698,25 @@ class OverlayMenu:
         pygame.draw.rect(surface, _rgb(color), self._scroll_thumb,
                          border_radius=radius)
 
+    def status_text(self, s: dict) -> tuple[str, bool]:
+        """What the status line says, and whether it is saying "broken".
+
+        A failed verdict outranks everything except the user's own switch.
+        The alert that announces it is up for a few seconds and gone; the
+        state it announces lasts until the worker is rebuilt, and someone who
+        looks at the menu a minute later deserves the same answer. Three
+        black-screen reports came from people who never opened the log.
+        """
+        paused = not bool(self.state.get("nr"))
+        failed = self.state.get("gpu_ok") is False and not paused
+        if paused:
+            return str(s.get("status_off", "not processing")), False
+        if failed:
+            return str(s.get("gpu_no_nr", "no neural pass")), True
+        if bool(self.state.get("idle")):
+            return str(s.get("idle_short", "idle")), False
+        return str(s.get("status_on", "processing")), False
+
     def _draw_stats(self, surface, s: dict) -> None:
         """The status line: is it working, how fast, how big, on what.
 
@@ -1714,16 +1733,13 @@ class OverlayMenu:
         pad = self._u(STAT_PAD)
         ok = self.state.get("gpu_ok")
         paused = not bool(self.state.get("nr"))
-        idling = bool(self.state.get("idle"))
         dot = (self.c["muted"] if paused or ok is None
                else self.c["ok"] if ok else self.c["danger"])
         r = max(3, self._u(4))
         cyr = rect.centery
         pygame.draw.circle(surface, _rgb(dot), (rect.x + pad + r, cyr), r)
 
-        text = (s.get("status_off", "not processing") if paused
-                else s.get("idle_short", "idle") if idling
-                else s.get("status_on", "processing"))
+        text, failed = self.status_text(s)
         label = self._small_font.render(str(text), True, _rgb(self.c["text"]))
         lx = rect.x + pad + r * 2 + self._u(9)
         surface.blit(label, (lx, cyr - label.get_height() // 2))
@@ -1742,7 +1758,7 @@ class OverlayMenu:
         # numbers stay numbers.
         fps = st.get("fps")
         readings = []
-        if not paused:
+        if not paused and not failed:
             readings.append(f"{fps:.1f} fps"
                             if isinstance(fps, (int, float)) else "— fps")
             readings.append(str(st.get("resolution", "—")))

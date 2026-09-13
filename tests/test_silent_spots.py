@@ -202,6 +202,34 @@ def main() -> int:
     finally:
         pygame.quit()
 
+    # 5. The failed verdict does not only flash. The alert is up for a few
+    #    seconds; the state lasts until the worker is rebuilt, and the menu
+    #    has to keep answering for it - three black-screen reports came from
+    #    people who never opened the log and never saw the alert either.
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import pygame
+    pygame.init()
+    pygame.display.set_mode((64, 64))
+    import fonts
+    from i18n import STRINGS
+    from overlay_ui import OverlayMenu
+    menu = OverlayMenu(1.0, lambda size=14, mono=False, bold=False:
+                       fonts.load(size, mono=mono, bold=bold))
+    en = STRINGS["en"]
+    cases = (
+        ({"nr": True, "gpu_ok": False}, en["gpu_no_nr"], True),
+        ({"nr": True, "gpu_ok": True}, en["status_on"], False),
+        ({"nr": False, "gpu_ok": False}, en["status_off"], False),
+        ({"nr": True, "gpu_ok": True, "idle": True}, en["idle_short"], False),
+    )
+    for state, want, want_failed in cases:
+        menu.set_state(dict({"idle": False}, **state))
+        text, failed = menu.status_text(en)
+        if text != want or failed != want_failed:
+            failures.append(f"status line for {state}: expected "
+                            f"{want!r}/{want_failed}, got {text!r}/{failed}")
+    print(f"    status line: {len(cases)} states, the failed verdict speaks")
+
     for f in failures:
         print("FAIL:", f)
     if failures:

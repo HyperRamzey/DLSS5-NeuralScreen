@@ -1718,6 +1718,21 @@ struct VideoState
     float residual_strength = 1.0f;
 };
 
+// Two different questions, and conflating them is what turned a 10-bit
+// desktop black (#58, reproduced here).
+//
+// g_capture_float: the duplicated frame arrived as FP16. That is true on an
+// HDR desktop AND on a plain SDR desktop whose output is set to 10 bits per
+// colour - measured: switching the colour depth to 10bpc makes duplication
+// hand back format 10, not the R10G10B10A2 one might expect. The capture
+// shader has to know, because it must tone-map those values down instead of
+// copying them.
+//
+// g_hdr_capture: the picture is PRESENTED in scRGB. That may only happen
+// when the user has switched HDR compatibility on. Deriving it from the
+// format alone meant a 10-bit SDR desktop silently took the whole HDR
+// presentation path with the switch off, and the screen went black.
+static bool g_capture_float = false;
 static bool g_hdr_capture = false;
 static HMONITOR g_capture_monitor = nullptr;
 static HdrDisplayInfo g_capture_display;
@@ -3152,6 +3167,7 @@ static void CloseDda()
     g_dda_active = false;
     g_dda_ready = false;
     g_hdr_capture = false;
+    g_capture_float = false;
     CloseHdrResources();
     if (g_dda_d12) { g_dda_d12->Release(); g_dda_d12 = nullptr; }
     if (g_dda_nt)  { CloseHandle(g_dda_nt); g_dda_nt = nullptr; }
@@ -3834,12 +3850,14 @@ enum class StageResult { Ok, SizeChanged, Failed };
 // Graphics Capture produce the same kind of texture, so this half of the path
 // exists once. The caller owns the source frame and releases it afterwards -
 // duplication may only call ReleaseFrame() once the fence below has fired.
-static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT *out_h)
+static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT *out_h,
+                                      DXGI_FORMAT *out_format = nullptr)
 {
     D3D11_TEXTURE2D_DESC fd = {};
     frame->GetDesc(&fd);
     if (out_w != nullptr) *out_w = fd.Width;
     if (out_h != nullptr) *out_h = fd.Height;
+    if (out_format != nullptr) *out_format = fd.Format;
     // R10G10B10A2 belongs here too. An output set to 10 bits per colour can
     // hand the duplicated desktop back in it, and refusing the format means
     // refusing every frame: nothing is ever captured again and the picture
@@ -3859,7 +3877,9 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
     { Log("[hdr] unsupported capture format %u", fd.Format); return StageResult::Failed; }
     if (g_dda_shared == nullptr)
     {
-        g_hdr_capture = fd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        g_capture_float = fd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        // The switch decides the presentation, never the format on its own.
+        g_hdr_capture = g_capture_float && HdrEnabled();
         // The format goes into the log every time the capture opens, not
         // only when it is refused: the last report needed the reporter to
         // find "10bpc" by trying settings until the symptom moved.
@@ -3868,7 +3888,9 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
             fd.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? "RGB10A2 - a 10-bit output" :
             "FP16");
         Log("[hdr] capture=%s; neural processing=SDR proxy; export=SDR",
-            g_hdr_capture ? "FP16 scRGB" : "SDR");
+            g_capture_float ? (g_hdr_capture ? "FP16 scRGB"
+                                             : "FP16 (10-bit output) - presented as SDR")
+                            : "SDR");
         D3D11_TEXTURE2D_DESC sd = {};
         sd.Width = fd.Width; sd.Height = fd.Height; sd.MipLevels = 1; sd.ArraySize = 1;
         sd.Format = fd.Format; sd.SampleDesc.Count = 1; sd.Usage = D3D11_USAGE_DEFAULT;
@@ -4011,7 +4033,7 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     // rotate180 only for duplication: a WGC window is already composed the
     // way the user sees it, so turning it over would be a second rotation.
     struct { UINT is_float; float white; UINT rotate180; } hdr = {
-        g_hdr_capture ? 1u : 0u, g_hdr_frame_white,
+        g_capture_float ? 1u : 0u, g_hdr_frame_white,
         (g_dda_active && g_capture_rotate180) ? 1u : 0u };
     h.list->SetComputeRoot32BitConstants(2, 3, &hdr, 0);
     h.list->Dispatch((g_dda_w + 7) / 8, (g_dda_h + 7) / 8, 1);
@@ -4107,7 +4129,8 @@ static bool DdaGrab(VideoState &v)
         return false;
     }
     UINT new_w = 0, new_h = 0;
-    const StageResult st = StageCapturedFrame(frame, &new_w, &new_h);
+    DXGI_FORMAT new_format = DXGI_FORMAT_UNKNOWN;
+    const StageResult st = StageCapturedFrame(frame, &new_w, &new_h, &new_format);
     frame->Release();
     res->Release();
     // Desktop Duplication requires ReleaseFrame() only AFTER every read of the
@@ -4117,7 +4140,13 @@ static bool DdaGrab(VideoState &v)
     g_dda_dup->ReleaseFrame();
     if (st == StageResult::SizeChanged)
     {
-        Log("[dda] monitor resolution changed -> %ux%u - recreating", new_w, new_h);
+        // Not always the resolution: the staged texture is also rebuilt
+        // when the FORMAT changes, which is what a colour-depth switch
+        // does. The old wording read "resolution changed -> 3840x2160"
+        // while the desktop was still 3840x2160, which is a line that
+        // sends the reader somewhere else (#58).
+        Log("[dda] capture changed -> %ux%u, format %u - recreating",
+            new_w, new_h, (unsigned)new_format);
         OpenDda(new_w, new_h);
         return false;
     }
@@ -4300,12 +4329,14 @@ static bool WgcGrab(VideoState &v)
             tex == nullptr)
         { frame.Close(); return false; }
         UINT new_w = 0, new_h = 0;
-        const StageResult st = StageCapturedFrame(tex, &new_w, &new_h);
+        DXGI_FORMAT new_format = DXGI_FORMAT_UNKNOWN;
+        const StageResult st = StageCapturedFrame(tex, &new_w, &new_h, &new_format);
         tex->Release();
         frame.Close();
         if (st == StageResult::SizeChanged)
         {
-            Log("[wgc] the window resized -> %ux%u - recreating", new_w, new_h);
+            Log("[wgc] the window changed -> %ux%u, format %u - recreating",
+                new_w, new_h, (unsigned)new_format);
             OpenWgc(g_wgc_hwnd);
             return false;
         }

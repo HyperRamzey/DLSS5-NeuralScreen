@@ -2976,6 +2976,12 @@ static bool ScaleMotionInto(VideoState &v, const BYTE *mv, bool mv_was_ready)
 // only motion. All guarded by g_dda_active, the pipe path stays untouched.
 // ---------------------------------------------------------------------------
 static bool                    g_dda_hdr_mode = false;
+// "Landscape (flipped)": Desktop Duplication hands back the UNROTATED
+// desktop, so the picture arrives upside down. Set from DXGI_OUTDUPL_DESC
+// when the duplication opens, consumed by the capture shader. Duplication
+// only - a window captured through WGC is already composed the way the
+// user sees it, and turning that over would be the second rotation.
+static bool                    g_capture_rotate180 = false;
 static bool                    g_dda_active = false;   // DDA1 with w>0 has been acked
 static bool                    g_capture_visual_changed = false;
 static UINT                    g_dda_w = 0, g_dda_h = 0;
@@ -3064,7 +3070,7 @@ static bool EnsureDdaSwizzle()
     prm[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     D3D12_ROOT_SIGNATURE_DESC rsd = {};
     prm[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    prm[2].Constants.Num32BitValues = 2;
+    prm[2].Constants.Num32BitValues = 3;   // isFloat, white, rotate180
     prm[2].Constants.ShaderRegister = 0;
     rsd.NumParameters = 3; rsd.pParameters = prm;
     ID3DBlob *sig = nullptr;
@@ -3663,10 +3669,24 @@ static bool OpenDda(UINT w, UINT hgt)
         g_dda_dup->GetDesc(&dd);
         static const char *kRot[] = { "unspecified", "none", "90", "180", "270" };
         const unsigned r = (unsigned)dd.Rotation;
+        // 180 - "Landscape (flipped)" - is the case that can be undone here
+        // and nowhere else: the frame keeps its size, so turning it over as
+        // it is read is the whole fix. Everything downstream then sees an
+        // upright desktop: the network, the optical flow, the gray channel
+        // and the picture that goes back on screen.
+        //
+        // 90 and 270 swap the width and the height, which changes the size
+        // the whole pipeline was built for - the work resolution, the shared
+        // memory, the overlay. That is not a shader flag, and it stays
+        // unhandled rather than half-handled (issue #47).
+        g_capture_rotate180 = (r == DXGI_MODE_ROTATION_ROTATE180);
+        const bool unhandled = (r == DXGI_MODE_ROTATION_ROTATE90 ||
+                                r == DXGI_MODE_ROTATION_ROTATE270);
         Log("[dda] desktop rotation: %s%s", r < 5 ? kRot[r] : "?",
-            (r == DXGI_MODE_ROTATION_ROTATE90 || r == DXGI_MODE_ROTATION_ROTATE180
-             || r == DXGI_MODE_ROTATION_ROTATE270)
-                ? " - NOT handled yet, the picture will not match the screen" : "");
+            g_capture_rotate180 ? " - turned back over on capture"
+            : unhandled ? " - NOT handled: the width and the height are "
+                          "swapped, the picture will not match the screen"
+                        : "");
     }
     g_dda_w = w; g_dda_h = hgt; g_dda_active = true;
     Log("[dda] capture %ux%u active", w, hgt);
@@ -3840,8 +3860,12 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     g1.ptr += h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     h.list->SetComputeRootDescriptorTable(0, g0);
     h.list->SetComputeRootDescriptorTable(1, g1);
-    struct { UINT is_float; float white; } hdr = {g_hdr_capture ? 1u : 0u, g_hdr_frame_white};
-    h.list->SetComputeRoot32BitConstants(2, 2, &hdr, 0);
+    // rotate180 only for duplication: a WGC window is already composed the
+    // way the user sees it, so turning it over would be a second rotation.
+    struct { UINT is_float; float white; UINT rotate180; } hdr = {
+        g_hdr_capture ? 1u : 0u, g_hdr_frame_white,
+        (g_dda_active && g_capture_rotate180) ? 1u : 0u };
+    h.list->SetComputeRoot32BitConstants(2, 3, &hdr, 0);
     h.list->Dispatch((g_dda_w + 7) / 8, (g_dda_h + 7) / 8, 1);
     // copy swizzled dst into v.color.tex
     D3D12_RESOURCE_BARRIER pre_color = Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,

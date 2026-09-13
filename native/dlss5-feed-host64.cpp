@@ -5334,8 +5334,15 @@ static int RunVideo()
                 g_skip_static_count = 0;
                 g_skip_static_logged = false;
             }
+            // Boost is in too (PR #59 left nr_small out). Nothing in the
+            // argument needs it excluded: ScaleColorInto and ResidualCompose
+            // only record into h.list - neither submits - so the reduced
+            // path is still ONE submission ending in one EndCommands, and
+            // the present's fence still cannot complete before it. It is
+            // also the mode where frames are cheapest and most numerous, so
+            // it is the one with the most round trips to save.
             defer_tail = !g_hdr_capture && warmup_done && h.feature != nullptr &&
-                !v.nr_small && PresentModeActive(v) &&
+                PresentModeActive(v) &&
                 (fh.reserved & (FRAME_FLAG_BYPASS | FRAME_FLAG_SPLIT | FRAME_FLAG_WANT_PIXELS)) == 0;
             // This frame is being processed: remember what it will show, so the
             // next unchanged frame can tell whether anything differs.

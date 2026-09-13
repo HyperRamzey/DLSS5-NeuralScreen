@@ -330,25 +330,34 @@ def main() -> int:
         if pres and not user32.IsWindowVisible(ctypes.c_void_p(pres)):
             failures.append("the picture did not come back after the window was restored")
 
-        # 5. Resize - the pipeline is rebuilt for the new size, once it settles.
+        # 5. Resize - the pipeline follows the new size once it settles.
+        #    The live road is the one taken when the worker is capturing:
+        #    WGCW at the new size plus RNSZ, ~120 ms and no new process.
+        #    A rebuild is the fallback and is accepted here, because what
+        #    this step is about is that the size is followed at all.
         mark = autocheck.log_offset()
         new_w, new_h = W - 160, H - 120
         user32.SetWindowPos(hwnd, 0, 520, 360, new_w, new_h, 0x0004 | 0x0010)
-        text = wait_log(mark, "rebuilding the pipeline", 20.0)
+        text = wait_log(mark, "reconfigured live", 20.0) or             wait_log(mark, "rebuilding the pipeline", 5.0)
         if not text:
-            failures.append("a resized window did not rebuild the pipeline")
+            failures.append("a resized window was not followed - neither a live "
+                            "reconfiguration nor a rebuild")
         else:
-            line = [l for l in text.splitlines() if "rebuilding the pipeline" in l][-1]
+            live = "reconfigured live" in text
+            needle = "reconfigured live" if live else "rebuilding the pipeline"
+            line = [l for l in text.splitlines() if needle in l][-1]
             print("size:", line.strip())
             if f"{new_w}x{new_h}" not in line:
-                failures.append(f"the rebuild used the wrong size: {line.strip()}")
-            if not wait_log(mark, f"pipeline rebuilt: {new_w}x{new_h}", 30.0):
+                failures.append(f"the resize used the wrong size: {line.strip()}")
+            if not live and not wait_log(mark, f"pipeline rebuilt: {new_w}x{new_h}", 30.0):
                 failures.append("the pipeline did not come back at the new size")
 
         # 6. The point of the mode: an outside capture can see the overlay.
-        #    The resize above rebuilt the pipeline, so the windows are new
-        #    ones - the handles have to be found again, and the worker needs a
-        #    moment to raise its picture window after a rebuild.
+        #    The resize above may have rebuilt the pipeline, in which case
+        #    the windows are new ones - the handles have to be found again,
+        #    and the worker needs a moment to raise its picture window. The
+        #    live road keeps the same windows, and finding them again costs
+        #    nothing.
         pres = hud = 0
         deadline = time.monotonic() + 12.0
         while time.monotonic() < deadline and not (pres and hud):

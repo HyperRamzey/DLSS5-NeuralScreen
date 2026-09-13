@@ -58,6 +58,10 @@ class _Display:
 def _state(frame_size):
     st = types.SimpleNamespace(
         window_hwnd=0x1707D8, worker_failed=False,
+        # Not capturing in the worker: follow_window then takes the rebuild
+        # road, which is the one this test is about. The live road has its
+        # own test (test_live_resize).
+        dda_mode=False,
         width=CAPTURE[0], height=CAPTURE[1],
         follow_pos=(100, 100), follow_resize=None, follow_size=frame_size,
         frame_index=1, display=_Display())

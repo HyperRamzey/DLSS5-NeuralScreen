@@ -302,6 +302,9 @@ class Display:
         # One-window mode: where the captured window is (the frame blit
         # needs it) and how big the frame is. The LAYER is always the screen.
         self._window_layer: tuple[int, int, int, int] | None = None
+        #: Whether the surround of a window-sized frame is cut out. See
+        #: set_window_keyed.
+        self._window_keyed = False
         self._frame_size: tuple[int, int] | None = None
         # Interface scale and the layout sizes derived from it.
         self.ui_scale = ui_scale_for(self.height)
@@ -785,6 +788,42 @@ class Display:
         except Exception as exc:
             print(f'Display: WARNING cannot hold the layer on the screen: {exc}')
 
+    def set_window_keyed(self, on: bool) -> None:
+        """Cut the desktop back out around a window-sized frame.
+
+        In one-window mode the layer is the whole SCREEN (it has to be - an
+        alert belongs at the top of the screen whatever is being captured)
+        while the frame is the size of the captured window. show() blits the
+        frame where the window is and leaves the rest of the layer alone, and
+        the layer is opaque: everything outside the window was whatever the
+        back buffer held last. With the captured window not redrawing - which
+        is what an unfocused window does - the result is a still photograph
+        of the screen pinned over the real one. Nothing appears to react,
+        because nothing that reacts is visible (user, 13.09).
+
+        So the surround is filled with the key colour and cut out. Alpha
+        stays 255: this layer carries the picture, and BG_ALPHA would make
+        the processed frame see-through.
+
+        The one artefact is inherent to a colour key: a pixel in the captured
+        window that is exactly #FF00FF turns into a hole. A still photograph
+        over the whole desktop is the worse of the two.
+        """
+        if on == self._window_keyed:
+            return
+        self._window_keyed = on
+        try:
+            hwnd = pygame.display.get_wm_info()["window"]
+        except Exception:
+            return
+        if on:
+            r, g, b = CHROMA_KEY
+            key = (b << 16) | (g << 8) | r
+            user32.SetLayeredWindowAttributes(hwnd, key, 255,
+                                              LWA_COLORKEY | LWA_ALPHA)
+        else:
+            user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
+
     def set_menu_opaque(self, opaque: bool) -> None:
         """Drop the global window translucency while the menu is open.
 
@@ -819,6 +858,7 @@ class Display:
         if enabled == self._hud_only and not force:
             return
         self._hud_only = enabled
+        self._window_keyed = False   # this call owns the attributes now
         try:
             hwnd = pygame.display.get_wm_info()["window"]
         except Exception as exc:
@@ -1430,10 +1470,15 @@ class Display:
         # is. Only reachable when the worker is NOT presenting - with the
         # worker's own window up, Python draws no frames at all.
         at = (0, 0)
-        if (self._window_layer is not None
-                and surface.get_width() < self.width):
+        windowed = (self._window_layer is not None
+                    and surface.get_width() < self.width)
+        if windowed:
             ox, oy = getattr(self, "_origin", (0, 0))
             at = (self._window_layer[0] - ox, self._window_layer[1] - oy)
+            # Everything the frame does not cover is the desktop, not our
+            # stale back buffer: fill with the key and cut it out.
+            self.screen.fill(CHROMA_KEY)
+        self.set_window_keyed(windowed)
         self.screen.blit(surface, at)
         self._draw_alerts()
         self.menu.set_stats(self._hud)

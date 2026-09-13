@@ -858,7 +858,6 @@ class Display:
         if enabled == self._hud_only and not force:
             return
         self._hud_only = enabled
-        self._window_keyed = False   # this call owns the attributes now
         try:
             hwnd = pygame.display.get_wm_info()["window"]
         except Exception as exc:
@@ -876,6 +875,16 @@ class Display:
             # entirely, and the opaque panel (plus text) becomes slightly
             # see-through through the global alpha.
             ok = user32.SetLayeredWindowAttributes(hwnd, key, BG_ALPHA, LWA_COLORKEY | LWA_ALPHA)
+        elif self._window_keyed:
+            # Window mode keeps ITS key. This call is made with force=True
+            # twice a second while the menu is up (raise_topmost re-asserts
+            # the attributes, because a z-order change can drop them), and
+            # re-applying a plain alpha here dropped the window cut-out for
+            # a frame every time - the menu blinked at exactly that rate.
+            r, g, b = CHROMA_KEY
+            key = (b << 16) | (g << 8) | r
+            ok = user32.SetLayeredWindowAttributes(hwnd, key, 255,
+                                                   LWA_COLORKEY | LWA_ALPHA)
         else:
             ok = user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
         if not ok:

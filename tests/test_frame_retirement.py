@@ -25,7 +25,11 @@ from paths import WORKER_EXE
 
 def check_hdr_transition_guard():
     source = (ROOT / 'native/dlss5-feed-host64.cpp').read_text(encoding='utf-8')
-    acquire = source.index('const bool got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);')
+    # Without the declaration: `got` stopped being const when the
+    # WANT_PIXELS dry-spell retry was added, and what this check is about is
+    # the ORDER - the frame's format has to be known before the deferral is
+    # chosen - not how the variable is spelled.
+    acquire = source.index('got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);')
     decide = source.index('defer_tail = !g_hdr_capture', acquire)
     upload = source.index('UploadMotionOnly(v, mv_ptr', decide)
     assert acquire < decide < upload, 'tail deferral must use the acquired frame format'

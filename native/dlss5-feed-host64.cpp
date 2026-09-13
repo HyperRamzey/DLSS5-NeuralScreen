@@ -3004,6 +3004,9 @@ static bool                    g_dda_hdr_mode = false;
 // only - a window captured through WGC is already composed the way the
 // user sees it, and turning that over would be the second rotation.
 static bool                    g_capture_rotate180 = false;
+// Once per dry spell, not once per frame: a recording asks for pixels on
+// every slot, and reopening the capture for each of them would be thrashing.
+static bool                    g_no_colour_retried = false;
 static bool                    g_dda_active = false;   // DDA1 with w>0 has been acked
 static bool                    g_capture_visual_changed = false;
 static UINT                    g_dda_w = 0, g_dda_h = 0;
@@ -3933,6 +3936,7 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     if (g_submission_failed) return false;
     UpdateAdaptiveExposure();
     g_dda_ready = true;
+    g_no_colour_retried = false;   // the dry spell is over
     return true;
 }
 
@@ -5313,8 +5317,55 @@ static int RunVideo()
             // one window (WGCW) straight on the GPU, motion from the frame
             // sent in (the client keeps sending pairs).
             const double t_dda = PhaseNow();
-            const bool got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+            bool got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
             if (g_submission_failed) return 6;
+            if (!got && !g_dda_ready && (fh.reserved & FRAME_FLAG_WANT_PIXELS) != 0)
+            {
+                // Pixels were asked for and there is not one captured frame
+                // to give. That is a screenshot or a recording slot: the
+                // screenshot retries on the next frame and heals itself, the
+                // recording simply ends up with a hole where that slot was.
+                //
+                // The window this happens in is short and self-closing -
+                // g_dda_ready is cleared by every RNSZ and by every capture
+                // restart, and the next real frame sets it again - so one
+                // more attempt is usually the whole difference. The DDA
+                // acquire waits up to 100 ms by itself; WGC returns at once
+                // and wants a moment for its pool to fill. Exactly one
+                // retry: a recording would rather have a rare 100 ms hiccup
+                // than a hole, and would not rather have a long stall
+                // (audit cpp-worker).
+                Sleep(8);
+                got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+                if (g_submission_failed) return 6;
+                if (!got && !g_no_colour_retried)
+                {
+                    // Still nothing, and on a screen that is not changing
+                    // there never will be: duplication answers WAIT_TIMEOUT
+                    // and a WGC pool stays empty until the window redraws.
+                    // A FRESH capture session hands over the current content
+                    // as its first frame, which is exactly what is being
+                    // asked for. Once per dry spell - reopening the capture
+                    // on every slot of a recording would be thrashing.
+                    g_no_colour_retried = true;
+                    const bool reopened = g_wgc_active
+                        ? OpenWgc(g_wgc_hwnd) : OpenDda(g_dda_w, g_dda_h);
+                    // A fresh session does not answer the same millisecond:
+                    // the WGC pool fills on its own schedule, a frame
+                    // interval or so. Up to ~120 ms of small steps, which is
+                    // the difference between a hole and a hiccup, and still
+                    // shorter than the acquire timeout we already accept.
+                    for (int i = 0; reopened && !got && i < 12; ++i)
+                    {
+                        Sleep(10);
+                        got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+                        if (g_submission_failed) return 6;
+                    }
+                    Log("[video] pixels asked for before the first capture "
+                        "frame: reopened the capture, %s",
+                        got ? "and it answered" : "still nothing");
+                }
+            }
             source_fresh = got && g_capture_visual_changed;
             if (phase_on && source_fresh) ++g_ph_fresh_sources;
             PhaseAdd(PH_DDA, t_dda);

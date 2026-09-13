@@ -63,6 +63,7 @@ ABOUT = {
     "test_spout_adapter.py": "the Spout bridge lives on the card the worker runs on",
     "test_present_window_leak.py": "closing the picture window destroys it, six cycles",
     "test_pixels_after_resize.py": "a resize does not put a hole in the recording",
+    "test_alert_position.py": "alerts sit at the top centre of the screen, not the overlay",
     "test_hdr_shaders.py": "the HDR capture and composite shaders, run on WARP",
     "test_hdr_capture.py": "the whole HDR path on real hardware (runs only on an HDR display)",
     "test_gpu_rollback.py": "a card that cannot run the network reverts itself",

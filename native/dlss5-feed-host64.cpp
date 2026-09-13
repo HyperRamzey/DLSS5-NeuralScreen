@@ -1800,6 +1800,10 @@ static HANDLE                     g_present_thread;
 static DWORD                      g_present_tid;
 static UINT                       g_present_w, g_present_h;
 static bool                       g_present_capturable;  // debug flag from WNDO
+// The flags the present window was opened with, and whether the swap chain
+// has to be built again before the next frame. See PresentStatus.
+static uint32_t                   g_present_flags = 0;
+static bool                       g_present_stale = false;
 
 // Whether the picture window hides itself from screen capture.
 //
@@ -1956,6 +1960,8 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     g_present_h = height;
     ReadPresentOrigin();
     g_present_capturable = (flags & WINDOW_FLAG_CAPTURABLE) != 0;
+    g_present_flags = flags;
+    g_present_stale = false;
     g_present_state = 0;
     g_present_thread = CreateThread(nullptr, 0, PresentWindowThread, nullptr, 0, &g_present_tid);
     if (g_present_thread == nullptr) { Log("[present] CreateThread failed"); return false; }
@@ -2132,8 +2138,55 @@ static void RevealOnFirstPresent()
     Log("[present] window revealed on the first Present");
 }
 
+// Present answered - now read the answer properly.
+//
+// DXGI_STATUS_MODE_CHANGED and DXGI_STATUS_MODE_CHANGE_IN_PROGRESS are
+// SUCCESS codes. SUCCEEDED() is true for them, so a present into a swap
+// chain the desktop has moved out from under "worked", and every frame
+// after it went somewhere nobody was looking. A reporter switched the
+// output's colour depth from 8 to 10 bits while the program was running
+// and the picture went black and stayed black (#58) - that is a mode
+// change with no resolution change behind it, so nothing else in the
+// program had any reason to notice.
+//
+// DXGI_STATUS_OCCLUDED means the window is fully covered: the frame was
+// dropped on purpose, the chain is fine, and presenting again is right.
+static bool PresentStatus(HRESULT hr, const char *where)
+{
+    if (hr == DXGI_STATUS_MODE_CHANGED || hr == DXGI_STATUS_MODE_CHANGE_IN_PROGRESS)
+    {
+        Log("[present] %s: the display mode changed under the swap chain "
+            "(0x%08X) - rebuilding the window", where, (unsigned)hr);
+        g_present_stale = true;
+        return true;        // this frame is lost; the next one is not
+    }
+    if (FAILED(hr))
+    {
+        Log("[present] %s failed 0x%08X", where, (unsigned)hr);
+        return false;
+    }
+    return true;
+}
+
+// A mode change left the chain behind (see PresentStatus): build the window
+// again before anything touches it. Every present path calls this, including
+// the bypass and the HDR one - a black screen after switching the output's
+// colour depth does not care which of them was drawing.
+static bool RebuildPresentIfStale()
+{
+    if (!g_present_stale || g_present_w == 0) return true;
+    const UINT w = g_present_w, h = g_present_h;
+    const uint32_t flags = g_present_flags;
+    ClosePresent();
+    if (!OpenPresent(w, h, flags))
+    { Log("[present] could not rebuild after the mode change"); return false; }
+    g_force_next_frame = true;
+    return true;
+}
+
 static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
 {
+    if (!RebuildPresentIfStale()) return false;
     if (submitted) *submitted = 0;
     if (g_hdr_capture) return PresentHdr(v, false);
     // Only when HDR compatibility is on. With it off there is nothing to put
@@ -2175,7 +2228,7 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
-            ok = SUCCEEDED(g_present_swap->Present(0, 0));
+            ok = PresentStatus(g_present_swap->Present(0, 0), "present");
             if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();
         }
@@ -2195,6 +2248,7 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
 // window that PresentModeActive has already checked against the output size.
 static bool PresentBypass(VideoState &v)
 {
+    if (!RebuildPresentIfStale()) return false;
     if (g_hdr_capture) return PresentHdr(v, true);
     // Same as PresentFrame: nothing to restore unless HDR has been on (#58).
     if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
@@ -2228,7 +2282,7 @@ static bool PresentBypass(VideoState &v)
         if (ProfileWait(PS_PRESENT, fv, 2000))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
-            ok = SUCCEEDED(g_present_swap->Present(0, 0));
+            ok = PresentStatus(g_present_swap->Present(0, 0), "present");
             if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();
         }
@@ -3682,7 +3736,12 @@ static bool OpenDda(UINT w, UINT hgt)
                     d1.ColorSpace == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020 ||
                     d1.ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020 ||
                     d1.ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020;
-                Log("[dda] output colour space %d%s", (int)d1.ColorSpace,
+                // The bit depth belongs in the log too. That a display was
+                // set to 10 bits per colour was something one reporter
+                // found by trying settings until the symptom moved (#58);
+                // it should be a line anyone can read instead.
+                Log("[dda] output colour space %d, %u bits per colour%s",
+                    (int)d1.ColorSpace, d1.BitsPerColor,
                     hdr ? " - HDR IS ON for the captured display" : "");
             }
             out6->Release();

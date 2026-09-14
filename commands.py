@@ -188,12 +188,6 @@ def apply_menu_action(st, action: tuple) -> None:
         settings_io.save_menu_layout(st)
         if enabled:
             library_checker.start()
-    elif kind == "toggle" and action[1] == "dlss_sr":
-        st.cfg["dlss_sr"] = not bool(st.cfg.get("dlss_sr", False))
-        settings_io.save_menu_layout(st)
-    elif kind == "dlss_sr_scale":
-        st.cfg["dlss_sr_scale"] = min(1.0, max(.25, float(action[1])))
-        settings_io.save_menu_layout(st)
     elif kind == "toggle" and action[1] == "frame_generation":
         st.cfg["frame_generation"] = not bool(st.cfg.get("frame_generation", False))
         settings_io.save_menu_layout(st)

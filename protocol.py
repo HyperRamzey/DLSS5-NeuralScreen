@@ -398,18 +398,6 @@ def _read_exact(stream, size: int) -> bytes:
     return bytes(chunks)
 
 
-SR_SCALE_MAGIC = 0x31435353  # SSC1
-
-
-def sync_sr_scale(worker, reader, scale: float) -> None:
-    percent = min(100, max(25, int(round(scale * 100))))
-    if getattr(worker, "_sr_scale_sent", None) == percent:
-        return
-    worker.stdin.write(struct.pack(FRAME_FMT, SR_SCALE_MAGIC, 0, percent, 0, 0))
-    worker.stdin.flush()
-    reader.recv(0, timeout=5.0)
-    worker._sr_scale_sent = percent
-
 
 def prepare_capture(worker, reader, index: int, pts: int) -> None:
     """Latch capture and gray together; FRM1 will consume that exact capture."""
@@ -424,8 +412,8 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                want_pixels: bool = False, motion_small: bool = False,
                no_color: bool = False, bypass: bool = False,
                split: float = 0.0, skip_static: bool = False,
-               frame_generation: bool | None = None, frame_multiplier: int = 2, prepared: bool = False,
-               dlss_sr: bool | None = None) -> None:
+               frame_generation: bool | None = None, frame_multiplier: int = 2,
+               prepared: bool = False) -> None:
     """Send a frame to the worker.
 
     With shared memory agreed, only the 24-byte header with the
@@ -449,8 +437,6 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
             (FRAME_FLAG_NO_COLOR if no_color else 0) | \
             (FRAME_FLAG_BYPASS if bypass else 0) | \
             (FRAME_FLAG_SKIP_STATIC if skip_static else 0)
-    if dlss_sr is not None:
-        flags |= 0x4000 | (0x2000 if dlss_sr else 0)
     if prepared:
         flags |= FRAME_FLAG_PREPARED
     if frame_generation is not None:

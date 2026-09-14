@@ -187,8 +187,6 @@ class OverlayMenu:
             # main so a config value below the range cannot misplace the knob.
             "work_scale_min": 0.1,
             "nr_small": False,
-            "dlss_sr_scale": .65,
-            "dlss_sr": False,
             "frame_generation": False,
             "frame_multiplier": 2,
             "screen_size": "",
@@ -917,19 +915,6 @@ class OverlayMenu:
                 # screen: NGX is capped at 2560x1440 and the network never
                 # saw more than that (user, 12.09).
                 work = str(self.state.get("work_size") or "")
-                if self.state.get("dlss_sr"):
-                    try:
-                        fw, fh = (int(x) for x in self.state["screen_size"].split("x"))
-                        bw, bh = (int(x) for x in work.split("x")) if work else (int(fw*pos), int(fh*pos))
-                        percent = min(100, max(25, int(float(self.state.get("dlss_sr_scale", .65))*100+.5)))
-                        sw, sh = (max(64, ((size*percent+100)//200)*2) for size in (fw, fh))
-                        sw, sh = safe_processing_size(fw, fh, sw, sh)
-                        nw, nh = (max(64, ((size*boost+full)//(2*full))*2)
-                                  for size, boost, full in ((sw,bw,fw),(sh,bh,fh)))
-                        nw, nh = safe_processing_size(sw, sh, nw, nh)
-                        work = f"{nw}x{nh}"
-                    except (ValueError, KeyError, ZeroDivisionError):
-                        pass
                 value_text = work if work else f"{pos:.2f}"
                 # The lower bound follows WORK_SCALE_MIN (0.1), not a
                 # hardcoded 0.30: a config value below the slider range would
@@ -941,23 +926,6 @@ class OverlayMenu:
                 slider("nr_res", lo, cap, pos, s["nr_res"],
                        value_text=value_text,
                        ends=(s.get("nr_res_low", ""), s.get("nr_res_high", "")))
-
-            sr = bool(self.state.get("dlss_sr"))
-            toggle("dlss_sr", s["dlss_sr"], sr)
-            if sr:
-                sr_scale = float(self.state.get("dlss_sr_scale", .65))
-                sr_size = f"{sr_scale:.0%}"
-                try:
-                    sw, sh = (int(x) for x in str(self.state.get("screen_size", "0x0")).split("x"))
-                    if sw > 0 and sh > 0:
-                        iw, ih = safe_processing_size(sw, sh, max(64, int(sw * sr_scale / 2 + .5) * 2), max(64, int(sh * sr_scale / 2 + .5) * 2))
-                        sr_size = f"{iw}x{ih}"
-                except ValueError:
-                    pass
-                if sr_scale >= 1.0:
-                    sr_size += " (DLAA)"
-                slider("dlss_sr_scale", .25, 1.0, sr_scale, s["dlss_sr_input"],
-                       value_text=sr_size, ends=("25%", "100% (DLAA)"))
 
             # What is being processed - the first question anyone has, and
             # until now the only one answered on another page. The segment
@@ -1604,9 +1572,6 @@ class OverlayMenu:
         if item.key == "split":
             self.state["split"] = value
             return [("split", value)]
-        if item.key == "dlss_sr_scale":
-            self.state["dlss_sr_scale"] = value
-            return [("dlss_sr_scale", value)]
         if item.key == "nr_res":
             # The slider is only on screen while Boost is on, so every
             # position means a work resolution now - there is no "off" step

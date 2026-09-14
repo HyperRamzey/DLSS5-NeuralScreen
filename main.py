@@ -142,7 +142,7 @@ from protocol import (  # noqa: F401
     SHM_MAGIC, VIDEO_MAGIC, WGC_ACK_FMT, WGC_ACK_MAGIC, WGC_FMT,
     WGC_MAGIC, WINDOW_ACK_FMT, WINDOW_ACK_MAGIC, WINDOW_FLAG_CAPTURABLE,
     WINDOW_FLAG_DISABLE, WINDOW_FMT, WINDOW_MAGIC, WorkerReader,
-    _read_exact, sync_sr_scale, prepare_capture, send_dda, send_frame, send_gray, send_motion_size,
+    _read_exact, prepare_capture, send_dda, send_frame, send_gray, send_motion_size,
     send_out, send_resize, send_wgc, send_window)
 
 
@@ -557,7 +557,6 @@ def main() -> int:
                 # notice a user asked for (issue #33). Once per session.
                 settings_io.warn_hdr(st)
                 settings_io.show_update_notice(st)
-                settings_io.refresh_sr(st)
 
             # --- Input for the overlay menu --------------------------
             # Events are read only while the menu is open: the rest of the
@@ -608,7 +607,6 @@ def main() -> int:
             # the program does not fall over.
             try:
                 check_worker(st.worker, st.worker_logs)
-                sync_sr_scale(st.worker, st.reader, float(st.cfg.get("dlss_sr_scale", .65)))
                 if st.gray_active:
                     prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
                 t0 = time.perf_counter()
@@ -664,7 +662,6 @@ def main() -> int:
                     continue
             try:
                 check_worker(st.worker, st.worker_logs)
-                sync_sr_scale(st.worker, st.reader, float(st.cfg.get("dlss_sr_scale", .65)))
                 if st.gray_active:
                     prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
                 try:
@@ -704,8 +701,7 @@ def main() -> int:
                            skip_static=bool(st.cfg.get("skip_static", False)),
                            frame_generation=bool(st.cfg.get("frame_generation", False)),
                            frame_multiplier=int(st.cfg.get("frame_multiplier", 2)),
-                           prepared=bool(st.gray_active),
-                           dlss_sr=bool(st.cfg.get("dlss_sr", False)))
+                           prepared=bool(st.gray_active))
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1

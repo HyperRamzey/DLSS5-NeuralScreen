@@ -28,7 +28,6 @@ extra = [
     "library_updates.py",
     "native/nvngx_dlssg.dll",
     "resolution_limits.py",
-    "native/nvngx_dlss.dll",
     "NeuralScreen.exe",
     "NeuralScreen.vbs",
     "NeuralScreen-diag.vbs",

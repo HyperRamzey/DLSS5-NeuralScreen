@@ -8,16 +8,16 @@
   "lang": "en",
   "profile": "Natural",
   "intensity": 1.0,
-  "local_tone": 0.5,
+  "local_tone": 0.75,
   "local_structure": 1.0,
-  "skin_structure": -1.0,
+  "skin_structure": 0.8,
   "worker_present": true,
   "motion_on_gpu": true,
   "capture_in_worker": true,
   "menu_scale": 1.0,
   "menu_offset": [
-    745,
-    12
+    1331,
+    -21
   ],
   "open_menu_on_start": true,
   "split": 0.0,
@@ -33,5 +33,10 @@
   "hdr": false,
   "gpu": 0,
   "gpu_no_nr": [],
-  "presets": {}
+  "presets": {},
+  "motion_backend": "nvofa",
+  "dlss_sr_scale": 0.55,
+  "dlss_sr": false,
+  "frame_generation": true,
+  "frame_multiplier": 3
 }

@@ -362,12 +362,6 @@ def load_config(path: Path) -> dict:
     cfg["lang"] = lang
     from motion_backend import normalize_backend
     cfg["motion_backend"] = normalize_backend(cfg.get("motion_backend"))
-    try:
-        sr_scale = float(cfg.get("dlss_sr_scale", .65))
-    except (TypeError, ValueError):
-        sr_scale = .65
-    cfg["dlss_sr_scale"] = min(1.0, max(.25, sr_scale))
-    cfg["dlss_sr"] = bool(cfg.get("dlss_sr", False))
     cfg["frame_generation"] = bool(cfg.get("frame_generation", False))
     try:
         cfg["frame_multiplier"] = min(4, max(2, int(cfg.get("frame_multiplier", 2))))
@@ -502,8 +496,6 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # idles instead of re-running on the same picture. A per-frame flag,
         # so it survives a restart through the config alone.
         "skip_static": bool(cfg.get("skip_static", False)),
-        "dlss_sr_scale": float(cfg.get("dlss_sr_scale", .65)),
-        "dlss_sr": bool(cfg.get("dlss_sr", False)),
         "frame_generation": bool(cfg.get("frame_generation", False)),
         "frame_multiplier": min(4, max(2, int(cfg.get("frame_multiplier", 2)))),
         # The user's saved presets. Without this key "Save preset" wrote
@@ -593,20 +585,6 @@ def refresh_gpu_ok(st) -> None:
                 "gpu_nr_fail",
                 "This GPU cannot run the neural pass - the picture stays "
                 "unprocessed"), 8.0)
-
-
-def refresh_sr(st) -> None:
-    """Report actual SR failure and reflect the active fallback in the checkbox."""
-    if not st.cfg.get("dlss_sr", False):
-        return
-    for line in reversed(st.worker_logs):
-        if "[sr]" not in line:
-            continue
-        if "failed" in line or "unavailable" in line:
-            st.cfg["dlss_sr"] = False
-            save_menu_layout(st)
-            st.display.alert(UI_STRINGS[st.lang]["dlss_sr_failed"], duration=6.0)
-        return
 
 
 def warn_hdr(st) -> None:
@@ -760,8 +738,6 @@ def menu_payload(st) -> dict:
         "motion_backend": st.cfg.get("motion_backend", "cpu"),
         "skip_static": bool(st.cfg.get("skip_static", False)),
         "library_updates_enabled": st.cfg.get("library_updates_enabled", False) is True,
-        "dlss_sr_scale": float(st.cfg.get("dlss_sr_scale", .65)),
-        "dlss_sr": bool(st.cfg.get("dlss_sr", False)),
         "frame_generation": bool(st.cfg.get("frame_generation", False)),
         "frame_multiplier": min(4, max(2, int(st.cfg.get("frame_multiplier", 2)))),
         # Is the network idling on an unchanged screen right now? The

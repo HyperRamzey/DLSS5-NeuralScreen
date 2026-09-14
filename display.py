@@ -1419,9 +1419,20 @@ class Display:
             pass
         now = time.monotonic()
         alerts = len(self._alerts)
-        # With the menu open throttling is disabled: 10 Hz is enough for a
-        # static HUD, but a slider under the mouse jitters at that rate.
-        if self.menu.visible:
+        # With the menu open the throttle is disabled - a slider under the
+        # mouse jitters at 10 Hz. But an UNTOUCHED menu over the picture used
+        # to flip the whole fullscreen layer at the main loop's rate (60-144
+        # Hz): every flip recomposes the topmost layer over the picture
+        # window, and the HUD's 8% translucency let the moving picture modulate
+        # the panel - the shimmer the user sees whenever the program's UI sits
+        # above the effect window (user, 14.09). Keep the full rate only while
+        # the mouse is actually interacting with the menu (a drag, or the
+        # cursor over the panel); a menu nobody touches redraws at the HUD's
+        # own 10 Hz.
+        if self.menu.visible and not self.menu.dragging \
+                and not self.menu.hover:
+            pass  # fall through to the normal throttle below
+        elif self.menu.visible:
             min_interval = 0.0
         if self._switch_active:
             # The veil animates - the mark must not run at the HUD's 10 Hz.

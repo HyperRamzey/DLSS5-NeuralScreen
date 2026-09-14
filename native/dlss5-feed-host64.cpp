@@ -2112,17 +2112,38 @@ static void FollowCapturedWindow()
         r.right != g_present_follow.right || r.bottom != g_present_follow.bottom)
     {
         g_present_follow = r;
-        // Follow the SIZE as well. SWP_NOSIZE kept the window at the frame
-        // size the pipeline was built for through the whole half-second
-        // stability wait and the live resize - after a shrink its bottom and
-        // right part hung over the desktop with stale pixels, and read as a
-        // trail of copies behind the moving window (user, 14.09). The swap
-        // chain stays at its buffer size and the compositor stretches it
-        // into whatever the window is now, so the picture never leaves the
-        // window's bounds; the stretch distortion lives well under a second
-        // and the rebuild (RNSZ + WNDO reopen) lands the exact size.
-        SetWindowPos(g_present_hwnd, HWND_TOPMOST, r.left, r.top,
-                     r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
+        // Follow the size, but never stretch stale content. Two failure
+        // modes measured on the real path (user, 14.09):
+        //   * SWP_NOSIZE (the old behaviour): after a shrink the window's
+        //     bottom/right part hung over the desktop with stale pixels -
+        //     the trail of copies.
+        //   * following the size with the OLD buffer (the first attempt):
+        //     the compositor stretched the old-size capture into the new
+        //     rect and kept re-stretching it at every intermediate drag
+        //     size - the picture shimmered for the whole stability wait.
+        // The resolution: follow the size only when the buffer already
+        // matches the window (g_present_w/h == the rect), otherwise keep
+        // the buffer-sized window but clamp its rect to the target's, so
+        // no part of it hangs outside the window being followed. The live
+        // resize lands the exact size either way.
+        const UINT bw = g_present_w, bh = g_present_h;
+        const bool buffer_matches =
+            bw == (UINT)(r.right - r.left) && bh == (UINT)(r.bottom - r.top);
+        int left = r.left, top = r.top;
+        UINT w = r.right - r.left, hgt = r.bottom - r.top;
+        if (!buffer_matches)
+        {
+            // Stale content: keep the buffer's own size, clamp the origin
+            // so the window never extends past the target's rect.
+            w = bw;
+            hgt = bh;
+            if (left + (int)w > r.right) left = r.right - (int)w;
+            if (top + (int)hgt > r.bottom) top = r.bottom - (int)hgt;
+            if (left < r.left) left = r.left;
+            if (top < r.top) top = r.top;
+        }
+        SetWindowPos(g_present_hwnd, HWND_TOPMOST, left, top, w, hgt,
+                     SWP_NOACTIVATE);
     }
 }
 

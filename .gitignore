@@ -58,3 +58,4 @@ native/*.ready
 native/*.update.json
 native/*.update.tmp
 native/*.bak
+native/nvngx_dlss.dll

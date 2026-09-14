@@ -1772,3 +1772,31 @@ for _table in STRINGS.values():
     _table["lib_opt_in_hint"] = "connects to NVIDIA on GitHub; off by default"
 STRINGS["ru"]["lib_opt_in"] = "Автоматически проверять обновления библиотек"
 STRINGS["ru"]["lib_opt_in_hint"] = "обращается к NVIDIA на GitHub; по умолчанию выключено"
+STRINGS['en'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['ru'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'сеть работает на пониженном разрешении;\nDLSS восстанавливает размер кадра (эксперимент)', 'dlss_sr_failed': 'DLSS Super Resolution не сработал. Нейрорендеринг продолжает работать.', 'dlss_sr_input': 'Входное разрешение DLSS', 'nr_min_hint': 'минимальный размер обработки ограничен автоматически'})
+
+STRINGS['fr'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['de'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['es'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['it'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['pt'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['pl'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['uk'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['zh'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['ja'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+STRINGS['ko'].update({'dlss_sr': 'DLSS Super Resolution', 'dlss_sr_hint': 'the network runs at a lower resolution;\nDLSS restores the output resolution (experimental)', 'dlss_sr_failed': 'DLSS Super Resolution failed. Neural rendering remains active.', 'dlss_sr_input': 'DLSS input resolution', 'nr_min_hint': 'minimum processing size is limited automatically'})
+
+for _table in STRINGS.values():
+    _table["dlss_sr_hint"] += "\n100%: DLAA (native-resolution anti-aliasing; additional GPU work)."
+STRINGS["ru"]["dlss_sr_hint"] = "На пониженном разрешении DLSS восстанавливает размер кадра.\n100%: DLAA — сглаживание без апскейла, с дополнительной нагрузкой на GPU."
+

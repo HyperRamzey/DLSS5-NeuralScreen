@@ -925,39 +925,50 @@ class Display:
         # another window).
         # Picture first, HUD last. Keep the two raises independent: a missing
         # or not-yet-created present window must never hide the HUD raise.
+        present = None
+        top = None
+        top_class = None
         try:
             present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
-            if present:
-                # The worker's ReassertPresentTopmost skips its raise while
-                # the HUD sits above the picture - mirror that here. Two
-                # unconditional TOPMOST inserts every 30 frames (and on every
-                # follow step) churn the pair's z-order and read as a periodic
-                # blink while idle (flicker audit, finding 1).
-                top = user32.GetTopWindow(None)
-                if top != present:
-                    buf = ctypes.create_unicode_buffer(64)
-                    ours = top and user32.GetClassNameW(top, buf, 64) > 0 and buf.value in (
-                        "pygame", "NeuralScreenPresent")
-                    if not ours:
-                        user32.SetWindowPos(present, -1, 0, 0, 0, 0,
-                                            0x0001 | 0x0002 | 0x0010)
+            top = user32.GetTopWindow(None)
+            if top:
+                buf = ctypes.create_unicode_buffer(64)
+                if user32.GetClassNameW(top, buf, 64) > 0:
+                    top_class = buf.value
+            # The HUD raise OWNS the HUD-over-picture invariant (v1.10-review
+            # P3): the worker's follow inserts the picture above the HUD on
+            # every rect change, and this raise - running on the pipeline
+            # clock, which is at least as frequent - puts it back. The stale
+            # assumption that the client raises the HUD "much more often"
+            # died with the unconditional-raise removal (bcabce7): the guards
+            # below used to skip when top was the picture, and the pair sat
+            # picture-over-HUD with nobody re-asserting - the picture read as
+            # flicker over the menu.
+            hud_above_picture = top == present
+            # The picture goes first, and only when something ELSE took the
+            # top slot: an unconditional insert every 30 frames churns the
+            # pair's z-order (flicker audit, finding 1).
+            if present and top != present and top_class not in (
+                    "pygame", "NeuralScreenPresent"):
+                user32.SetWindowPos(present, -1, 0, 0, 0, 0,
+                                    0x0001 | 0x0002 | 0x0010)
         except Exception:
-            pass
+            present = None
+            top = None
         try:
             hwnd = pygame.display.get_wm_info()["window"]
-            # Same guard the picture raise has: only insert into the topmost
-            # band when something else took the top slot. An unconditional
-            # SetWindowPos every 30 frames churns the pair's z-order and
-            # reads as a periodic blink while idle (flicker audit, finding
-            # 1) - the roadmap R1 item makes placement read-back driven.
-            top = user32.GetTopWindow(None)
-            if top != hwnd:
-                buf = ctypes.create_unicode_buffer(64)
-                ours = top and user32.GetClassNameW(top, buf, 64) > 0 and buf.value in (
-                    "pygame", "NeuralScreenPresent")
-                if not ours:
-                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
-                                        0x0001 | 0x0002 | 0x0010)
+            if top == hwnd:
+                pass  # the HUD is on top; nothing to do
+            elif top == present:
+                # The picture took the band: insert the HUD above it (one
+                # placement, after the picture) - the invariant is owned.
+                user32.SetWindowPos(hwnd, present, 0, 0, 0, 0,
+                                    0x0001 | 0x0002 | 0x0010 | 0x0004)
+            elif top is not None and top_class is not None and top_class not in (
+                    "pygame", "NeuralScreenPresent"):
+                # A foreign window took the topmost slot: re-assert the pair.
+                user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
+                                    0x0001 | 0x0002 | 0x0010)
         except Exception:
             pass
 

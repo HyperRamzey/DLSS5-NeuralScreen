@@ -709,7 +709,7 @@ def main() -> int:
                     for line in st.worker_logs[-15:]:
                         print(f"  {line}")
                 st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
-                    st.worker, st.params, st.work_w, st.work_h, 10,
+                    st.worker, st.params, st.work_w, st.work_h, st.effective_warmup,
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.worker_stop, st.shm)
@@ -813,7 +813,7 @@ def main() -> int:
                 print(f"[main] worker silent/dead on frame {st.frame_index} ({exc}) - restarting "
                       f"({st.consecutive_restarts}/{MAX_CONSECUTIVE_RESTARTS})")
                 st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
-                    st.worker, st.params, st.work_w, st.work_h, 10,
+                    st.worker, st.params, st.work_w, st.work_h, st.effective_warmup,
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.worker_stop, st.shm)

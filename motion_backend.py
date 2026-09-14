@@ -10,6 +10,7 @@ class MotionBackendStatus:
         self.worker = None
         self.active = False
         self.failed = False
+        self._scanned = 0
 
     def update(self, worker, logs):
         if worker is not self.worker:

@@ -115,7 +115,23 @@ static void FgPresenter()
             FAILED(fence->SetEventOnCompletion(value, event)) ||
             WaitForSingleObject(event, 2000) != WAIT_OBJECT_0 ||
             fence->GetCompletedValue() < value) return false;
-        if (FAILED(g_present_swap->Present(0, 0))) return false;
+        const HRESULT pr = g_present_swap->Present(0, 0);
+        if (pr == DXGI_STATUS_MODE_CHANGED)
+        {
+            // The mode changed under us. The present did not happen; treat
+            // it as a benign skip - the pipeline's resize path rebuilds the
+            // swapchain when the size follows, and the next frame presents
+            // normally. Presenting into the old surface until then is what
+            // froze the overlay black (v1.10-review H2).
+            Log("[fg] present reports a mode change - skipping a frame");
+            return true;
+        }
+        if (pr == DXGI_STATUS_OCCLUDED)
+        {
+            // The window is hidden (minimised target): benign.
+            return true;
+        }
+        if (FAILED(pr)) return false;
         RevealOnFirstPresent();
         ++shown;
         return true;

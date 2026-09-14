@@ -148,7 +148,10 @@ static bool NsTrustedDll(const wchar_t *path)
     WINTRUST_DATA wd = {};
     wd.cbStruct = sizeof(wd);
     wd.dwUIChoice = WTD_UI_NONE;
-    wd.fdwRevocationChecks = WTD_REVOKE_NONE;
+    // Whole-chain revocation: a revoked intermediate or root must fail the
+    // gate, not just a revoked leaf. Costs a CRL fetch on first sight of a
+    // DLL; the result is cached by Windows for the session.
+    wd.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
     wd.dwUnionChoice = WTD_CHOICE_FILE;
     wd.pFile = &file;
     wd.dwStateAction = WTD_STATEACTION_VERIFY;

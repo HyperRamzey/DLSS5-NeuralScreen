@@ -5184,7 +5184,8 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
                             const BYTE **color_ptr, const BYTE **mv_ptr)
 {
     if (!ReadExact(stdin, &fh, sizeof(fh))) return 0;
-    if (fh.magic == 0x31435353u) return 11; // SSC1: independent SR input scale
+    // SSC1 (0x31435353, SR input scale) removed with the SR feature - a
+    // leftover reader here would fall through to full-frame handling.
     if (fh.magic == CAPTURE_MAGIC) return 10;
     if (fh.magic == FRAME_MAGIC)
     {
@@ -5305,6 +5306,7 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
 static void ReleaseVideoTextures(VideoState &v)
 {
     CloseNvofa();
+    NvofaResetLatch();
     if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
     CloseFgResources();
     // The shader descriptors referenced these resources - after they are

@@ -27,6 +27,7 @@ Run:  runtime\python.exe tests\test_window_surround.py
 """
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -134,6 +135,45 @@ def main() -> int:
             wide_call = (spy.calls[third_writes]
                          if len(spy.calls) > third_writes else None)
             wide_state = disp._layer_state
+
+            # The mode-switch fade-out over a keyed picture: the surround is
+            # painted pure key and must STAY exactly the key while the veil
+            # dissolves - if the veil's writes drop the key bit, or the dim
+            # blends over the surround, the last frames of every window-mode
+            # switch show a magenta band (measured (241,3,236) at alpha 248
+            # before this was pinned). Runs INSIDE the spy zone: the veil
+            # writes its own attributes and they must be observed as the
+            # window would really get them.
+            disp.enter_switch_mode(frame, disp.width, disp.height)
+            disp.exit_switch_mode()
+            now = time.monotonic()
+            fade_steps = 0
+            for i in range(1, 4):
+                disp._finish_switch_if_due(
+                    now + display_mod.SWITCH_FADE_OUT * i / 4.0)
+                if not disp.is_switch_active():
+                    break
+                disp.show(frame)
+                fade_steps += 1
+                surround = tuple(disp.screen.get_at((100, 100)))[:3]
+                if surround != key:
+                    failures.append(
+                        f"mid-fade the surround is {surround}, want the "
+                        f"pure key {key} - a magenta band around the window")
+                    break
+                if spy.calls:
+                    _, _, fade_flags = spy.calls[-1]
+                    if not (fade_flags & display_mod.LWA_COLORKEY):
+                        failures.append(
+                            "a veil fade-out write dropped the colour key "
+                            "while a keyed picture was coming up")
+                        break
+            if fade_steps == 0:
+                failures.append("the fade-out never ran on the keyed picture")
+            # Let the fade finish and the teardown land while the spy is
+            # still in place (the teardown re-applies the layer itself).
+            disp._finish_switch_if_due(
+                time.monotonic() + display_mod.SWITCH_FADE_OUT + 0.1)
         finally:
             display_mod.user32 = spy._real
             display_mod.pygame.display.get_wm_info = real_wm_info

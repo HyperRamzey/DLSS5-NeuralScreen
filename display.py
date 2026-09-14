@@ -310,6 +310,10 @@ class Display:
         # One-window mode: where the captured window is (the frame blit
         # needs it) and how big the frame is. The LAYER is always the screen.
         self._window_layer: tuple[int, int, int, int] | None = None
+        #: Where the last shown frame sits on the layer (None when it covered
+        #: the layer). The fade-out clips the veil's dim to it while the
+        #: surround of a keyed picture must stay pure key - see _draw_veil.
+        self._frame_layer_rect: "pygame.Rect | None" = None
         self._frame_size: tuple[int, int] | None = None
         # Interface scale and the layout sizes derived from it.
         self.ui_scale = ui_scale_for(self.height)
@@ -1190,6 +1194,20 @@ class Display:
         desktop, the flash the veil exists to hide.
         """
         ph = self._switch_phase
+        # The key this write carries: OFF while the veil's own pixels cover
+        # the screen (they must not be cut out - the frozen base is the last
+        # captured frame and could contain an exact key pixel), and ON for
+        # the fade-OUT over a KEYED picture. That picture's surround is
+        # painted pure key, and with the key off that band showed as magenta
+        # for the whole ramp - measured on the composed frames: the last
+        # steps of the fade read (241,3,236) at alpha 248 instead of a
+        # cut-out desktop. The teardown re-applies the state anyway.
+        key_ref = 0
+        flags = LWA_ALPHA
+        if ph == "out" and self._layer_state == LAYER_PICTURE_KEYED:
+            r, g, b = CHROMA_KEY
+            key_ref = (b << 16) | (g << 8) | r
+            flags = LWA_COLORKEY | LWA_ALPHA
         if ph == "off":
             a = 255.0
         elif ph == "out":
@@ -1211,7 +1229,7 @@ class Display:
             a = float(SWITCH_ALPHA)
         try:
             hwnd = pygame.display.get_wm_info()["window"]
-            user32.SetLayeredWindowAttributes(hwnd, 0, int(round(a)), LWA_ALPHA)
+            user32.SetLayeredWindowAttributes(hwnd, key_ref, int(round(a)), flags)
         except Exception as exc:
             print(f"Display: WARNING cannot set the veil alpha: {exc}")
 
@@ -1267,16 +1285,34 @@ class Display:
             else:
                 a = 255
             self._switch_dim_soft.set_alpha(a)
+            # While a KEYED picture is fading in under the veil the dim is
+            # clipped to the frame: the surround is the pure key, and a dim
+            # blended over it would leave pixels that are no longer exactly
+            # the key - a magenta band around the window for the last frames
+            # of every window-mode switch (measured: (241,3,236) at alpha
+            # 248 with the key bit off).
+            clip = self._fade_clip()
+            if clip is not None:
+                self.screen.set_clip(clip)
             self.screen.blit(self._switch_dim_soft, (0, 0))
+            if clip is not None:
+                self.screen.set_clip(None)
         elif self._switch_fill is not None:
             # No picture to freeze: the flat fill is the veil's body and
-            # rides the same crossfade the dim does.
+            # rides the same crossfade the dim does. Clipped to the frame on
+            # the keyed fade-out for the same reason the dim is: pixels
+            # blended over the pure-key surround would no longer be cut out.
             if ph == "in" or (ph == "out" and self._layer_state != LAYER_HUD):
                 a = int(round(255 * strength))
             else:
                 a = 255
             self._switch_fill.set_alpha(a)
+            clip = self._fade_clip()
+            if clip is not None:
+                self.screen.set_clip(clip)
             self.screen.blit(self._switch_fill, (0, 0))
+            if clip is not None:
+                self.screen.set_clip(None)
         else:
             self.screen.fill((36, 34, 38))
         # Layer 2: the mark.
@@ -1288,7 +1324,29 @@ class Display:
             mark_a = appear * strength
         else:
             mark_a = appear
+        clip = self._fade_clip()
+        if clip is not None:
+            self.screen.set_clip(clip)
         self._draw_switch_mark(t, mark_a, w, h)
+        if clip is not None:
+            self.screen.set_clip(None)
+
+    def _fade_clip(self) -> "pygame.Rect | None":
+        """The clip rectangle for the veil's pixels during the fade-out.
+
+        While a KEYED picture comes up under the veil, everything the veil
+        draws outside the frame would blend over the pure-key surround -
+        and blended pixels are no longer exactly the key, so the colour key
+        can no longer cut them out: a magenta band around the window for
+        the last frames of every switch. The veil's own pixels are clipped
+        to the frame instead; inside the frame the veil dissolves over the
+        picture exactly as before.
+        """
+        if (self._switch_phase == "out"
+                and self._layer_state == LAYER_PICTURE_KEYED
+                and self._frame_layer_rect is not None):
+            return self._frame_layer_rect
+        return None
 
     def _draw_switch_mark(self, t: float, alpha: float, w: int, h: int) -> None:
         """The assembling mark at time t, drawn at the given alpha.
@@ -1521,6 +1579,12 @@ class Display:
             # fill on an unkeyed layer is a solid magenta screen (what
             # ca1801d shipped). Idempotent, so this cannot flap.
             self._fill_around(surface.get_rect(topleft=at))
+        # Where the frame sits, for the fade-out: the veil clips its dim to
+        # this rect while a keyed picture is coming up - a dim blended over
+        # the key pixels would leave colours the key can no longer cut out
+        # (see _draw_veil).
+        self._frame_layer_rect = (surface.get_rect(topleft=at)
+                                  if windowed else None)
         # The layer follows the frame's geometry: a window-sized frame on a
         # screen-sized layer leaves a surround that must be cut out; a frame
         # covering the layer goes back to the plain opaque window. Whenever

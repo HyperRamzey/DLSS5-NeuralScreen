@@ -2439,6 +2439,15 @@ static void OwnTheProtocolPipe()
     // From here a printf to stdout is a line in the log, not four bytes in
     // the middle of a reply.
     _dup2(_fileno(stderr), _fileno(stdout));
+    // _dup2 only rewires the CRT's fd table. GetStdHandle(STD_OUTPUT_HANDLE)
+    // still returns the original pipe handle, so a module that logs through
+    // the Win32 handle - NVIDIA's runtime logger did exactly that on the
+    // issue #61 machine - would sail past this redirect. Point the process
+    // standard handle at stderr as well; the private fd 1 copy keeps the
+    // protocol (the std handle is only read by whoever asks, our writes go
+    // through g_wire).
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    if (err != nullptr) SetStdHandle(STD_OUTPUT_HANDLE, err);
 }
 
 static bool WriteExact(FILE *f, const void *p, size_t n)

@@ -891,7 +891,13 @@ class Display:
             # does not cut out a blended colour). The colour key removes
             # the background entirely, and the opaque panel (plus text)
             # becomes slightly see-through through the global alpha.
-            alpha = 255 if self._menu_opaque else BG_ALPHA
+            # The translucency is NR-only. Under Frame Generation the picture
+            # beneath the panel runs at 2-3x the network rate, and the 8%
+            # see-through lets it modulate the panel text every recompose -
+            # the panel shimmers at the FG rate (user 14.09: active flicker
+            # over the program window with FG on). Opaque panel while FG
+            # interpolates; back to 235 when only the network drives it.
+            alpha = 255 if (self._menu_opaque or self._hud.get("display_fps")) else BG_ALPHA
             ok = user32.SetLayeredWindowAttributes(
                 hwnd, key, alpha, LWA_COLORKEY | LWA_ALPHA)
         elif self._layer_state == LAYER_PICTURE_KEYED:

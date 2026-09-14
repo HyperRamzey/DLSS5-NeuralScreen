@@ -655,28 +655,23 @@ class Display:
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
         user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
-        if enabled:
-            # Focus is needed for the keyboard. The mouse works without it -
-            # the click goes to the window under the cursor now that it is no
-            # longer transparent. SetForegroundWindow alone is refused when
-            # the foreground window belongs to another process that has not
-            # received input from the user (a game in the foreground): the
-            # system blocks the steal. AttachThreadInput is the standard
-            # workaround - it makes the foreground thread share its input
-            # state with ours, so the activation is treated as user-initiated.
-            try:
-                fg = user32.GetForegroundWindow()
-                fg_tid = user32.GetWindowThreadProcessId(fg, None)
-                my_tid = ctypes.windll.kernel32.GetCurrentThreadId()
-                if fg_tid and fg_tid != my_tid:
-                    user32.AttachThreadInput(my_tid, fg_tid, True)
-                user32.SetForegroundWindow(hwnd)
-                user32.SetActiveWindow(hwnd)
-                user32.SetFocus(hwnd)
-                if fg_tid and fg_tid != my_tid:
-                    user32.AttachThreadInput(my_tid, fg_tid, False)
-            except Exception:
-                pass
+        # R2: no focus is taken here - ever. The old code attached our thread
+        # to the foreground thread and called SetForegroundWindow, which
+        # re-stole the keyboard focus within 0.5 s of every Alt+Tab, monitor
+        # change and window-mode rebuild that re-opened the menu (flicker
+        # audit F2; the user-visible bug: the NR window "stops working"
+        # while another window takes focus). The model now:
+        #   - the global hotkeys are RegisterHotKey(NULL, ...) - they work
+        #     without focus, so Num1..Num6 close/switch regardless;
+        #   - the mouse works without focus (WS_EX_TRANSPARENT removal is
+        #     what makes the clicks land on the panel);
+        #   - the panel activates NATURALLY on the user's first click on it
+        #     - a click is the user gesture Windows requires, no theft
+        #     needed - and SDL's KEYDOWN (Esc, Enter, the remap capture)
+        #     flows from that focus.
+        # The NOACTIVATE style is still removed while the menu is open (the
+        # click must be able to activate); the activation itself is left to
+        # the user's click, never to our code.
         self._click_through = not enabled
 
     def resize(self, w: int, h: int) -> None:

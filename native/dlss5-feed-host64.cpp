@@ -5871,6 +5871,13 @@ static int RunVideo()
         bool source_fresh = true;
         bool defer_tail = false;
         UINT64 upload_done = 0, eval_done = 0, present_done = 0;
+        // R12: a capture pause longer than a second leaves every history
+        // (NR temporal accumulation, FG interpolation slots) pointing at a
+        // picture that no longer exists. Marked here; the pause itself
+        // forces the reset when frames resume.
+        static ULONGLONG last_fresh_tick = GetTickCount64();
+        static bool stall_pending = false;
+        const ULONGLONG now_tick = GetTickCount64();
         if (CaptureActive())
         {
             // Capture mode: the colour comes from the desktop (DDA1) or from
@@ -5933,6 +5940,21 @@ static int RunVideo()
             }
             source_fresh = got && g_capture_visual_changed;
             if (phase_on && source_fresh) ++g_ph_fresh_sources;            PhaseAdd(PH_DDA, t_dda);
+            // R12: the pause detector. Fresh source = the clock restarts; a
+            // silence longer than a second marks the reset for the next
+            // fresh frame - evaluated with stale history once is enough to
+            // see the smear, resetting on the FIRST stale frame keeps it
+            // invisible.
+            if (source_fresh)
+            {
+                if (stall_pending && now_tick - last_fresh_tick > 1000)
+                    Log("[reset] capture resumed after %lu ms - NR and FG history reset",
+                        (unsigned long)(now_tick - last_fresh_tick));
+                stall_pending = false;
+                last_fresh_tick = now_tick;
+            }
+            else if (!got && now_tick - last_fresh_tick > 1000)
+                stall_pending = true;
             if (!got && !g_dda_ready)
             {
                 // Not a single real desktop frame yet: keep the protocol
@@ -6068,7 +6090,13 @@ static int RunVideo()
         g_hdr_split = (fh.reserved & FRAME_FLAG_SPLIT) ?
             SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : UINT_MAX;
         const bool bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
-        g_fg_reset = frame == 0 || fh.reset != 0 || bypass || previous_hdr_split != g_hdr_split;
+        g_fg_reset = frame == 0 || fh.reset != 0 || bypass
+                     || previous_hdr_split != g_hdr_split
+                     || (stall_pending && source_fresh);
+        // The NR evaluate shares the same stall reset: one forced reset
+        // frame, then the ordinary flow.
+        const bool stall_reset = stall_pending && source_fresh;
+        if (stall_reset) { fh.reset = 1; stall_pending = false; Log("[video] history reset after the capture pause"); }
         if (!bypass)
         {
             const double t_eval = PhaseNow();

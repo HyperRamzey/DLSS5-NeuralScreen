@@ -1761,7 +1761,6 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
 static UINT64 g_fg_present_fence = 0;
 static void StopFgPresentation();
 static void CloseFgResources();
-static void CloseSrResources();
 static bool g_fg_reset = true;
 static bool EnsurePresentFormat(bool hdr, bool pq = false);
 static void CloseHdrResources();
@@ -4673,27 +4672,18 @@ static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms)
     return ok;
 }
 
-#include "super_resolution.inl"
-
 static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
 {
     if (submitted) *submitted = 0;
-    const bool use_sr = EnsureSr(v);
     if (!BeginCommands()) return false;
     const bool ts = ProfileGpuBegin(PS_EVAL);
     const UINT cw = v.upscale ? v.full_w : v.w;
     const UINT ch = v.upscale ? v.full_h : v.hgt;
     // What the network is actually handed. In nr_small mode that is the work
     // resolution, and colour has to be scaled down into nr_in first.
-    const UINT nw = use_sr ? g_sr.nw : (v.nr_small ? v.nr_w : cw);
-    const UINT nh = use_sr ? g_sr.nh : (v.nr_small ? v.nr_h : ch);
-    static UINT previous_nw=0, previous_nh=0;
-    static bool previous_sr=false;
-    reset = reset || previous_nw != nw || previous_nh != nh || previous_sr != use_sr ||
-            (use_sr && !g_sr.history);
-    previous_nw=nw;previous_nh=nh;previous_sr=use_sr;
-    if (use_sr) PrepareSrInput(v);
-    else if (v.nr_small)
+    const UINT nw = v.nr_small ? v.nr_w : cw;
+    const UINT nh = v.nr_small ? v.nr_h : ch;
+    if (v.nr_small)
     {
         D3D12_RESOURCE_BARRIER to_uav = Transition(
             v.nr_in, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -4709,8 +4699,8 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     // own cost, and folding them into "eval on GPU" would make the number
     // incomparable with every measurement taken so far.
     if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 2);
-    ID3D12Resource *nr_color = use_sr ? g_sr.nr_in.get() : (v.nr_small ? v.nr_in : v.color.tex);
-    ID3D12Resource *nr_result = use_sr ? g_sr.nr_out.get() : (v.nr_small ? v.nr_out : v.output);
+    ID3D12Resource *nr_color = v.nr_small ? v.nr_in : v.color.tex;
+    ID3D12Resource *nr_result = v.nr_small ? v.nr_out : v.output;
     h.params->Reset();
     h.params->Set("DLSSNR.Color", nr_color); h.params->Set("DLSSNR.Output", nr_result);
     h.params->Set("DLSSNR.MVec", v.mv.tex);
@@ -4720,8 +4710,8 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     h.params->Set("DLSSNR.MVecSubrectWidth", v.w); h.params->Set("DLSSNR.MVecSubrectHeight", v.hgt);
     h.params->Set("DLSSNR.OutputSubrectBaseX", 0u); h.params->Set("DLSSNR.OutputSubrectBaseY", 0u);
     h.params->Set("DLSSNR.OutputSubrectWidth", nw); h.params->Set("DLSSNR.OutputSubrectHeight", nh);
-    h.params->Set("DLSSNR.MVecScaleX", (use_sr || v.nr_small) ? float(nw)/v.w : 1.0f);
-    h.params->Set("DLSSNR.MVecScaleY", (use_sr || v.nr_small) ? float(nh)/v.hgt : 1.0f);
+    h.params->Set("DLSSNR.MVecScaleX", v.nr_small ? float(nw)/v.w : 1.0f);
+    h.params->Set("DLSSNR.MVecScaleY", v.nr_small ? float(nh)/v.hgt : 1.0f);
     h.params->Set("DLSSNR.Enabled", 1u); h.params->Set("DLSSNR.Reset", reset);
     h.params->Set("DLSSNR.Intensity", g_video_options.intensity);
     h.params->Set("DLSSNR.LocalToneStrength", g_video_options.local_tone);
@@ -4739,8 +4729,7 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     g_last_eval_result = static_cast<uint32_t>(result);
     if (code != 0) { AbortCommands(); Log("[pure] direct evaluate exception 0x%08X", code); return false; }
     if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 3);
-    if (use_sr) { ComposeSrInput(v); EvaluateSr(v, reset); }
-    else if (v.nr_small)
+    if (v.nr_small)
     {
         // The result is work-sized; stretch it into the full-res output the
         // rest of the pipeline expects. In residual mode the work-res nr_out
@@ -5077,7 +5066,6 @@ static void ReleaseVideoTextures(VideoState &v)
 {
     CloseNvofa();
     if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
-    CloseSrResources();
     CloseFgResources();
     // The shader descriptors referenced these resources - after they are
     // released the descriptors must be reissued (see BindScaleDescriptors).
@@ -5622,18 +5610,6 @@ static int RunVideo()
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
-        if (msg == 11)
-        {
-            const unsigned scale=std::clamp(fh.reset,25u,100u);
-            if (g_sr.scale!=scale) {
-                CloseFgResources();CloseSrResources();g_sr.scale=scale;g_sr.failed=false;
-                g_force_next_frame=true;
-                Log("[sr] input scale: %u%% (before NR; Boost ratio unchanged)",scale);
-            }
-            VideoResultHeader ack={OUT_MAGIC,fh.index,1u,0u,0u,fh.pts};
-            if (!WriteExact(g_wire,&ack,sizeof(ack))) return 10;
-            continue;
-        }
         if (msg == 10)
         {
             if (!CaptureActive()) { Log("[cap] CAP1 requires active capture"); return 10; }
@@ -5646,7 +5622,6 @@ static int RunVideo()
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
-        ConfigureSrFrame(fh.reserved);
         ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
         const bool phase_on = PhaseEnabled();
@@ -5853,7 +5828,6 @@ static int RunVideo()
         g_hdr_split = (fh.reserved & FRAME_FLAG_SPLIT) ?
             SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : UINT_MAX;
         const bool bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
-        if (bypass) g_sr.history = false;
         g_fg_reset = frame == 0 || fh.reset != 0 || bypass || previous_hdr_split != g_hdr_split;
         if (!bypass)
         {
@@ -5970,8 +5944,6 @@ static void CleanupVideoNgx()
 {
     CloseNvofa();
     CloseFgResources();
-    CloseSrResources();
-    if (g_sr.params) { NVSDK_NGX_D3D12_DestroyParameters(g_sr.params); g_sr.params = nullptr; }
     if (h.feature != nullptr)
     {
         SafeReleaseFeature(h.feature);

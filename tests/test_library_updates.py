@@ -32,8 +32,7 @@ class Checks(unittest.TestCase):
     def test_notice_once_and_batch(self):
         checker = updates.LibraryChecker()
         self.assertFalse(checker.take_notice())
-        checker.rows = (('DLSS SR', '310.8.0.0', '310.9.1.0', 'update'),
-                        ('DLSS FG', '310.8.0.0', '310.9.1.0', 'update'))
+        checker.rows = (('DLSS FG', '310.8.0.0', '310.9.1.0', 'update'),)
         checker.busy = True
         self.assertFalse(checker.take_notice())
         checker.busy = False
@@ -44,7 +43,7 @@ class Checks(unittest.TestCase):
             for thread in threading.enumerate():
                 if thread.name == 'library-download':
                     thread.join(3)
-        self.assertEqual(download.call_count, 2)
+        self.assertEqual(download.call_count, 1)
         self.assertFalse(checker.snapshot()[0])
         self.assertTrue(all(r[3] == 'pending' for r in checker.snapshot()[1]))
 
@@ -59,7 +58,7 @@ class Checks(unittest.TestCase):
             menu = build()
             menu.page = 'updates'
             menu.set_state({'library_updates': (False, (
-                ('DLSS SR', '310.8.0.0', '310.9.1.0', 'update'),))})
+                ('DLSS FG', '310.8.0.0', '310.9.1.0', 'update'),))})
             paint(menu)
             button = find(menu, 'button', 'update_libraries')
             self.assertIsNotNone(button)
@@ -82,9 +81,9 @@ class Checks(unittest.TestCase):
     def test_install_and_backup(self):
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
-            target = directory / 'nvngx_dlss.dll'
-            ready = directory / 'nvngx_dlss.dll.ready'
-            manifest = directory / 'nvngx_dlss.dll.update.json'
+            target = directory / 'nvngx_dlssg.dll'
+            ready = directory / 'nvngx_dlssg.dll.ready'
+            manifest = directory / 'nvngx_dlssg.dll.update.json'
             target.write_bytes(b'old')
             ready.write_bytes(b'new')
             manifest.write_text(json.dumps({'version': [310, 10, 0, 0],
@@ -94,7 +93,7 @@ class Checks(unittest.TestCase):
             with patch.object(updates, 'local_version', side_effect=version):
                 updates.apply_pending(directory)
             self.assertEqual(target.read_bytes(), b'new')
-            self.assertEqual((directory / 'nvngx_dlss.dll.bak').read_bytes(), b'old')
+            self.assertEqual((directory / 'nvngx_dlssg.dll.bak').read_bytes(), b'old')
             self.assertFalse(manifest.exists())
             ready.write_bytes(b'corrupt')
             manifest.write_text(json.dumps({'version': [310, 11, 0, 0], 'sha256': 'wrong'}))
@@ -105,16 +104,16 @@ class Checks(unittest.TestCase):
 
     def test_download_failure_can_retry(self):
         checker = updates.LibraryChecker()
-        checker.rows = (('DLSS SR', '310.8.0.0', '310.9.1.0', 'update'),)
+        checker.rows = (('DLSS FG', '310.8.0.0', '310.9.1.0', 'update'),)
         with patch.object(updates, 'stage_update', side_effect=OSError('offline')):
-            checker._download('DLSS SR', (310, 9, 1, 0))
+            checker._download('DLSS FG', (310, 9, 1, 0))
         self.assertEqual(checker.snapshot()[1][0][3], 'download_failed')
         self.assertFalse(checker.snapshot()[0])
         self.assertFalse(checker.update('DLSS NR'))
         with patch.object(updates, 'stage_update'):
-            checker._download('DLSS SR', (310, 9, 1, 0))
+            checker._download('DLSS FG', (310, 9, 1, 0))
         self.assertEqual(checker.snapshot()[1][0][3], 'pending')
-        self.assertFalse(checker.update('DLSS SR'))
+        self.assertFalse(checker.update('DLSS NR'))
 
     def test_pe_metadata(self):
         data = bytearray(8192)
@@ -138,13 +137,13 @@ class Checks(unittest.TestCase):
     def test_status_and_retry(self):
         checker = updates.LibraryChecker()
         with patch.object(updates, 'local_version', return_value=(310, 9, 1, 0)), \
-             patch.object(updates, 'remote_version', side_effect=[(310, 10, 0, 0), (310, 8, 0, 0)]):
+             patch.object(updates, 'remote_version', side_effect=[(310, 10, 0, 0)]):
             checker._run()
-        self.assertEqual([r[3] for r in checker.snapshot()[1]], ['update', 'newer', 'no_source'])
+        self.assertEqual([r[3] for r in checker.snapshot()[1]], ['update', 'no_source'])
         with patch.object(updates, 'local_version', return_value=(310, 9, 1, 0)), \
              patch.object(updates, 'remote_version', side_effect=OSError('offline')):
             checker._run()
-        self.assertEqual([r[3] for r in checker.snapshot()[1]], ['unknown', 'unknown', 'no_source'])
+        self.assertEqual([r[3] for r in checker.snapshot()[1]], ['unknown', 'no_source'])
         self.assertFalse(checker.snapshot()[0])
 
     def test_only_one_background_job(self):
@@ -175,7 +174,7 @@ class Checks(unittest.TestCase):
         response.status = 200
         with patch.object(updates.urllib.request, 'urlopen', return_value=response):
             with self.assertRaises(ValueError):
-                updates.remote_version('nvngx_dlss.dll')
+                updates.remote_version('nvngx_dlssg.dll')
         response.read.assert_not_called()
 
     def test_settings_rows(self):
@@ -187,13 +186,13 @@ class Checks(unittest.TestCase):
             menu = build()
             menu.page = 'settings'
             menu.set_state({'lang': 'ru', 'library_updates': (False, (
-                ('DLSS SR', '310.8.0.0', '310.9.1.0', 'update'),
+                ('DLSS FG', '310.8.0.0', '310.9.1.0', 'update'),
                 ('DLSS NR', '310.8.0.0', '?', 'no_source')))})
             paint(menu)
             self.assertIsNotNone(find(menu, 'button', 'check_libraries'))
-            self.assertIsNotNone(find(menu, 'button', 'update_library:DLSS SR'))
+            self.assertIsNotNone(find(menu, 'button', 'update_library:DLSS FG'))
             self.assertIsNone(find(menu, 'button', 'update_library:DLSS NR'))
-            self.assertEqual(find(menu, 'info', 'DLSS SRversion').extra['value'],
+            self.assertEqual(find(menu, 'info', 'DLSS FGversion').extra['value'],
                              '310.8.0.0 → 310.9.1.0')
             self.assertEqual(find(menu, 'info', 'DLSS NRstatus').extra['label'],
                              'Нет публичного источника обновлений')

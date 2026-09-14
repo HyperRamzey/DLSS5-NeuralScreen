@@ -12,7 +12,7 @@ import urllib.request
 
 from paths import NATIVE_DIR
 
-UPDATABLE = {'DLSS SR': 'nvngx_dlss.dll', 'DLSS FG': 'nvngx_dlssg.dll'}
+UPDATABLE = {'DLSS FG': 'nvngx_dlssg.dll'}
 INSTALL_ERRORS = set()
 
 
@@ -277,8 +277,7 @@ class LibraryChecker:
     def _run(self):
         rows = []
         try:
-            for label, filename in [('DLSS SR', 'nvngx_dlss.dll'),
-                                    ('DLSS FG', 'nvngx_dlssg.dll'),
+            for label, filename in [('DLSS FG', 'nvngx_dlssg.dll'),
                                     ('DLSS NR', 'nvngx_dlssnr.dll')]:
                 path = (os.environ.get('NS_NR_DLL') if label == 'DLSS NR' else None)
                 path = path or NATIVE_DIR / filename

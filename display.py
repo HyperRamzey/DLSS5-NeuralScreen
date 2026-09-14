@@ -950,8 +950,19 @@ class Display:
             pass
         try:
             hwnd = pygame.display.get_wm_info()["window"]
-            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
-                                              0x0001 | 0x0002 | 0x0010)
+            # Same guard the picture raise has: only insert into the topmost
+            # band when something else took the top slot. An unconditional
+            # SetWindowPos every 30 frames churns the pair's z-order and
+            # reads as a periodic blink while idle (flicker audit, finding
+            # 1) - the roadmap R1 item makes placement read-back driven.
+            top = user32.GetTopWindow(None)
+            if top != hwnd:
+                buf = ctypes.create_unicode_buffer(64)
+                ours = top and user32.GetClassNameW(top, buf, 64) > 0 and buf.value in (
+                    "pygame", "NeuralScreenPresent")
+                if not ours:
+                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
+                                        0x0001 | 0x0002 | 0x0010)
         except Exception:
             pass
 

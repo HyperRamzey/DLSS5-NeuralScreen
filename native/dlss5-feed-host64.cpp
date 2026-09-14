@@ -1249,18 +1249,88 @@ static bool InitDisguise()
     return true;
 }
 
+// NGX writes its own log file next to the program and mirrors lines into
+// every sink it finds. We log everything that matters ourselves, so the
+// runtime's file is pure noise: a discard callback with NextCallback=null
+// plus DisableOtherLoggingSinks closes every sink but ours. The logging
+// level is a floor, not a ceiling - only the discard callback + NextCallback
+// NULL actually silences the other sinks (verified against the runtime's
+// behavior, roadmap R3).
+static void NVSDK_CONV NgxDiscardCallback(const char *, NVSDK_NGX_Logging_Level,
+                                          NVSDK_NGX_Feature) {}
+
+static NVSDK_NGX_FeatureCommonInfo g_ngx_common = {};
+
+// R8 groundwork: fill PathListInfo so the driver's NGX core can find the
+// feature DLL by itself. Our earlier NS_NGX_VIA_CORE attempt failed with
+// Init -> FAIL_UnableToInitializeFeature, and the suspect was the nullptr
+// FeatureCommonInfo the core had to work with. NS_NGX_PATHLIST=1 builds the
+// real struct; the forwarder-removal decision rides on this test.
+// PathListInfo holds raw pointers, so the strings outlive Init: static.
+static wchar_t g_ngx_paths[2][MAX_PATH];
+static const wchar_t *g_ngx_path_ptrs[2] = { g_ngx_paths[0], g_ngx_paths[1] };
+
+static NVSDK_NGX_FeatureCommonInfo *NgxCommonInfo(const wchar_t *data_path)
+{
+    // Logging discard is unconditional (R3): the runtime's own log file
+    // next to the program is noise - everything worth knowing is logged
+    // by us, and a discard callback with NextCallback left null silences
+    // the other sinks for good.
+    g_ngx_common = {};
+    g_ngx_common.LoggingInfo.LoggingCallback = NgxDiscardCallback;
+    g_ngx_common.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
+    g_ngx_common.LoggingInfo.DisableOtherLoggingSinks = true;
+
+    char v[8] = {};
+    const DWORD got = GetEnvironmentVariableA("NS_NGX_PATHLIST", v, sizeof(v));
+    if (got > 0 && got < sizeof(v) && v[0] == '1')
+    {
+        // R8 groundwork: exe dir first, then the data dir we were already
+        // passing as hint, so the driver's NGX core can find the feature
+        // DLL without our forwarder. PathListInfo is a pointer list plus a
+        // single length, and the strings must outlive the Init call.
+        wcscpy_s(g_ngx_paths[0], MAX_PATH, data_path);
+        wchar_t exe_dir[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe_dir, MAX_PATH);
+        if (wchar_t *s = wcsrchr(exe_dir, L'\\')) *(s + 1) = L'\0';
+        wcscpy_s(g_ngx_paths[1], MAX_PATH, exe_dir);
+        g_ngx_common.PathListInfo.Path = g_ngx_path_ptrs;
+        g_ngx_common.PathListInfo.Length = 2;
+        Log("[host] NS_NGX_PATHLIST=1: PathListInfo = exe dir + worker dir");
+    }
+    return &g_ngx_common;
+}
+
 static bool InitNgx()
 {
     wchar_t data_path[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, data_path, MAX_PATH);
     if (wchar_t *s = wcsrchr(data_path, L'\\')) *(s + 1) = L'\0';
 
-    NVSDK_NGX_Result r = NVSDK_NGX_D3D12_Init(0x1000000ULL, data_path, h.dev, nullptr, NVSDK_NGX_Version_API);
+    // R4: debug toggles must land BEFORE Init - the runtime reads them once
+    // at startup. NS_NGX_INDICATOR shows the in-model overlay (version,
+    // preset, buffer sizes); NS_NGX_NO_CUBIN_CACHE skips the driver's cubin
+    // cache, so a swapped runtime takes effect without a driver restart.
+    char iv[8] = {};
+    if (GetEnvironmentVariableA("NS_NGX_INDICATOR", iv, sizeof(iv)) > 0 && iv[0] == '1')
+    {
+        SetEnvironmentVariableA("__NGX_SHOW_INDICATOR", "1024");
+        Log("[host] NS_NGX_INDICATOR=1: the in-model debug overlay is on");
+    }
+    char cv[8] = {};
+    if (GetEnvironmentVariableA("NS_NGX_NO_CUBIN_CACHE", cv, sizeof(cv)) > 0 && cv[0] == '1')
+    {
+        SetEnvironmentVariableA("__NGX_CUBIN_DISABLE_RESOURCE_CACHE", "1");
+        Log("[host] NS_NGX_NO_CUBIN_CACHE=1: the cubin cache is off");
+    }
+
+    NVSDK_NGX_FeatureCommonInfo *common = NgxCommonInfo(data_path);
+    NVSDK_NGX_Result r = NVSDK_NGX_D3D12_Init(0x1000000ULL, data_path, h.dev, common, NVSDK_NGX_Version_API);
     Log("[host] NVSDK_NGX_D3D12_Init -> 0x%08X (%s)", r, NgxResultName(r));
     if (NVSDK_NGX_FAILED(r))
     {
         r = NVSDK_NGX_D3D12_Init_with_ProjectID("a0f57b54-1daf-4934-90ae-c4035c19df04", NVSDK_NGX_ENGINE_TYPE_CUSTOM,
-                                                "1.0", data_path, h.dev, nullptr, NVSDK_NGX_Version_API);
+                                                "1.0", data_path, h.dev, common, NVSDK_NGX_Version_API);
         Log("[host] Init_with_ProjectID -> 0x%08X (%s)", r, NgxResultName(r));
     }
     if (NVSDK_NGX_FAILED(r)) return false;
@@ -1309,6 +1379,54 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
     h.params->Set("DLSSNR.ScalingRatio", upscale ? static_cast<float>(w) / static_cast<float>(full_w) : 1.0f);
     h.params->Set("DLSSNR.Hint.Render.Preset", NrPresetHint());
     h.params->Set("DLSS.Feature.Create.Flags", 0u);
+
+    // R6: decode the runtime's own requirements before the create - the
+    // result names the exact refusal reason (missing file vs driver vs
+    // adapter vs OS) instead of a bare 0x FAIL code. Init is not required
+    // for this query; the bitmask meanings come from the NGX header
+    // (1 check absent, 2 driver, 4 adapter, 8 OS, 16 not implemented).
+    // Measured on the bundled 310.8.0 runtime: the query itself returns
+    // FAIL_OutOfDate (0xBAD00012) - discovery for feature 18 is newer than
+    // this build. The query is diagnostic only: the create's own result
+    // stays the truth, and a NEWER BYO runtime (310.9+) answers it - which
+    // is exactly the BYO UX case this is for.
+    {
+        wchar_t data_path[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, data_path, MAX_PATH);
+        if (wchar_t *sl = wcsrchr(data_path, L'\\')) *(sl + 1) = L'\0';
+        NVSDK_NGX_FeatureDiscoveryInfo di = {};
+        di.SDKVersion = NVSDK_NGX_Version_API;
+        di.FeatureID = NVSDK_NGX_Feature_Reserved18;
+        di.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Project_Id;
+        di.Identifier.v.ProjectDesc.ProjectId = "a0f57b54-1daf-4934-90ae-c4035c19df04";
+        di.Identifier.v.ProjectDesc.EngineType = NVSDK_NGX_ENGINE_TYPE_CUSTOM;
+        di.Identifier.v.ProjectDesc.EngineVersion = "1.0";
+        di.ApplicationDataPath = data_path;
+        di.FeatureInfo = &g_ngx_common;
+        NVSDK_NGX_FeatureRequirement req = {};
+        const NVSDK_NGX_Result qrr = NVSDK_NGX_D3D12_GetFeatureRequirements(g_adapter3, &di, &req);
+        if (!NVSDK_NGX_FAILED(qrr))
+        {
+            if (req.FeatureSupported == NVSDK_NGX_FeatureSupportResult_Supported)
+                Log("[host] feature requirements: supported (min arch 0x%X)", req.MinHWArchitecture);
+            else
+            {
+                static const char *bits[] = {"check-not-present", "driver-unsupported",
+                                             "adapter-unsupported", "os-below-minimum",
+                                             "not-implemented"};
+                char why[160] = {};
+                int off = 0;
+                for (int b = 0; b < 5; ++b)
+                    if (req.FeatureSupported & (1 << b))
+                        off += _snprintf_s(why + off, sizeof(why) - off, _TRUNCATE, "%s%s",
+                                           off ? "+" : "", bits[b]);
+                Log("[host] feature requirements: REFUSED (%s), min arch 0x%X, min OS %s",
+                    why, req.MinHWArchitecture, req.MinOSVersion);
+            }
+        }
+        else
+            Log("[host] feature requirements query failed 0x%08X - continuing with the create", qrr);
+    }
 
     if (!BeginCommands()) return false;
     DWORD ccode = 0;
@@ -4444,6 +4562,19 @@ static bool WgcGrab(VideoState &v)
     {
         const double t_acq = PhaseNow();
         auto frame = g_wgc->pool.TryGetNextFrame();
+        // Drain-to-latest: the frame pool queues every frame the window
+        // produces. After a stall (a slow eval, a resize hold, a lagging
+        // main loop) the queue holds stale frames; grabbing one frame per
+        // loop would replay the backlog at one frame per tick. Walk to the
+        // LAST available frame and keep only that - one pool slot at a
+        // time, closing everything older.
+        for (int drained = 0; drained < 8; ++drained)
+        {
+            auto next = g_wgc->pool.TryGetNextFrame();
+            if (next == nullptr) break;
+            if (frame != nullptr) frame.Close();
+            frame = next;
+        }
         PhaseAdd(PH_ACQ, t_acq);
         // Nothing new: the window has not redrawn. Same meaning as
         // DXGI_ERROR_WAIT_TIMEOUT on the duplication path - the caller keeps
@@ -4710,6 +4841,26 @@ static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms)
     return ok;
 }
 
+// R5: every scalar parameter is read back after Set. A silent param drop
+// (the runtime rejecting a key without failing the call) would otherwise
+// ship a feature that runs on defaults while our UI reports the user's
+// numbers - the read-back names the key and both values the moment it
+// happens. Cost: ~40 Get calls per eval, nanoseconds next to the 20+ ms
+// GPU pass.
+static bool SetVerifiedF(NVSDK_NGX_Parameter *p, const char *name, float value)
+{
+    p->Set(name, value);
+    float got = -1.0f;
+    return !NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(p->Get(name, &got))) && got == value;
+}
+
+static bool SetVerifiedU(NVSDK_NGX_Parameter *p, const char *name, unsigned int value)
+{
+    p->Set(name, value);
+    unsigned int got = 0xFFFFFFFFu;
+    return !NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(p->Get(name, &got))) && got == value;
+}
+
 static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
 {
     if (submitted) *submitted = 0;
@@ -4750,14 +4901,18 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     h.params->Set("DLSSNR.OutputSubrectWidth", nw); h.params->Set("DLSSNR.OutputSubrectHeight", nh);
     h.params->Set("DLSSNR.MVecScaleX", v.nr_small ? float(nw)/v.w : 1.0f);
     h.params->Set("DLSSNR.MVecScaleY", v.nr_small ? float(nh)/v.hgt : 1.0f);
-    h.params->Set("DLSSNR.Enabled", 1u); h.params->Set("DLSSNR.Reset", reset);
-    h.params->Set("DLSSNR.Intensity", g_video_options.intensity);
-    h.params->Set("DLSSNR.LocalToneStrength", g_video_options.local_tone);
-    h.params->Set("DLSSNR.LocalStructureStrength", g_video_options.local_structure);
-    h.params->Set("DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
-    h.params->Set("DLSSNR.UseAutoMask", g_video_options.auto_mask);
-    h.params->Set("DLSSNR.Style", g_video_options.style);
-    h.params->Set("DLSSNR.UICorrection", g_video_options.ui_correction);
+    bool verified = true;
+    verified &= SetVerifiedU(h.params, "DLSSNR.Enabled", 1u);
+    verified &= SetVerifiedU(h.params, "DLSSNR.Reset", (unsigned int)reset);
+    verified &= SetVerifiedF(h.params, "DLSSNR.Intensity", g_video_options.intensity);
+    verified &= SetVerifiedF(h.params, "DLSSNR.LocalToneStrength", g_video_options.local_tone);
+    verified &= SetVerifiedF(h.params, "DLSSNR.LocalStructureStrength", g_video_options.local_structure);
+    verified &= SetVerifiedF(h.params, "DLSSNR.SkinStructureStrength", g_video_options.skin_structure);
+    verified &= SetVerifiedU(h.params, "DLSSNR.UseAutoMask", g_video_options.auto_mask);
+    verified &= SetVerifiedU(h.params, "DLSSNR.Style", g_video_options.style);
+    verified &= SetVerifiedU(h.params, "DLSSNR.UICorrection", g_video_options.ui_correction);
+    if (!verified)
+        Log("[host] NGX parameter read-back mismatch - a value did not stick");
     h.params->Set("DLSS.Pre.Exposure", 1.0f);
     h.params->Set("DLSS.Exposure.Scale", g_pw_exposure);
     DWORD code = 0;

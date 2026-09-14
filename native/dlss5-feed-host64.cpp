@@ -2183,13 +2183,10 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     sd.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;   // must match VideoState::output for CopyResource
     sd.SampleDesc.Count = 1;
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    // R11/R13: three buffers with a frame-latency waitable object - every
-    // presenter (the FG one and the ordinary NR path) waits on DWM's release
-    // before it presents, which paces it to the compositor instead of
-    // wall-clock deadlines that drift or an unsynced rate that shimmers
-    // against the HUD layer.
+    // R11: three buffers with a frame-latency waitable object - the FG
+    // presenter waits on DWM's release before it presents, which paces it
+    // to the compositor instead of wall-clock deadlines that drift.
     sd.BufferCount = 3;
-    sd.Flags       = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     sd.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.AlphaMode   = DXGI_ALPHA_MODE_IGNORE;
     IDXGISwapChain1 *sc1 = nullptr;
@@ -2205,20 +2202,17 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     factory->Release();
     // R11: latency 1 + the waitable object - but ONLY while Frame
     // Generation owns the present loop. The ordinary NR path presents
-    // Latency 1 from the start: every present is consumed by its own path
-    // (the FG presenter, or the ordinary pipeline loop), so a queued present
-    // never stacks. Both paths wait the compositor's release before their
-    // Present - the picture cadence lands on vblank boundaries.
+    // Present(0,0) per frame without consuming the waitable: with latency 1
+    // the swapchain would queue one present and every ordinary present
+    // would block or drop unpredictably against the compositor - the
+    // fullscreen flicker. Default latency while NR runs; latency 1 is set
+    // by FgStart (the FG thread consumes the releases) and restored to the
+    // default by FgStop.
     IDXGISwapChain2 *sc2 = nullptr;
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2));
     if (SUCCEEDED(hr) && sc2 != nullptr)
-    {
-        sc2->SetMaximumFrameLatency(1);
-        g_fg_waitable = sc2->GetFrameLatencyWaitableObject();
         sc2->Release();
-    }
-    else
-        g_fg_waitable = nullptr;
+    g_fg_waitable = nullptr;
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&g_present_swap));
     sc1->Release();
     if (FAILED(hr) || g_present_swap == nullptr)
@@ -2504,16 +2498,6 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
-            if (g_fg_waitable != nullptr)
-            {
-                // R13: the ordinary path paces itself to the compositor the
-                // same way the FG presenter does - without it the picture
-                // presents at an unsynced rate and shimmers against the HUD
-                // layer (the interface flicker when the program window sits
-                // over the active window).
-                if (WaitForSingleObject(g_fg_waitable, 2000) != WAIT_OBJECT_0)
-                    Log("[present] waitable timeout - the compositor stalled");
-            }
             ok = PresentStatus(g_present_swap->Present(0, 0), "present");
             if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();
@@ -2569,16 +2553,6 @@ static bool PresentBypass(VideoState &v)
         if (ProfileWait(PS_PRESENT, fv, 2000))
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
-            if (g_fg_waitable != nullptr)
-            {
-                // R13: the ordinary path paces itself to the compositor the
-                // same way the FG presenter does - without it the picture
-                // presents at an unsynced rate and shimmers against the HUD
-                // layer (the interface flicker when the program window sits
-                // over the active window).
-                if (WaitForSingleObject(g_fg_waitable, 2000) != WAIT_OBJECT_0)
-                    Log("[present] waitable timeout - the compositor stalled");
-            }
             ok = PresentStatus(g_present_swap->Present(0, 0), "present");
             if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();

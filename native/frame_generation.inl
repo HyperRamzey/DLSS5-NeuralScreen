@@ -58,9 +58,19 @@ static void StopFgPresentation()
     g_fg.stop = true;
     g_fg.wake.notify_all();
     if (g_fg.thread.joinable()) g_fg.thread.join();
-    // The waitable handle passes to the ordinary present path: it paces its
-    // own presents the same way now (R13), so latency stays 1 and the handle
-    // is NOT cleared - only released on the swapchain teardown.
+    // Hand the swapchain back to the ordinary present path: default latency,
+    // the waitable handle dies with the swapchain, not with us.
+    if (g_present_swap != nullptr)
+    {
+        IDXGISwapChain2 *sc2 = nullptr;
+        if (SUCCEEDED(g_present_swap->QueryInterface(
+                __uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2)))
+            && sc2 != nullptr)
+        {
+            sc2->SetMaximumFrameLatency(3);
+            sc2->Release();
+        }
+    }
     g_fg_waitable = nullptr;
     for (auto &slot : g_fg.slots) { slot.real = nullptr; for (auto &image : slot.interpolated) image = nullptr; slot.state = 0; }
     g_fg.history = false;
@@ -327,8 +337,19 @@ static bool EnsureFg(VideoState &v, DXGI_FORMAT format)
     // a single queued present and every ordinary present would block or drop
     // against the compositor (the fullscreen flicker). The waitable handle
     // is taken here, from the same thread that will wait on it.
-    if (g_fg_waitable != nullptr)
-        Log("[fg] the presenter is paced by the compositor (latency 1)");
+    if (g_present_swap != nullptr)
+    {
+        IDXGISwapChain2 *sc2 = nullptr;
+        if (SUCCEEDED(g_present_swap->QueryInterface(
+                __uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2)))
+            && sc2 != nullptr)
+        {
+            sc2->SetMaximumFrameLatency(1);
+            g_fg_waitable = sc2->GetFrameLatencyWaitableObject();
+            sc2->Release();
+            Log("[fg] the presenter is paced by the compositor (latency 1)");
+        }
+    }
     g_fg.thread = std::thread(FgPresenter);
     Log("[fg] %ux enabled at %ux%u, format=%u; flat depth and estimated motion (experimental)", g_fg_count + 1, w, height, format);
     return true;

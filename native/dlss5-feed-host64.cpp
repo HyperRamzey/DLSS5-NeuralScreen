@@ -2112,8 +2112,17 @@ static void FollowCapturedWindow()
         r.right != g_present_follow.right || r.bottom != g_present_follow.bottom)
     {
         g_present_follow = r;
-        SetWindowPos(g_present_hwnd, HWND_TOPMOST, r.left, r.top, 0, 0,
-                     SWP_NOSIZE | SWP_NOACTIVATE);
+        // Follow the SIZE as well. SWP_NOSIZE kept the window at the frame
+        // size the pipeline was built for through the whole half-second
+        // stability wait and the live resize - after a shrink its bottom and
+        // right part hung over the desktop with stale pixels, and read as a
+        // trail of copies behind the moving window (user, 14.09). The swap
+        // chain stays at its buffer size and the compositor stretches it
+        // into whatever the window is now, so the picture never leaves the
+        // window's bounds; the stretch distortion lives well under a second
+        // and the rebuild (RNSZ + WNDO reopen) lands the exact size.
+        SetWindowPos(g_present_hwnd, HWND_TOPMOST, r.left, r.top,
+                     r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
     }
 }
 

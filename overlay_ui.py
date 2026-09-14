@@ -187,6 +187,9 @@ class OverlayMenu:
             # main so a config value below the range cannot misplace the knob.
             "work_scale_min": 0.1,
             "nr_small": False,
+            # What the presenter shows with FG on (from the worker's two-second
+            # report); the HUD pairs it with the network fps. None while off.
+            "display_fps": None,
             "frame_generation": False,
             "frame_multiplier": 2,
             "screen_size": "",
@@ -1849,10 +1852,18 @@ class OverlayMenu:
         # true the whole time. State belongs in the sentence on the left;
         # numbers stay numbers.
         fps = st.get("fps")
+        shown = st.get("display_fps")
         readings = []
         if not paused and not failed:
-            readings.append(f"{fps:.1f} fps"
-                            if isinstance(fps, (int, float)) else "— fps")
+            # Frame Generation: the presenter's rate next to the network's.
+            # "42 / 84 fps" - the first is what the network produced, the
+            # second what the screen shows (real + generated frames).
+            if isinstance(shown, (int, float)) and isinstance(fps, (int, float)) \
+                    and shown > fps + 0.5:
+                readings.append(f"{fps:.0f} / {shown:.0f} fps")
+            else:
+                readings.append(f"{fps:.1f} fps"
+                                if isinstance(fps, (int, float)) else "— fps")
             readings.append(str(st.get("resolution", "—")))
         x = rect.right - pad
         for value in reversed(readings):

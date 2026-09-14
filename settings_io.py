@@ -643,6 +643,27 @@ def _gpu_label(index) -> str:
     return f"{i}: {name}"
 
 
+
+def _fg_displayed_fps(st) -> float | None:
+    """The frame rate the presenter actually shows (real + generated).
+
+    The worker reports it every two seconds - "[fg] displayed 87.1 FPS".
+    The pipeline counter stays the honest network rate; this is what the
+    screen really shows with Frame Generation on. None while FG is off.
+    """
+    for line in reversed(st.worker_logs[-200:]):
+        if "[fg] displayed" in line:
+            try:
+                return float(line.split("displayed ", 1)[1].split(" FPS", 1)[0])
+            except (ValueError, IndexError):
+                return None
+        # A marker line for FG-off resets the reading - the toggle logs one.
+        if "[fg] UI: off" in line:
+            return None
+    return None
+
+
+
 def _worker_idle(st) -> bool:
     """Is the network idling on an unchanged screen right now?
 
@@ -745,6 +766,9 @@ def menu_payload(st) -> dict:
         # healthy FPS while nothing is being processed, and the skip
         # reads as "it does not work" (user, 12.09).
         "idle": _worker_idle(st),
+        # What the presenter actually shows while FG interpolates; the
+        # HUD pairs it with the network rate as "42 / 84 fps".
+        "display_fps": _fg_displayed_fps(st),
         # The list, with a note on any adapter whose worker could not bring
         # the neural pass up. DXGI reports some cards twice (one user has a
         # single 5080 listed as adapters 0 and 2) and the two entries are

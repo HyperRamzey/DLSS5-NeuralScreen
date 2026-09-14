@@ -993,6 +993,10 @@ def main() -> int:
             _perf("show", t0)
             st.display.set_hud({
                 "fps": last_fps,
+                # What the presenter shows with Frame Generation on - the
+                # worker reports it every two seconds. The HUD pairs the
+                # network rate with it ("42 / 84 fps"); None while FG is off.
+                "display_fps": settings_io._fg_displayed_fps(st),
                 "status": status,
                 "resolution": f"{st.width}x{st.height}",
                 "profile": st.cfg["profile"],

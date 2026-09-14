@@ -154,9 +154,10 @@ static bool EnsureNvofa(UINT width, UINT height)
     const UINT fw = (width + f.grid - 1) / f.grid, fh = (height + f.grid - 1) / f.grid;
     for (auto &input : f.inputs) input.attach(MakeTex(width, height, DXGI_FORMAT_R8_UNORM, false));
     f.flow.attach(MakeTex(fw, fh, DXGI_FORMAT_R16G16_SINT, true));
-    f.cost.attach(MakeTex(fw, fh, DXGI_FORMAT_R8_UINT, true));
+    if (want_cost) f.cost.attach(MakeTex(fw, fh, DXGI_FORMAT_R8_UINT, true));
+    unsigned resource_count = f.cost ? 4 : 3;
     ID3D12Resource *resources[] = {f.inputs[0].get(), f.inputs[1].get(), f.flow.get(), f.cost.get()};
-    for (unsigned i = 0; i < 4; ++i) {
+    for (unsigned i = 0; i < resource_count; ++i) {
         if (!resources[i]) return NvofaError("allocate buffers", NV_OF_ERR_OUT_OF_MEMORY);
         NV_OF_REGISTER_RESOURCE_PARAMS_D3D12 p{};
         p.resource = resources[i]; p.hOFGpuBuffer = &f.registered[i];
@@ -216,7 +217,12 @@ static bool RunNvofa(VideoState &v, bool reset, UINT64 *submitted)
     in.disableTemporalHints = reset || !f.valid ? NV_OF_TRUE : NV_OF_FALSE;
     in.numFencePoints = 1; in.fencePoint = &ready;
     NV_OF_EXECUTE_OUTPUT_PARAMS_D3D12 out{};
-    out.outputBuffer = f.registered[2]; out.outputCostBuffer = f.registered[3]; out.fencePoint = &complete;
+    out.outputBuffer = f.registered[2];
+    // The driver rejects a valid outputCostBuffer while enableOutputCost is
+    // unset (NvOFExecute error 4): with cost off, registered[3] stays null
+    // and must be handed over as null too.
+    out.outputCostBuffer = f.cost ? f.registered[3] : nullptr;
+    out.fencePoint = &complete;
     auto status = f.api.nvOFExecuteD3D12(f.session, &in, &out);
     if (status != NV_OF_SUCCESS) { --f.value; return NvofaError("execute", status); }
     if (FAILED(h.queue->Wait(f.fence.get(),f.value)) || !BeginCommands())

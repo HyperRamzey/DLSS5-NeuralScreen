@@ -1,4 +1,4 @@
-// nvngx.dll_ns-forwarder.dll - the module the NGX calls leave from.
+// nvngx.dll_ns-forwarder.dll - the escape hatch, off by default (NS_FORWARDER=1).
 //
 // nvngx_dlssnr.dll identifies its caller by the return address and refuses the
 // call with FAIL_PlatformError (0xBAD00002) unless the path of the CALLING
@@ -12,9 +12,13 @@
 //   the same DLL renamed without the substring    -> 0xBAD00002
 //   the substring in a DIRECTORY name             -> Success
 //
-// So the worker no longer has to be an executable named nvngx.dll - it only
-// has to make its NGX calls from here. The file name is the entire reason this
-// module exists; renaming it breaks Neural Rendering and nothing else.
+// The four-run measurement used a probe executable named ns-gate-probe.exe -
+// no substring, so it needed this forwarder. The real worker is itself named
+// nvngx.dll (native\nvngx.dll), so its own path satisfies the same rule and
+// the direct calls pass: Init_Ext, CreateFeature(18) and ~2400 evaluated
+// frames were verified working straight from the worker (R8). The forwarder
+// stays as NS_FORWARDER=1 - the escape hatch for a machine that refuses the
+// direct calls for some reason of its own.
 //
 // Nothing in this file comes from anyone else's source. The five wrappers are
 // ours; what was taken from the research is a fact about how the NVIDIA

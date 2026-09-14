@@ -438,7 +438,8 @@ static bool LoadNrForwarder(const wchar_t *dll_name)
     // substring must be refused. Without a way to aim the worker at that copy
     // the rule could only be asserted in a comment.
     wchar_t path[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"NS_FORWARDER", path, MAX_PATH) == 0)
+    if (GetEnvironmentVariableW(L"NS_FORWARDER", path, MAX_PATH) == 0
+        || wcscmp(path, L"1") == 0)   // NS_FORWARDER=1: the shipped module
     {
         GetModuleFileNameW(nullptr, path, MAX_PATH);
         if (wchar_t *s = wcsrchr(path, L'\\')) *(s + 1) = L'\0';
@@ -543,17 +544,27 @@ static bool InitDirectNr(const wchar_t *data_path)
             Log("[pure] NR runtime from native\\libraries\\ (BYO)");
         }
     }
-    // NS_NO_FORWARDER=1 keeps the old shape, where the calls leave this
-    // executable - which the feature library serves only while the executable
-    // is named nvngx.dll. Kept for comparison, and as a way out on a machine
-    // that will not load the forwarder for some reason of its own.
-    char nofwd[8] = {};
-    const DWORD nofwd_got = GetEnvironmentVariableA("NS_NO_FORWARDER", nofwd, sizeof(nofwd));
-    const bool asked_direct = nofwd_got > 0 && nofwd_got < sizeof(nofwd) && nofwd[0] == '1';
-    if (asked_direct) Log("[pure] NS_NO_FORWARDER=1: calling the feature library from the worker");
-    const bool direct = asked_direct || !LoadNrForwarder(dll_name);
+    // The calls leave this executable by default (R8): the feature library
+    // serves a caller whose module path contains "nvngx.dll" - and the
+    // worker's own path native\nvngx.dll does. Measured on a 5070 Ti:
+    // Init_Ext, CreateFeature(18) and hours of evaluate from the exe all
+    // return Success with zero restarts; the forwarder existed for a
+    // constraint our executable never had. NS_FORWARDER=1 brings the old
+    // forwarding layer back as an escape hatch on a machine that refuses
+    // the direct calls for some reason of its own.
+    // NS_FORWARDER is set to either "1" (the shipped module) or a path -
+    // any value asks for the forwarding layer; unset means direct.
+    const DWORD fwd_got = GetEnvironmentVariableA("NS_FORWARDER", nullptr, 0);
+    const bool asked_fwd = fwd_got > 0;
+    // Direct unless the old layer is explicitly asked for - and the
+    // forwarder stays as the fallback when the direct path fails to load
+    // the runtime for some reason of its own.
+    const bool direct = !asked_fwd || !LoadNrForwarder(dll_name);
     if (direct)
     {
+        if (!asked_fwd)
+            Log("[pure] NGX calls leave the worker itself (the module path "
+                "carries nvngx.dll)");
         g_nr_module = LoadLibraryW(dll_name);
         if (!g_nr_module) { Log("[pure] LoadLibrary(%ls) failed %lu", dll_name, GetLastError()); return false; }
         g_nr_init_ext = reinterpret_cast<PFN_NR_InitExt>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_Init_Ext"));

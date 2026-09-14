@@ -1,27 +1,27 @@
-"""The NGX calls must leave a module whose path contains "nvngx.dll".
+"""The NGX caller rule, both ways it can be satisfied.
 
 nvngx_dlssnr.dll decides whether to answer by looking at the module the call
 RETURNS to - not at the process name. If that module's path does not carry the
 substring "nvngx.dll", it refuses with FAIL_PlatformError (0xBAD00002) before
 it even reads the arguments.
 
-That single fact is what lets the worker be called ns-worker.exe instead of
-being an executable named nvngx.dll. The whole arrangement therefore hangs on
-the FILE NAME of native/nvngx.dll_ns-forwarder.dll - an odd name that looks
-exactly like something a tidy-up would rename. It must not be renamed, and a
-comment saying so is not enough: renamed, the program does not report a broken
-install, it reports that Neural Rendering is not available on this card.
+R8 settled what that means for the worker: the worker IS an executable named
+nvngx.dll (native\nvngx.dll), so its own path carries the substring and the
+calls leave the worker itself - the forwarding layer is the escape hatch
+(NS_FORWARDER=1), not the default. Measured live: ~2400 frames through the
+direct path, zero restarts.
 
-So the rule is checked the only way it can be - by running it both ways
-against the real library:
+Three legs, all against the real library:
 
-* the worker as shipped: the log names the forwarder it loaded, the path
-  contains the substring, and Init_Ext returns Success;
-* the same binary copied to a name WITHOUT the substring (NS_FORWARDER points
-  the worker at the copy): the same call is refused with 0xBAD00002.
+* the worker as shipped: the log says the calls leave the worker itself, and
+  Init_Ext returns Success;
+* NS_FORWARDER=1: the log names the forwarder it loaded (path carries the
+  substring), and Init_Ext returns Success through it;
+* the same forwarder binary copied to a name WITHOUT the substring
+  (NS_FORWARDER points at the copy): the call is refused with 0xBAD00002.
 
-The second half is the one that matters. Without it this test would pass just
-as happily if the library had stopped checking anything at all.
+The third leg is the one that matters. Without it this test would pass just as
+happily if the library had stopped checking anything at all.
 
 Run:  runtime\\python.exe tests\\test_ngx_forwarder.py
 """
@@ -104,23 +104,35 @@ def main() -> int:
         print("FAIL: a copy of the program is already running - close it first")
         return 1
 
-    # As shipped.
-    tail = run_worker({}, "NGX calls go through")
+    # As shipped: the calls leave the worker itself.
+    tail = run_worker({}, "worker itself")
+    direct = [l for l in tail.splitlines() if "worker itself" in l]
+    if not direct:
+        failures.append("the worker did not report the direct (worker-own) path")
+    if "Init_Ext (from the worker) -> 0x00000001" not in tail:
+        line = [l for l in tail.splitlines() if "Init_Ext" in l]
+        failures.append(f"Init_Ext did not succeed from the worker: "
+                        f"{line[-1].strip() if line else 'no Init_Ext line at all'}")
+    print("    direct:    ", direct[-1].strip()[:100] if direct else "(nothing)")
+
+    # NS_FORWARDER=1: the escape hatch - routed through the forwarder.
+    tail = run_worker({"NS_FORWARDER": "1"}, "NGX calls go through")
     routed = [l for l in tail.splitlines() if "NGX calls go through" in l]
     if not routed:
-        failures.append("the worker did not report which module it calls through")
+        failures.append("NS_FORWARDER=1: the worker did not report which module "
+                        "it calls through")
     elif "nvngx.dll" not in routed[-1]:
-        failures.append(f"the module it calls through has no nvngx.dll in its "
+        failures.append(f"NS_FORWARDER=1: the module has no nvngx.dll in its "
                         f"path: {routed[-1].strip()}")
     if "Init_Ext (through the forwarder) -> 0x00000001" not in tail:
         line = [l for l in tail.splitlines() if "Init_Ext" in l]
-        failures.append(f"Init_Ext did not succeed through the forwarder: "
-                        f"{line[-1].strip() if line else 'no Init_Ext line at all'}")
-    print("    as shipped:", routed[-1].strip()[:100] if routed else "(nothing)")
+        failures.append(f"NS_FORWARDER=1: Init_Ext did not succeed through the "
+                        f"forwarder: {line[-1].strip() if line else 'no line'}")
+    print("    forwarded: ", routed[-1].strip()[:100] if routed else "(nothing)")
 
-    # The same binary under a name the library will not serve. The copy goes
-    # to a temporary directory, so neither the file name nor any folder above
-    # it carries the substring.
+    # The negative control: the same binary under a name the library will not
+    # serve. The copy goes to a temporary directory, so neither the file name
+    # nor any folder above it carries the substring.
     plain_dir = Path(tempfile.mkdtemp(prefix="ns-fwd-"))
     plain = plain_dir / "ns-forwarder.dll"
     shutil.copy2(FORWARDER, plain)
@@ -144,8 +156,8 @@ def main() -> int:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: NGX answers a module named for the gate and refuses the same "
-          "binary renamed")
+    print("OK: the direct path ships, the forwarder still routes, and the "
+          "library still refuses a caller without the substring")
     return 0
 
 

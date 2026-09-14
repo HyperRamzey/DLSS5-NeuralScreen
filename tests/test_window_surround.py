@@ -106,6 +106,7 @@ def main() -> int:
                 probes.append((name, tuple(disp.screen.get_at(pos))[:3]))
             probes.append(("frame", tuple(disp.screen.get_at((700, 380)))[:3]))
             first_writes = len(spy.calls)
+            first_call = spy.calls[0] if spy.calls else None
 
             # The same frame again: a per-frame rewrite of the attributes is
             # the blink class this design exists to remove.
@@ -113,10 +114,26 @@ def main() -> int:
             second_writes = len(spy.calls)
 
             # A frame that covers the layer: back to a plain alpha, no key.
-            big = np.empty((1080, 1920, 4), dtype=np.uint8)
+            # Made larger than any monitor this could run on, so it covers
+            # even if the layer was expanded to the real screen.
+            big = np.empty((2160, 3840, 4), dtype=np.uint8)
             big[:, :, 3] = 255
             disp.show(big)
             third_writes = len(spy.calls)
+            covering_call = (spy.calls[second_writes]
+                             if len(spy.calls) > second_writes else None)
+            covering_state = disp._layer_state
+
+            # A window as WIDE as the screen but shorter: it does not cover
+            # the layer either, so it must get the keyed surround too. The
+            # width-only test this guards against missed exactly this shape.
+            wide = np.empty((900, 1920, 4), dtype=np.uint8)
+            wide[:, :, 3] = 255
+            disp.show(wide)
+            fourth_writes = len(spy.calls)
+            wide_call = (spy.calls[third_writes]
+                         if len(spy.calls) > third_writes else None)
+            wide_state = disp._layer_state
         finally:
             display_mod.user32 = spy._real
             display_mod.pygame.display.get_wm_info = real_wm_info
@@ -139,8 +156,8 @@ def main() -> int:
             failures.append(
                 f"the first window-sized frame wrote the attributes "
                 f"{first_writes} time(s), want exactly 1")
-        else:
-            call_key, call_alpha, call_flags = spy.calls[0]
+        elif first_call is not None:
+            call_key, call_alpha, call_flags = first_call
             if not (call_flags & display_mod.LWA_COLORKEY):
                 failures.append(
                     f"the layer was not colour-keyed for a window-sized frame "
@@ -166,19 +183,39 @@ def main() -> int:
                 f"a frame covering the layer wrote "
                 f"{third_writes - second_writes} time(s), want 1 (back to "
                 f"the plain alpha)")
-        elif spy.calls:
-            _, call_alpha, call_flags = spy.calls[-1]
+        elif covering_call is not None:
+            _, call_alpha, call_flags = covering_call
             if call_flags & display_mod.LWA_COLORKEY:
                 failures.append(
                     "a frame covering the layer kept the colour key")
             if call_alpha != 255:
                 failures.append(
                     f"a covering frame's alpha is {call_alpha}, want 255")
-            if disp._layer_state != display_mod.LAYER_OPAQUE:
+            if covering_state != display_mod.LAYER_OPAQUE:
                 failures.append(
                     f"the layer state after a covering frame is "
-                    f"{disp._layer_state!r}, want "
+                    f"{covering_state!r}, want "
                     f"{display_mod.LAYER_OPAQUE!r}")
+
+        # The wide-but-short window: not covered either, so the key must
+        # come back on it (and the state must not be left OPAQUE).
+        if fourth_writes != third_writes + 1:
+            failures.append(
+                f"a wide-but-short frame wrote the attributes "
+                f"{fourth_writes - third_writes} time(s), want 1 (back to "
+                f"the keyed picture)")
+        elif wide_call is not None:
+            _, call_alpha, call_flags = wide_call
+            if not (call_flags & display_mod.LWA_COLORKEY):
+                failures.append(
+                    "a wide-but-short frame (screen-wide, shorter than the "
+                    "layer) was not colour-keyed - its bottom strip would "
+                    "hold a stale picture")
+            if wide_state != display_mod.LAYER_PICTURE_KEYED:
+                failures.append(
+                    f"the layer state after a wide-but-short frame is "
+                    f"{wide_state!r}, want "
+                    f"{display_mod.LAYER_PICTURE_KEYED!r}")
     finally:
         try:
             if disp is not None:

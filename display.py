@@ -1504,8 +1504,13 @@ class Display:
         # is. Only reachable when the worker is NOT presenting - with the
         # worker's own window up, Python draws no frames at all.
         at = (0, 0)
+        # A window-sized frame is one that does not COVER the layer. The check
+        # used to look at the width alone, so a window as wide as the screen
+        # but not as tall (a common shape) got no surround and no key - the
+        # stale desktop stayed under its bottom strip.
         windowed = (self._window_layer is not None
-                    and surface.get_width() < self.width)
+                    and (surface.get_width() < self.width
+                         or surface.get_height() < self.height))
         if windowed:
             ox, oy = getattr(self, "_origin", (0, 0))
             at = (self._window_layer[0] - ox, self._window_layer[1] - oy)

@@ -62,4 +62,12 @@ If Not fso.FileExists(dir & "\native\nvngx.dll") Then
 End If
 
 ' --- Launch with no window (window style 0), without waiting ---
-shell.Run """" & py & """ -u """ & dir & "\main.py""", 0, False
+' Extra script arguments are forwarded to main.py (the test harness passes
+' --config <path> so a personal config.json never leaks into a test run).
+Dim extra, arg, q
+q = Chr(34)
+extra = ""
+For Each arg In WScript.Arguments
+    extra = extra & " " & q & arg & q
+Next
+shell.Run """" & py & """ -u """ & dir & "\main.py""" & extra, 0, False

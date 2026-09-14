@@ -328,6 +328,7 @@ def release_notes_short():
 
 # --- driving the running program (the GUI and smoke checks share this) ---
 LOG = ROOT / "NeuralScreen.log"
+_test_config_path = None
 KEYEVENTF_KEYUP = 0x0002
 _MOD_VK = {0x0002: 0x11, 0x0001: 0x12, 0x0004: 0x10}  # Ctrl / Alt / Shift
 
@@ -390,10 +391,31 @@ def running_instances():
 
 
 def launch():
-    """Start the program the way a user does and return the log offset."""
+    """Start the program with the DEFAULT config and return the log offset.
+
+    The worktree config.json is the user's live file - whatever they tweaked
+    last (split, theme, profile, work_scale) leaks straight into every smoke
+    and GUI check that launches the app "the way a user does". Tests want the
+    shipped defaults: git HEAD's config.json is copied to a disposable path
+    and passed with --config. The path is cleaned up at quit_app time.
+    """
+    import json
+    import shutil
+    import tempfile
+    global _test_config_path
     offset = log_offset()
-    subprocess.run(["cscript", "//nologo", "NeuralScreen.vbs"], cwd=ROOT,
-                   capture_output=True)
+    head = subprocess.run(["git", "show", "HEAD:config.json"], cwd=ROOT,
+                          capture_output=True)
+    cfg = json.loads(head.stdout.decode("utf-8"))
+    # The personal file keeps what the user set; the test copy starts clean
+    # at the defaults the release ships.
+    path = ROOT / "_work" / "test-config.json"
+    path.parent.mkdir(exist_ok=True)
+    shutil.copyfile(ROOT / "config.json", path)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+    _test_config_path = path
+    subprocess.run(["cscript", "//nologo", "NeuralScreen.vbs", "--config", str(path)], cwd=ROOT, capture_output=True)
     return offset
 
 
@@ -421,6 +443,11 @@ def quit_app(timeout=8.0):
         left = [l for l in text.splitlines()
                 if "pythonw.exe" in l or "nvngx.dll" in l]
         if not left:
+            try:
+                if _test_config_path and _test_config_path.is_file():
+                    _test_config_path.unlink()
+            except Exception:
+                pass
             return []
         time.sleep(0.5)
     return left

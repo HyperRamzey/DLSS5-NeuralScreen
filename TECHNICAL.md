@@ -473,3 +473,27 @@ builds `dlss5-feed-host64.cpp` into `native/nvngx.dll`, linking
 `native/include/`.
 
 The artifact `native/nvngx.dll` is not committed to the repo.
+
+## Frame Generation on the desktop (opt-in)
+
+DLSS-G's desktop build runs after the neural pass: the presenter asks the FG
+feature to interpolate between consecutive output frames. The depth fed to it
+is flat and the motion is estimated per frame - there is no engine
+cooperation - so UI and text can distort where motion estimation guesses
+wrong; that is inherent to the screen-space approach, not a tuning issue.
+The multiplier is x2/x3/x4 (the DLSS-G contract caps there), the switch is
+opt-in, and the header reports both rates - the network's and the presenter's
+- whenever they differ.
+
+The FG runtime (`nvngx_dlssg.dll`) is **not shipped**: same license position
+as SR - NVIDIA's redistributable cannot be bundled. Put it in
+`native/libraries/` (see the README there); absent the DLL, the switch
+refuses politely and nothing breaks.
+
+## Runtimes and the libraries folder
+
+The NR runtime ships in the archive; the optional FG one is user-supplied in
+`native/libraries/`, which takes priority over `native/` for every runtime
+the loader looks for. There is no network access: the former auto-updater was
+removed, and with it a latent defect where the `library_updates_enabled`
+toggle never persisted.

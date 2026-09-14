@@ -113,6 +113,13 @@ running on it, red when it is not.
   The picture stays sharp — the network's result is composed onto your
   original frame, so text and edges keep full resolution. Turn it off to
   compare.
+- **DLSS 4.5 FG** — Frame Generation, opt-in, with a ×2 / ×3 / ×4 multiplier
+  beside the switch. DLSS-G's own desktop build: the depth is flat and the
+  motion is estimated, there is no engine cooperation, so UI and text can
+  distort — that is the known cost of the approach. The header pairs the two
+  honest rates when they differ: "47 / 111 fps" is the network's output, then
+  what the presenter shows. Validated on RTX 50-series; other adapters are
+  unconfirmed. Needs `nvngx_dlssg.dll` — see *Bringing your own runtime*.
 
 Everything else is behind the sliders icon: which monitor is processed and
 which card does it, HDR compatibility, the screenshot folder, Spout2 output,
@@ -120,6 +127,15 @@ the recording indicator, leaving an unchanged screen alone, opening the menu
 on launch, autostart, the key assignments, the theme — and the language, of
 which there are **12**: English, Russian, French, German, Spanish, Italian,
 Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
+
+## Bringing your own runtime
+
+The app no longer downloads anything. The NR runtime ships in the archive;
+the optional ones are yours to add: drop `nvngx_dlssg.dll` (Frame Generation)
+or `nvngx_dlssnr.dll` into **`native/libraries/`** next to the program and it
+wins over the bundled copy — a bilingual README sits in that folder. The
+`nr_dll` config key and the `NS_NR_DLL` environment variable remain the NR
+override.
 
 ## Recording and screenshots
 
@@ -166,6 +182,10 @@ under CAPTURE — it is experimental; see [HDR setup](https://github.com/perseva
 - **Windows 10 and two NVIDIA cards are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
+- **Window mode, active-state bug (in progress):** when another window takes
+  focus, the NR window can stop responding to dragging. An audit found seven
+  sources; three are fixed (z-order churn, the WGC resize reopen loop, the FG
+  fence token) and the rest is under active work.
 
 ## License
 

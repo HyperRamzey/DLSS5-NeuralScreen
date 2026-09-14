@@ -8,6 +8,12 @@ same neural network that DLSS 5 games use, and comes back sharper.
 > **[TECHNICAL.md](TECHNICAL.md)**. Русская версия:
 > **[README.ru.md](README.ru.md)** / **[TECHNICAL.ru.md](TECHNICAL.ru.md)**.
 
+> **Notice.** Not affiliated with NVIDIA; NVIDIA, DLSS and the NVIDIA logo
+> are NVIDIA Corporation's trademarks. The bundled NVIDIA runtimes
+> (`nvngx_dlssnr.dll`, `nvngx_dlssg.dll`) are NVIDIA's property, included
+> unmodified as received, research/educational use only, no warranty, use
+> at your own risk. Rights holders: say the word and the next build ships without them.
+
 ## How it looks
 
 <table>
@@ -118,8 +124,8 @@ running on it, red when it is not.
   motion is estimated, there is no engine cooperation, so UI and text can
   distort — that is the known cost of the approach. The header pairs the two
   honest rates when they differ: "47 / 111 fps" is the network's output, then
-  what the presenter shows. Validated on RTX 50-series; other adapters are
-  unconfirmed. Needs `nvngx_dlssg.dll` — see *Bringing your own runtime*.
+  what the presenter shows. Validated on RTX 50-series; adapters beyond it
+  are unconfirmed.
 
 Everything else is behind the sliders icon: which monitor is processed and
 which card does it, HDR compatibility, the screenshot folder, Spout2 output,
@@ -128,14 +134,12 @@ on launch, autostart, the key assignments, the theme — and the language, of
 which there are **12**: English, Russian, French, German, Spanish, Italian,
 Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
 
-## Bringing your own runtime
+## Swapping a runtime
 
-The app no longer downloads anything. The NR runtime ships in the archive;
-the optional ones are yours to add: drop `nvngx_dlssg.dll` (Frame Generation)
-or `nvngx_dlssnr.dll` into **`native/libraries/`** next to the program and it
-wins over the bundled copy — a bilingual README sits in that folder. The
-`nr_dll` config key and the `NS_NR_DLL` environment variable remain the NR
-override.
+Everything ships in the archive and nothing is downloaded. To run your own
+build of a runtime (a newer DLSS-G, say), drop the DLL into
+**`native/libraries/`** - it wins over the bundled copy (a README sits
+there); `nr_dll` config / `NS_NR_DLL` env remain the NR override.
 
 ## Recording and screenshots
 
@@ -189,6 +193,8 @@ under CAPTURE — it is experimental; see [HDR setup](https://github.com/perseva
 
 ## License
 
-The code here is MIT. NVIDIA's `nvngx_dlssnr.dll` is the leaked 310.8.0
-runtime (sm_75/86/89/120 kernels, RTX 20-50), included as-is, no
-guarantees, research-only. Interface faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).
+The code here is MIT. NVIDIA's runtimes ship unmodified and remain NVIDIA's
+property: `nvngx_dlssnr.dll` is the leaked 310.8.0 build (sm_75/86/89/120
+kernels, RTX 20-50), `nvngx_dlssg.dll` is the public 310.9.1.0
+redistributable - both included as received, no guarantees, research-only.
+Interface faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).

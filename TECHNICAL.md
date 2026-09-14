@@ -485,10 +485,11 @@ The multiplier is x2/x3/x4 (the DLSS-G contract caps there), the switch is
 opt-in, and the header reports both rates - the network's and the presenter's
 - whenever they differ.
 
-The FG runtime (`nvngx_dlssg.dll`) is **not shipped**: same license position
-as SR - NVIDIA's redistributable cannot be bundled. Put it in
-`native/libraries/` (see the README there); absent the DLL, the switch
-refuses politely and nothing breaks.
+The FG runtime (`nvngx_dlssg.dll`) ships in the archive - the public
+310.9.1.0 redistributable, NVIDIA-signed, included unmodified. The licensing
+position is stated in the README notice: research use, takedown on request.
+Absent the DLL, the switch refuses politely and nothing breaks; a different
+build drops into `native/libraries/`.
 
 ## Runtimes and the libraries folder
 

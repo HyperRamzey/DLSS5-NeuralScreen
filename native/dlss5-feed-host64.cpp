@@ -5605,7 +5605,7 @@ static int RunVideo()
                 Log("[sr] input scale: %u%% (before NR; Boost ratio unchanged)",scale);
             }
             VideoResultHeader ack={OUT_MAGIC,fh.index,1u,0u,0u,fh.pts};
-            if (!WriteExact(stdout,&ack,sizeof(ack))) return 10;
+            if (!WriteExact(g_wire,&ack,sizeof(ack))) return 10;
             continue;
         }
         if (msg == 10)
@@ -5617,7 +5617,7 @@ static int RunVideo()
             prepared_index = fh.index;
             prepared = true;
             VideoResultHeader ack = {OUT_MAGIC, fh.index, 1u, 0u, 0u, fh.pts};
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         ConfigureSrFrame(fh.reserved);

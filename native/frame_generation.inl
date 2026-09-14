@@ -89,6 +89,16 @@ static void FgPresenter()
     if (!event) { g_fg.failed = true; return; }
     UINT64 value = 0, previous = 0, shown = 0;
     auto report = std::chrono::steady_clock::now();
+    // R11: when the swapchain gave us a frame-latency waitable object, the
+    // compositor paces us: waiting on it releases one back buffer one
+    // vblank before the previous frame hits the screen. The first wait
+    // returns immediately (documented), so it is consumed here - from then
+    // on every loop iteration waits for the release before presenting,
+    // and the wall-clock deadlines become a second-order hint rather than
+    // the pacing source. Without the waitable (pre-8.1, blocked QI) the
+    // old wall-clock deadlines stay.
+    if (g_fg_waitable != nullptr)
+        WaitForSingleObject(g_fg_waitable, 2000);
     auto present = [&](ID3D12Resource *source) {
         winrt::com_ptr<ID3D12Resource> bb;
         if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(bb.put()))) ||
@@ -136,6 +146,14 @@ static void FgPresenter()
                     chosen->interval * (index + 1) / (chosen->count + 1));
                 // A delayed GPU copy must not cause a burst of obsolete generated frames.
                 if (std::chrono::steady_clock::now() >= deadline) continue;
+                if (g_fg_waitable != nullptr)
+                {
+                    // The compositor's pacing: wait for the back buffer to
+                    // be released instead of sleeping to a wall-clock
+                    // deadline that drifts against the vblank.
+                    if (WaitForSingleObject(g_fg_waitable, 2000) != WAIT_OBJECT_0)
+                        Log("[fg] waitable timeout - the compositor stalled");
+                }
                 if (!present(chosen->interpolated[index].get())) g_fg.failed = true;
                 std::unique_lock<std::mutex> lock(g_fg.mutex);
                 if (g_fg.wake.wait_until(lock, deadline, [&] {
@@ -146,7 +164,13 @@ static void FgPresenter()
                 })) break;
             }
         }
-        if (!g_fg.stop && !g_fg.failed && !present(chosen->real.get())) g_fg.failed = true;
+        if (!g_fg.stop && !g_fg.failed)
+        {
+            if (g_fg_waitable != nullptr
+                && WaitForSingleObject(g_fg_waitable, 2000) != WAIT_OBJECT_0)
+                Log("[fg] waitable timeout on the real frame");
+            if (!present(chosen->real.get())) g_fg.failed = true;
+        }
         previous = chosen->sequence;
         {
             std::lock_guard<std::mutex> lock(g_fg.mutex);

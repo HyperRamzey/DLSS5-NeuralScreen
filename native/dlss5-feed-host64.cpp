@@ -1987,6 +1987,9 @@ static HWND                       g_wgc_hwnd = nullptr;
 
 
 static IDXGISwapChain3           *g_present_swap;
+// R11: DWM releases the FG presenter on this handle, one vblank before the
+// previous frame reaches the screen. Null = the wall-clock fallback path.
+static HANDLE                     g_fg_waitable = nullptr;
 // What the swap chain has already been told its colours mean. Asking DXGI
 // every frame is both a waste and a way to fail on the SDR path, which has
 // never made the call at all - see EnsurePresentFormat.
@@ -2106,6 +2109,7 @@ static void ClosePresent()
 {
     CloseFgResources();
     if (g_present_swap != nullptr) { g_present_swap->Release(); g_present_swap = nullptr; }
+    g_fg_waitable = nullptr;  // the handle dies with the swapchain
     // Only the thread that created the window can destroy it. This used to
     // post WM_QUIT to the thread FIRST, which ended the message loop before
     // the WM_CLOSE behind it could be dispatched, and then called
@@ -2179,7 +2183,10 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     sd.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;   // must match VideoState::output for CopyResource
     sd.SampleDesc.Count = 1;
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.BufferCount = 2;
+    // R11: three buffers with a frame-latency waitable object - the FG
+    // presenter waits on DWM's release before it presents, which paces it
+    // to the compositor instead of wall-clock deadlines that drift.
+    sd.BufferCount = 3;
     sd.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.AlphaMode   = DXGI_ALPHA_MODE_IGNORE;
     IDXGISwapChain1 *sc1 = nullptr;
@@ -2193,6 +2200,20 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     }
     factory->MakeWindowAssociation(g_present_hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
     factory->Release();
+    // R11: latency 1 + the waitable object. MaximumFrameLatency(1) says the
+    // swapchain holds ONE queued present; GetFrameLatencyWaitableObject then
+    // releases it to the presenter one vblank before the previous frame
+    // reaches the screen - the pacing sleep is DWM's, not ours.
+    IDXGISwapChain2 *sc2 = nullptr;
+    hr = sc1->QueryInterface(__uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2));
+    if (SUCCEEDED(hr) && sc2 != nullptr)
+    {
+        sc2->SetMaximumFrameLatency(1);
+        g_fg_waitable = sc2->GetFrameLatencyWaitableObject();
+        sc2->Release();
+    }
+    else
+        g_fg_waitable = nullptr;  // pre-8.1 or a blocked QI: the wall-clock path stays
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&g_present_swap));
     sc1->Release();
     if (FAILED(hr) || g_present_swap == nullptr)

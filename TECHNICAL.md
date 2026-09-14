@@ -136,10 +136,10 @@ not.
 | `fullscreen` | borderless fullscreen window |
 | `warmup` | NGX warmup frames at start |
 | `work_scale` | 0.1–1.0, the resolution the network runs at, relative to the screen. Only has an effect with `nr_small` on |
-| `nr_small` | process at a reduced resolution and compose the result onto the native frame: faster, sharp (the residual composite). Default `false` |
+| `nr_small` | process at a reduced resolution and compose the result onto the native frame: faster, sharp (the residual composite). Default `true` - **Boost is on** |
 | `profile` | `Faithful`, `Natural`, `Strong / Cinematic`, `Extreme / Overdrive` |
 | `intensity`, `local_tone`, `local_structure`, `skin_structure` | `null` = take from profile |
-| `lang` | `ru` / `en` |
+| `lang` | 12 languages: `en` `ru` `fr` `de` `es` `it` `pt` `pl` `uk` `zh` `ja` `ko` |
 | `worker_present` | worker shows the frame in its own window (`false` — pygame output) |
 | `motion_on_gpu` | worker upscales the motion field (`false` — CPU) |
 | `capture_in_worker` | worker captures the desktop itself (DDA, `false` — dxcam in Python) |
@@ -304,7 +304,7 @@ above (14.0 ms at 4K, 7.7 ms at 2560×1600) and matches what the
 [neural-upstream](https://github.com/matiasLombo/neural-upstream) add-on
 measures for the same network in games.
 
-So **Process at reduced resolution** (menu → speed, `"nr_small"` in
+So **Process at reduced resolution** (menu → processing, `"nr_small"` in
 `config.json`) scales the frame down to the work resolution, runs the network
 there, and scales the result back up. On a 4K desktop, work at the 2560×1440
 cap:

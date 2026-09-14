@@ -130,10 +130,10 @@ recv                    17.5        31.6           24.5 мс
 | `fullscreen` | безрамочное окно на весь монитор |
 | `warmup` | прогревочные кадры NGX при старте |
 | `work_scale` | 0.1–1.0, разрешение работы сети относительно экрана. Действует только при включённом `nr_small` |
-| `nr_small` | обрабатывать в пониженном разрешении и ложить результат на нативный кадр: быстрее, резко (residual composite). По умолчанию `false` |
+| `nr_small` | обрабатывать в пониженном разрешении и ложить результат на нативный кадр: быстрее, резко (residual composite). По умолчанию `true` - **Boost включён** |
 | `profile` | `Faithful`, `Natural`, `Strong / Cinematic`, `Extreme / Overdrive` |
 | `intensity`, `local_tone`, `local_structure`, `skin_structure` | `null` = взять из профиля |
-| `lang` | `ru` / `en` |
+| `lang` | 12 языков: `en` `ru` `fr` `de` `es` `it` `pt` `pl` `uk` `zh` `ja` `ko` |
 | `worker_present` | воркер показывает кадр в своём окне (`false` — вывод через pygame) |
 | `motion_on_gpu` | поле движения растягивает воркер (`false` — считать на CPU) |
 | `capture_in_worker` | воркер захватывает экран сам (DDA; `false` — dxcam в Python) |
@@ -297,7 +297,7 @@ work          МПикс   eval GPU
 той же сети в играх меряет аддон
 [neural-upstream](https://github.com/matiasLombo/neural-upstream).
 
-Поэтому **«Обрабатывать в пониженном разрешении»** (меню → скорость,
+Поэтому **«Обрабатывать в пониженном разрешении»** (меню → обработка,
 `"nr_small"` в `config.json`) уменьшает кадр до work-разрешения,
 гоняет сеть там и растягивает результат обратно. На 4K-столе, work на
 потолке 2560×1440:

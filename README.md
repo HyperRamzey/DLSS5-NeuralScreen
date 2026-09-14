@@ -78,7 +78,7 @@ closed, clicks go straight through it.
 
 ### Whole screen or one window
 
-The whole screen is the default. **Source**, at the top of the menu, switches
+The whole screen is the default. **Source**, second in the menu, switches
 between **Fullscreen** and **Window mode**; choosing the second opens the list
 of windows, and hovering a row highlights that window on the screen. **Num5**
 is the shortcut when the window is already in front of you: point at it and

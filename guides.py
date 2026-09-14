@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 
@@ -17,8 +18,53 @@ class GuideFrame:
 class TemporalGuideGenerator:
     """Estimate the guide buffers an encoded video does not contain."""
 
+    #: The DIS configuration, by name: config.json's "flow_preset".
+    #:
+    #: "fast" is what shipped and stays the default. "ultrafast" is the
+    #: measured alternative - 0.34 ms against 2.85 ms for the same 320x180
+    #: pair, an 8.4x cut of the one per-frame cost Python still carries once
+    #: the capture, the motion upscale and the presentation have all moved to
+    #: the GPU.
+    #:
+    #: Why it is not the default. Scored against synthetic ground truth (a
+    #: known pixel shift), ultrafast's MEAN endpoint error stays under 0.08
+    #: flow px for displacements from 1 to 16 px - comfortably inside the
+    #: _flow_noise_floor this class already zeroes, so on average it cannot
+    #: even reach the motion field. Its TAILS are the worry: p99 0.49 px at a
+    #: 1 px shift, and a maximum of 31.6 px against fast's 8.5 px at a 32 px
+    #: shift. Tails are what a temporal network shows as smearing, and
+    #: nothing here can judge that without the GPU pipeline and real moving
+    #: content in front of a person. So it ships as a switch with its numbers
+    #: attached - the way nr_small did before it became the default - and the
+    #: before/after wipe is how to judge it.
+    PRESETS = {
+        "ultrafast": cv2.DISOPTICAL_FLOW_PRESET_ULTRAFAST,
+        "fast": cv2.DISOPTICAL_FLOW_PRESET_FAST,
+        "medium": cv2.DISOPTICAL_FLOW_PRESET_MEDIUM,
+    }
+
+    @classmethod
+    def _preset_name(cls, name: str) -> str:
+        """The validated preset key for a config value, tolerant of a typo.
+
+        An unknown name falls back to the shipped default and says so in the
+        log, the way `lang` does in the config loader: config.json is
+        hand-editable, and a typo in it must not become a crash on the first
+        pipeline build.
+
+        Returns the NAME rather than the cv2 id so that self.preset can be
+        what is actually running - an attribute that reported the typo back
+        while DIS quietly ran something else would be a readout that lies.
+        """
+        key = str(name).lower()
+        if key not in cls.PRESETS:
+            print(f"[main] unknown flow_preset {name!r} - using 'fast'",
+                  file=sys.stderr)
+            return "fast"
+        return key
+
     def __init__(self, width: int, height: int, flow_width: int = 320,
-                 emit_small: bool = False) -> None:
+                 emit_small: bool = False, preset: str = "fast") -> None:
         """width/height is the NGX work resolution.
 
         emit_small=True: hand back the motion field at the optical-flow
@@ -43,16 +89,16 @@ class TemporalGuideGenerator:
         self._flow_scaled = np.empty((self.flow_height, self.flow_width, 2), dtype=np.float32)
         self._motion_f32 = np.empty((self.height, self.width, 2), dtype=np.float32)
         self._motion_f16 = np.empty((self.height, self.width, 2), dtype=np.float16)
-        self.dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_FAST)
+        self.preset = self._preset_name(preset)
+        self.dis = cv2.DISOpticalFlow_create(self.PRESETS[self.preset])
         self.dis.setUseSpatialPropagation(True)
         self.dis.setFinestScale(1)
         # MV validation (Feeder 0.14 static-hypothesis pattern): DIS on a
         # static desktop produces small noise vectors (capture noise,
         # cursor jitter, UI shimmer). Vectors below the noise floor are
         # zeroed - NGX would otherwise treat them as real motion and smear
-        # text/UI. The floor is in flow-resolution pixels: 0.5 px at a
-        # 320-wide flow is ~6 px at 4K work resolution, far below any real
-        # motion (a 2 px scroll at 4K is 0.17 px in flow space).
+        # text/UI. The floor is in work-resolution pixels. Applying it on
+        # the small flow grid erased real 1–6 pixel scrolling at high resolution.
         self._flow_noise_floor = 0.5
         # A2, the other half of MV validation: the noise floor is a test of
         # LENGTH, and a wrong vector can be long. When a window slides across
@@ -237,7 +283,7 @@ class TemporalGuideGenerator:
         return GuideFrame(motion=motion, reset=True, scene_score=1.0)
 
     def process(self, rgba: np.ndarray | None = None,
-                gray: np.ndarray | None = None) -> GuideFrame:
+                gray: np.ndarray | None = None, compute_motion: bool = True) -> GuideFrame:
         """Compute the guides: motion/reset/scene_score.
 
         Either rgba (full-res BGR/RGBA — downsampled here) or a ready gray
@@ -259,7 +305,7 @@ class TemporalGuideGenerator:
         else:
             scene_score = float(np.mean(cv2.absdiff(current, self.previous_gray))) / 255.0
             reset = scene_score > 0.24
-            if reset or scene_score < 0.001:
+            if not compute_motion or reset or scene_score < 0.001:
                 # Reset (scene cut) or static screen (desktop/text): no flow needed.
                 # 0.001: above capture noise (~0.0002 @ +-2 LSB) and static 0.0,
                 # below real motion: 2px scroll 0.03, 2px shift 0.002, fast cursor 0.0013.
@@ -292,6 +338,8 @@ class TemporalGuideGenerator:
                             out=self._flow_scaled[..., 0])
                 np.multiply(cur_to_prev[..., 1], self.height / self.flow_height,
                             out=self._flow_scaled[..., 1])
+                mag = np.hypot(self._flow_scaled[..., 0], self._flow_scaled[..., 1])
+                self._flow_scaled[mag < self._flow_noise_floor] = 0.0
                 if self.emit_small:
                     # The worker upscales it on the GPU — all that is left
                     # here is converting 115k values to float16.

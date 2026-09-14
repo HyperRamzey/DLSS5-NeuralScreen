@@ -25,6 +25,10 @@ TARGET_ARCHS = "RTX 30/40/50 (sm_86/89/120 kernels, spoof 0x1B0; RTX 20 cannot r
 
 files = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 extra = [
+    # The BYO folder doc ships so user installs have the drop location ready.
+    "native/libraries/README.md",
+    "native/nvngx_dlssg.dll",
+    "resolution_limits.py",
     "NeuralScreen.exe",
     "NeuralScreen.vbs",
     "NeuralScreen-diag.vbs",

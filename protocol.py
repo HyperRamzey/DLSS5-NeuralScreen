@@ -27,6 +27,8 @@ import numpy as np
 from paths import BASE_DIR  # noqa: F401
 
 
+
+
 # NGX feature 18 goes silent at 3840x2160 (verified in isolation: the worker
 # hangs on frame 0 with work=4K, both in legacy and in upscale mode).
 # We cap the work resolution at 2560x1440 - that is known to work.
@@ -34,6 +36,21 @@ WORK_MAX_W = 2560
 
 
 WORK_MAX_H = 1440
+
+
+#: How many destination buffers read_out() rotates through, at most. A frame
+#: that comes back is handed on by REFERENCE and outlives the call: the
+#: recorder queues up to QUEUE_DEPTH (4) of them for its encoder thread and
+#: the main loop keeps the newest as st.output_rgba for a screenshot, so the
+#: ring has to be longer than everything that can be in flight at once.
+#:
+#: A cap, not an allocation - slots are created on demand, and only when
+#: pixels actually come back (a recording or a screenshot asked for them).
+#: An idle session allocates none of it.
+#:
+#: Not imported from recorder: protocol.py is a leaf module, and
+#: tests/test_module_layers.py is what keeps it one.
+OUT_RING_SLOTS = 6
 
 
 class SharedFrameBuffer:
@@ -79,6 +96,12 @@ class SharedFrameBuffer:
         self.out_name = ""
         self._out_mm: mmap.mmap | None = None
         self._out_buf: np.ndarray | None = None  # (h, w, 4) uint8
+        # read_out()'s destinations, reused instead of freshly allocated.
+        # Grown on demand (see _next_out_slot) rather than here: the channel
+        # is negotiated for every worker, while pixels only travel back when
+        # something asks for them.
+        self._out_ring: list[np.ndarray] = []
+        self._out_slot = 0
 
     def open_gray(self, w: int, h: int) -> None:
         """Open a gray section of w*h bytes (create it if there was none).
@@ -115,6 +138,38 @@ class SharedFrameBuffer:
         self._out_mm = mmap.mmap(-1, self.out_bytes, tagname=self.out_name)
         self._out_buf = np.ndarray((h, w, 4), dtype=np.uint8, buffer=self._out_mm, offset=8)
 
+    def _next_out_slot(self) -> np.ndarray:
+        """A destination buffer nobody else is still holding.
+
+        The ring is SCANNED rather than simply advanced, because a frame that
+        comes back is handed on by reference and lives as long as its
+        consumer needs it: the recorder queues it for the encoder thread,
+        the main loop keeps the newest one for a screenshot. Writing into a
+        slot that is still queued would rewrite a frame the encoder has not
+        read yet - a torn picture in the file, which is a worse bug than the
+        allocation this ring exists to remove.
+
+        The refcount is what answers the question. A slot nobody else holds
+        is referenced twice here - once by the ring list, once by the local
+        `buf` - and getrefcount adds its own argument on top, so 3 means
+        free and 4 or more means in flight. That threshold was measured, not
+        assumed.
+
+        When every slot is busy the answer is a fresh array: slower for that
+        one frame, and always correct.
+        """
+        n = len(self._out_ring)
+        for _ in range(n):
+            buf = self._out_ring[self._out_slot % n]
+            self._out_slot = (self._out_slot + 1) % n
+            if sys.getrefcount(buf) <= 3:
+                return buf
+        if n < OUT_RING_SLOTS:
+            buf = np.empty_like(self._out_buf)
+            self._out_ring.append(buf)
+            return buf
+        return np.empty_like(self._out_buf)
+
     def read_out(self) -> np.ndarray | None:
         """A copy of the frame from the section, guarded by the seqlock.
 
@@ -124,14 +179,25 @@ class SharedFrameBuffer:
         the worker is mid-write (odd) or the sequence changed while we
         copied, we retry a few times and then fall back to None (the caller
         skips the frame).
+
+        The destination comes from a REUSED ring, not from a fresh
+        allocation. A 4K frame is 33 MB and `.copy()` mapped a new one every
+        time: measured with four frames held alive (the recorder's queue
+        depth), 12.0 ms per frame against 2.6 ms into a pre-allocated buffer
+        - 2.8 GB/s against 12.7 GB/s. The difference is page faults on
+        freshly mapped memory, not the memcpy. And it runs on the reader
+        thread INSIDE the recv the main loop is blocked on, so it was ~9 ms
+        of every recorded frame: the "recv 17.5 -> 24.5 ms while recording"
+        left over in TECHNICAL.md after the pipe copy was removed is this.
         """
         if self._out_buf is None:
             return None
+        buf = self._next_out_slot()
         for _ in range(4):
             seq1 = int.from_bytes(self._out_mm[0:8], "little")
             if seq1 & 1:
                 continue  # worker is writing - not ready yet
-            buf = self._out_buf.copy()
+            np.copyto(buf, self._out_buf)
             seq2 = int.from_bytes(self._out_mm[0:8], "little")
             if seq1 == seq2:
                 return buf
@@ -148,6 +214,10 @@ class SharedFrameBuffer:
             self._out_mm = None
         self.out_bytes = 0
         self.out_w = self.out_h = 0
+        # The ring is shaped like the section that just closed - a new one
+        # means new dimensions, so the slots go with it.
+        self._out_ring = []
+        self._out_slot = 0
 
     def read_gray(self) -> np.ndarray | None:
         """Return a copy of the gray frame (320x180 uint8), or None if it is
@@ -222,6 +292,9 @@ def _negotiate_shm(worker: subprocess.Popen, reader: "WorkerReader",
 # v3 (magic D5V3): a header with full_w/full_h - the worker resizes the frames
 # on the GPU itself (NGX Upscaling), Python does not resize on the CPU.
 VIDEO_MAGIC = 0x33563544  # 'DV5' v3
+CAPTURE_MAGIC = 0x31504143  # CAP1: prepare capture before calculating motion
+FRAME_FLAG_PREPARED = 0x1000
+
 FRAME_MAGIC = 0x314D5246  # 'FMR1'
 OUT_MAGIC = 0x3154554F    # 'OUT1'
 
@@ -325,12 +398,22 @@ def _read_exact(stream, size: int) -> bytes:
     return bytes(chunks)
 
 
+
+def prepare_capture(worker, reader, index: int, pts: int) -> None:
+    """Latch capture and gray together; FRM1 will consume that exact capture."""
+    worker.stdin.write(struct.pack(FRAME_FMT, CAPTURE_MAGIC, index, 0, 0, pts))
+    worker.stdin.flush()
+    reader.recv(index, timeout=5.0)
+
+
 def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                motion: np.ndarray, reset: bool, pts: int,
                shm: "SharedFrameBuffer | None" = None,
                want_pixels: bool = False, motion_small: bool = False,
                no_color: bool = False, bypass: bool = False,
-               split: float = 0.0, skip_static: bool = False) -> None:
+               split: float = 0.0, skip_static: bool = False,
+               frame_generation: bool | None = None, frame_multiplier: int = 2,
+               prepared: bool = False) -> None:
     """Send a frame to the worker.
 
     With shared memory agreed, only the 24-byte header with the
@@ -354,6 +437,12 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
             (FRAME_FLAG_NO_COLOR if no_color else 0) | \
             (FRAME_FLAG_BYPASS if bypass else 0) | \
             (FRAME_FLAG_SKIP_STATIC if skip_static else 0)
+    if prepared:
+        flags |= FRAME_FLAG_PREPARED
+    if frame_generation is not None:
+        # Bits 8-11: enabled, multiplier minus two, explicit UI override.
+        flags |= 0x800 | (0x100 if frame_generation else 0)
+        flags |= (min(4, max(2, int(frame_multiplier))) - 2) << 9
     if split > 0.0:
         # The wipe position rides in the high 16 bits of the same flags field:
         # there is no dedicated field in the header, and widening it for a

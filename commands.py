@@ -181,6 +181,12 @@ def apply_menu_action(st, action: tuple) -> None:
         st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
         settings_io.save_menu_layout(st)
         print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
+    elif kind == "toggle" and action[1] == "frame_generation":
+        st.cfg["frame_generation"] = not bool(st.cfg.get("frame_generation", False))
+        settings_io.save_menu_layout(st)
+    elif kind == "frame_multiplier":
+        st.cfg["frame_multiplier"] = min(4, max(2, int(action[1])))
+        settings_io.save_menu_layout(st)
     elif kind == "toggle" and action[1] == "skip_static":
         # A per-frame flag in the header, not a worker setting: no restart,
         # the next frame already carries the new state.
@@ -211,6 +217,8 @@ def apply_menu_action(st, action: tuple) -> None:
             new_params["style"] = value
             pipeline.request_apply(st, st.work_scale, st.cfg["profile"],
                                    new_params)
+    elif kind == "motion_backend":
+        pipeline.apply_motion_backend(st, action[1])
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])
@@ -325,6 +333,9 @@ def apply_menu_action(st, action: tuple) -> None:
             print(f"[main] exit: button in the overlay menu "
                   f"(frames processed {st.frame_index})")
             st.running = False
+        elif name.startswith("frame_multiplier:"):
+            st.cfg["frame_multiplier"] = min(4, max(2, int(name.split(":", 1)[1])))
+            settings_io.save_menu_layout(st)
         elif name == "record":
             st.tray_commands.put("record")
         elif name == "screenshot":

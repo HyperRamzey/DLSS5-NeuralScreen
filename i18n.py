@@ -1708,6 +1708,83 @@ STRINGS = {
 }
 
 
+for _strings in STRINGS.values():
+    _strings.update({
+        "motion_backend": "Motion estimation",
+        "motion_nvofa": "NVOFA (experimental)",
+        "motion_hint": "Restarts worker; CPU fallback if unavailable",
+        "motion_fallback": "NVOFA unavailable - using CPU DIS",
+        "motion_restarted": "Motion backend changed - worker restarted",
+    })
+STRINGS["ru"].update({
+    "motion_backend": "Расчёт движения",
+    "motion_nvofa": "NVOFA (эксперимент)",
+    "motion_hint": "Перезапуск; при ошибке возврат на CPU",
+    "motion_fallback": "NVOFA недоступен — используется CPU DIS",
+    "motion_restarted": "Метод расчёта движения изменён",
+})
+
+
 def tr(lang: str, key: str) -> str:
     """Translate a STRINGS key; an unknown key comes back unchanged."""
     return STRINGS.get(lang, STRINGS[DEFAULT_LANG]).get(key, key)
+
+for _table in STRINGS.values():
+    _table.update({
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    })
+STRINGS["ru"].update({
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+})
+
+STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множитель кадров'})
+
+STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['es'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['it'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['pt'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['pl'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['uk'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+
+STRINGS['zh'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '帧倍率'})
+
+STRINGS['ja'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'フレーム倍率'})
+
+STRINGS['ko'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '프레임 배수'})

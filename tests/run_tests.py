@@ -47,7 +47,10 @@ SETTLES: list = []
 # What each test is for, in one line - a failing name should not send anyone
 # digging through the file to find out what broke.
 ABOUT = {
+    "test_nvofa_controls.py": "motion backend selection, CPU fallback and scene tracking without NVIDIA hardware",
     "test_bypass.py": "NR OFF shows the raw capture and the pipeline survives",
+    "test_out_ring.py": "read_out reuses its buffers and never overwrites one in use",
+    "test_verdict_forget.py": "the feature-18 verdict dies with the worker that gave it",
     "test_audio_limiter.py": "the soft limiter keeps the recording from clipping",
     "test_audio_pack.py": "the audio format structs are byte-packed, truncated formats rejected",
     "test_adaptive_exposure.py": "adaptive exposure brightens dark scenes, lit scenes untouched",

@@ -73,7 +73,8 @@ def main() -> int:
                                value=1.0 if on else 0.0,
                                extra={"label": "DLSS 5"})
         m._draw_toggle(surf, item, s)
-        track = pygame.Rect(rect.x, rect.y, 40, rect.h)
+        # The switch sits at the row's right end now (label left, pill right).
+        track = pygame.Rect(rect.right - 40, rect.y, 40, rect.h)
         left = pygame.Rect(track.x, track.y, track.w // 2, track.h)
         right = pygame.Rect(track.centerx, track.y, track.w // 2, track.h)
         if on:

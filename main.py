@@ -75,6 +75,7 @@ from capture import (ScreenCapture, devicename_for_output_idx, list_monitors,
                      resolve_output_idx)
 from display import Display
 from guides import TemporalGuideGenerator
+from motion_backend import MotionBackendStatus
 from hotkeys import (HotkeyController, build_bindings,
                      describe as describe_hotkeys, numlock_needed, numlock_on,
                      parse_binding)
@@ -141,7 +142,7 @@ from protocol import (  # noqa: F401
     SHM_MAGIC, VIDEO_MAGIC, WGC_ACK_FMT, WGC_ACK_MAGIC, WGC_FMT,
     WGC_MAGIC, WINDOW_ACK_FMT, WINDOW_ACK_MAGIC, WINDOW_FLAG_CAPTURABLE,
     WINDOW_FLAG_DISABLE, WINDOW_FMT, WINDOW_MAGIC, WorkerReader,
-    _read_exact, send_dda, send_frame, send_gray, send_motion_size,
+    _read_exact, prepare_capture, send_dda, send_frame, send_gray, send_motion_size,
     send_out, send_resize, send_wgc, send_window)
 
 
@@ -150,6 +151,32 @@ from protocol import (  # noqa: F401
 FPS_LOG_INTERVAL = 2.0  # seconds, FPS log to the console
 PERF_LOG_INTERVAL = 5.0  # seconds, log of the mean pipeline stage timings
 PERF_KEYS = ("grab", "resize_full", "guides", "send", "recv", "show")
+
+
+def _resize_interp(src: np.ndarray, dst_w: int, dst_h: int) -> int:
+    """Which cv2 filter the fallback resize uses.
+
+    Only the fallback path resizes at all: with the capture in the worker
+    (DDA1/WGCW) the GPU hands over a frame that is already the right size.
+    This runs when dxcam is doing the grabbing and its frame disagrees with
+    the configured size - a hybrid laptop on the iGPU display, or a display
+    mode change caught in flight.
+
+    It used to be INTER_LANCZOS4 in either direction, which measured 11.76 ms
+    for 2560x1440 -> 4K against 1.53 ms for INTER_AREA and 1.64 ms for
+    INTER_LINEAR: ten milliseconds of the frame budget on the one path that
+    exists BECAUSE the fast path was unavailable - i.e. on the slowest
+    hardware in the fleet.
+
+    AREA when shrinking, LINEAR when growing: AREA is a box filter and
+    degenerates towards nearest neighbour on an upscale, while LINEAR aliases
+    on a large downscale, and guides.py says what aliasing does to the flow
+    field. A Lanczos kernel's extra sharpness was never going to survive NGX
+    resampling the frame again anyway.
+    """
+    if dst_w * dst_h < src.shape[1] * src.shape[0]:
+        return cv2.INTER_AREA
+    return cv2.INTER_LINEAR
 
 
 
@@ -376,6 +403,7 @@ def main() -> int:
         last_log = time.monotonic()
         last_fps = 0.0
         last_perf_log = time.monotonic()
+        motion_status = MotionBackendStatus()
         # Stage timings: mean ms over PERF_LOG_INTERVAL (the [perf] log)
         st.perf = {k: [] for k in PERF_KEYS}
 
@@ -414,6 +442,7 @@ def main() -> int:
                         channels.forget_present(st)
                         channels.forget_dda(st)
                         channels.forget_out(st)
+                        channels.forget_verdict(st)
                         channels.sync_motion_size(st)
                         st.frame_index = 0
                         st.pts = 0
@@ -558,12 +587,12 @@ def main() -> int:
                 if frame.shape[1] != st.width or frame.shape[0] != st.height:
                     t0 = time.perf_counter()
                     try:
-                        cv2.resize(frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(frame, (st.width, st.height), interpolation=_resize_interp(frame, st.width, st.height), dst=st.buf_full)
                     except cv2.error:
                         # The monitor resolution changed: buf_full was
                         # preallocated for the old size - recreate and retry
                         st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
-                        cv2.resize(frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(frame, (st.width, st.height), interpolation=_resize_interp(frame, st.width, st.height), dst=st.buf_full)
                     _perf("resize_full", t0)
                     frame = st.buf_full
                 else:
@@ -576,9 +605,39 @@ def main() -> int:
             # parameters and carries on. This is the last line of defence:
             # the program does not fall over.
             try:
-                t0 = time.perf_counter()
+                check_worker(st.worker, st.worker_logs)
                 if st.gray_active:
-                    guide = st.guides.process(gray=st.shm.read_gray())
+                    prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
+                t0 = time.perf_counter()
+                if bypass:
+                    # NR OFF: the worker skips the NGX evaluate, so nothing
+                    # ever reads this motion field. Computing it anyway cost
+                    # 2.9 ms of DIS per frame (measured, 320x180 flow, moving
+                    # content) - and it cost it on the mode that runs
+                    # FASTEST, 121-133 FPS in bypass, where it came to about
+                    # half a core spent filling a buffer the worker throws
+                    # away. The frame still CARRIES a motion field: the
+                    # header's size contract does not change just because the
+                    # effect is off.
+                    #
+                    # previous_gray goes with it. Keeping the last pre-bypass
+                    # frame as history would mean correlating against a
+                    # screen that is minutes old the moment NR comes back on,
+                    # and the first real flow field would be garbage.
+                    # Cleared, the first NR frame reports a scene cut
+                    # instead - which is what a resumed pipeline is.
+                    st.guides.previous_gray = None
+                    guide = st.guides.zero_guide()
+                elif st.gray_active:
+                    was_failed = motion_status.failed and motion_status.worker is st.worker
+                    hardware_motion = motion_status.update(st.worker, st.worker_logs)
+                    if motion_status.failed and not was_failed:
+                        st.display.alert(UI_STRINGS[st.lang].get(
+                            "motion_fallback", "NVOFA unavailable - using CPU DIS"))
+                    guide = st.guides.process(
+                        gray=st.shm.read_gray(),
+                        compute_motion=not (st.cfg.get("motion_backend") == "nvofa"
+                                            and hardware_motion))
                 else:
                     guide = st.guides.process(st.work_frame)
                 _perf("guides", t0)
@@ -602,6 +661,33 @@ def main() -> int:
                     continue
             try:
                 check_worker(st.worker, st.worker_logs)
+                if st.gray_active:
+                    prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
+                try:
+                    t0 = time.perf_counter()
+                    if st.gray_active:
+                        guide = st.guides.process(gray=st.shm.read_gray())
+                    else:
+                        guide = st.guides.process(st.work_frame)
+                    _perf("guides", t0)
+                except Exception as guide_exc:
+                    # guides is not critical: ValueError/TypeError/cv2.error (the
+                    # shape of the gray frame, a division by zero) must not take
+                    # the process down. We skip the frame - the worker gets the
+                    # next one. But a persistent error (an incompatible gray
+                    # channel, a broken shape) would spin main at 100% CPU -
+                    # after 5 failures in a row we fall back to zero motion: the
+                    # frames keep flowing and the picture does not freeze.
+                    print(f"[main] guides.process failed ({guide_exc}) - frame skipped",
+                          file=sys.stderr)
+                    st.guide_fails += 1
+                    if st.guide_fails >= 5:
+                        print(f"[main] guides.process is unstable - zero motion "
+                              f"(frames keep flowing)", file=sys.stderr)
+                        st.guide_fails = 0
+                        guide = st.guides.zero_guide()
+                    else:
+                        continue
                 t0 = time.perf_counter()
                 send_frame(st.worker, st.frame_index, st.work_frame, guide.motion, guide.reset,
                            st.pts, st.shm, want_pixels=(st.pending_shot is not None
@@ -611,7 +697,10 @@ def main() -> int:
                            no_color=bool(st.dda_mode),
                            bypass=bypass,
                            split=st.split_pos,
-                           skip_static=bool(st.cfg.get("skip_static", False)))
+                           skip_static=bool(st.cfg.get("skip_static", False)),
+                           frame_generation=bool(st.cfg.get("frame_generation", False)),
+                           frame_multiplier=int(st.cfg.get("frame_multiplier", 2)),
+                           prepared=bool(st.gray_active))
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1
@@ -655,6 +744,7 @@ def main() -> int:
                 channels.forget_present(st)
                 channels.forget_dda(st)
                 channels.forget_out(st)
+                channels.forget_verdict(st)
                 channels.sync_motion_size(st)
                 st.frame_index = 0
                 st.pts = 0
@@ -677,10 +767,10 @@ def main() -> int:
                 if next_frame.shape[1] != st.width or next_frame.shape[0] != st.height:
                     t0 = time.perf_counter()
                     try:
-                        cv2.resize(next_frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(next_frame, (st.width, st.height), interpolation=_resize_interp(next_frame, st.width, st.height), dst=st.buf_full)
                     except cv2.error:
                         st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
-                        cv2.resize(next_frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(next_frame, (st.width, st.height), interpolation=_resize_interp(next_frame, st.width, st.height), dst=st.buf_full)
                     _perf("resize_full", t0)
                     next_frame = st.buf_full
                 else:
@@ -758,6 +848,7 @@ def main() -> int:
                 channels.forget_present(st)
                 channels.forget_dda(st)
                 channels.forget_out(st)
+                channels.forget_verdict(st)
                 channels.sync_motion_size(st)
                 st.frame_index = 0
                 st.pts = 0
@@ -901,6 +992,10 @@ def main() -> int:
             _perf("show", t0)
             st.display.set_hud({
                 "fps": last_fps,
+                # What the presenter shows with Frame Generation on - the
+                # worker reports it every two seconds. The HUD pairs the
+                # network rate with it ("42 / 84 fps"); None while FG is off.
+                "display_fps": settings_io._fg_displayed_fps(st),
                 "status": status,
                 "resolution": f"{st.width}x{st.height}",
                 "profile": st.cfg["profile"],

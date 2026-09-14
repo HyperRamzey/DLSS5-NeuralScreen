@@ -24,6 +24,7 @@ from i18n import STRINGS as UI_STRINGS
 # numbers size the shared motion buffer in the SHMI handshake.
 from protocol import WORK_MAX_H, WORK_MAX_W  # noqa: F401
 from winapi import list_capturable_windows
+from resolution_limits import safe_processing_size
 
 
 def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
@@ -46,6 +47,7 @@ def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
     else:
         w = max(64, int(width * scale) // 2 * 2)
         h = max(64, int(height * scale) // 2 * 2)
+    w, h = safe_processing_size(int(width), int(height), min(w, int(width)), min(h, int(height)))
     if w > WORK_MAX_W or h > WORK_MAX_H:
         k = min(WORK_MAX_W / w, WORK_MAX_H / h)
         w = max(64, int(w * k) // 2 * 2)
@@ -342,6 +344,13 @@ def load_config(path: Path) -> dict:
     if lang not in UI_STRINGS:
         lang = DEFAULT_LANG
     cfg["lang"] = lang
+    from motion_backend import normalize_backend
+    cfg["motion_backend"] = normalize_backend(cfg.get("motion_backend"))
+    cfg["frame_generation"] = bool(cfg.get("frame_generation", False))
+    try:
+        cfg["frame_multiplier"] = min(4, max(2, int(cfg.get("frame_multiplier", 2))))
+    except (ValueError, TypeError, OverflowError):
+        cfg["frame_multiplier"] = 2
     return cfg
 
 
@@ -458,6 +467,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # HDR compatibility, the same hand-off: the worker reads NS_HDR at
         # startup and main sets it from this flag. Experimental, off.
         "hdr": bool(cfg.get("hdr", False)),
+        "motion_backend": cfg.get("motion_backend", "cpu"),
         # Which card runs the network and the capture. An index, as
         # DXGI enumerates adapters - the same number the worker takes
         # in NS_GPU and prints in its "[host] adapter N" lines.
@@ -470,6 +480,8 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # idles instead of re-running on the same picture. A per-frame flag,
         # so it survives a restart through the config alone.
         "skip_static": bool(cfg.get("skip_static", False)),
+        "frame_generation": bool(cfg.get("frame_generation", False)),
+        "frame_multiplier": min(4, max(2, int(cfg.get("frame_multiplier", 2)))),
         # The user's saved presets. Without this key "Save preset" wrote
         # everything EXCEPT the preset: the menu said "Preset saved", the
         # save really did succeed, and the preset was gone on the next
@@ -615,6 +627,27 @@ def _gpu_label(index) -> str:
     return f"{i}: {name}"
 
 
+
+def _fg_displayed_fps(st) -> float | None:
+    """The frame rate the presenter actually shows (real + generated).
+
+    The worker reports it every two seconds - "[fg] displayed 87.1 FPS".
+    The pipeline counter stays the honest network rate; this is what the
+    screen really shows with Frame Generation on. None while FG is off.
+    """
+    for line in reversed(st.worker_logs[-200:]):
+        if "[fg] displayed" in line:
+            try:
+                return float(line.split("displayed ", 1)[1].split(" FPS", 1)[0])
+            except (ValueError, IndexError):
+                return None
+        # A marker line for FG-off resets the reading - the toggle logs one.
+        if "[fg] UI: off" in line:
+            return None
+    return None
+
+
+
 def _worker_idle(st) -> bool:
     """Is the network idling on an unchanged screen right now?
 
@@ -707,12 +740,18 @@ def menu_payload(st) -> dict:
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "spout": bool(st.cfg.get("spout", False)),
         "hdr": bool(st.cfg.get("hdr", False)),
+        "motion_backend": st.cfg.get("motion_backend", "cpu"),
         "skip_static": bool(st.cfg.get("skip_static", False)),
+        "frame_generation": bool(st.cfg.get("frame_generation", False)),
+        "frame_multiplier": min(4, max(2, int(st.cfg.get("frame_multiplier", 2)))),
         # Is the network idling on an unchanged screen right now? The
         # worker says so in its log; without this the menu shows a
         # healthy FPS while nothing is being processed, and the skip
         # reads as "it does not work" (user, 12.09).
         "idle": _worker_idle(st),
+        # What the presenter actually shows while FG interpolates; the
+        # HUD pairs it with the network rate as "42 / 84 fps".
+        "display_fps": _fg_displayed_fps(st),
         # The list, with a note on any adapter whose worker could not bring
         # the neural pass up. DXGI reports some cards twice (one user has a
         # single 5080 listed as adapters 0 and 2) and the two entries are

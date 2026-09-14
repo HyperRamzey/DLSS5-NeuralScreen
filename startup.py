@@ -81,6 +81,7 @@ def _apply_nr_dll(cfg: dict) -> None:
         os.environ["NS_NR_DLL"] = str(cfg["nr_dll"])
 
 
+
 def _apply_spout_env(cfg: dict) -> None:
     """The Spout2 bridge flag reaches the worker through the environment.
 
@@ -234,7 +235,8 @@ def _log_environment(cfg: dict) -> None:
         print(f"[env] Num Lock: {'on' if numlock else 'off'} | "
               f"lang: {cfg.get('lang', 'en')} | "
               f"profile: {cfg.get('profile', '?')} | "
-              f"work_scale: {cfg.get('work_scale', '?')}")
+              f"work_scale: {cfg.get('work_scale', '?')} | "
+              f"flow: {cfg.get('flow_preset', 'fast')}")
     except Exception:
         pass
 
@@ -299,6 +301,8 @@ def configure(st) -> None:
     _apply_spout_env(st.cfg)
     # And HDR compatibility, read once per worker process as well.
     _apply_hdr_env(st.cfg)
+    from motion_backend import normalize_backend
+    os.environ["NS_MOTION_BACKEND"] = normalize_backend(st.cfg.get("motion_backend"))
     # The same for the card: NS_GPU is read once per worker process.
     _apply_gpu_env(st.cfg)
     st.lang = str(st.cfg["lang"])
@@ -471,7 +475,8 @@ def bring_up(st) -> None:
     # stole focus from the game and dragged the whole of tcl/tk into the
     # runtime.
 
-    st.guides = TemporalGuideGenerator(st.work_w, st.work_h)
+    st.guides = TemporalGuideGenerator(
+        st.work_w, st.work_h, preset=st.cfg.get("flow_preset", "fast"))
 
     # A reused buffer: every frame allocated ~100 MB (a 4K grab plus the
     # resizes plus flow), the GC could not keep up -> OOM around frame 1900.

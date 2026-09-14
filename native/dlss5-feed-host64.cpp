@@ -51,6 +51,7 @@
 #include <chrono>
 #include "hdr_display.h"
 #include "hdr_shaders.h"
+#include "dll_trust.h"
 
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_helpers.h>
@@ -534,14 +535,28 @@ static bool InitDirectNr(const wchar_t *data_path)
     {
         // The BYO library folder wins over the bundled copy: native\libraries\
         // is where users drop their own runtime build (see libraries/README).
-        wchar_t worker_dir[MAX_PATH] = {}, candidate[MAX_PATH] = {};
+        // A writable directory next to an executable - the file is verified
+        // (NVIDIA signature, machine-root chain, product name) before it is
+        // mapped, and held open so the verified bytes are the mapped ones.
+        wchar_t worker_dir[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, worker_dir, MAX_PATH);
         if (auto slash = wcsrchr(worker_dir, L'\\')) *(slash + 1) = 0;
-        wcscat_s(worker_dir, L"libraries\\nvngx_dlssnr.dll");
-        if (GetFileAttributesW(worker_dir) != INVALID_FILE_ATTRIBUTES)
+        wchar_t candidate[MAX_PATH] = {};
+        wcscpy_s(candidate, worker_dir);
+        wcscat_s(candidate, L"libraries\\nvngx_dlssnr.dll");
+        if (GetFileAttributesW(candidate) != INVALID_FILE_ATTRIBUTES)
         {
-            dll_name = worker_dir;
-            Log("[pure] NR runtime from native\\libraries\\ (BYO)");
+            if (!NsGateByoDll(candidate, "nvngx_dlssnr.dll"))
+            {
+                Log("[pure] BYO refused: nvngx_dlssnr.dll is not a "
+                    "NVIDIA-signed runtime - falling back to the bundled "
+                    "copy (%ls)", candidate);
+            }
+            else
+            {
+                dll_name = candidate;
+                Log("[pure] NR runtime from native\\libraries\\ (BYO, verified)");
+            }
         }
     }
     // The calls leave this executable by default (R8): the feature library

@@ -183,7 +183,22 @@ static bool EnsureFg(VideoState &v, DXGI_FORMAT format)
         wchar_t lib_path[MAX_PATH]; wcscpy_s(lib_path, libraries);
         wcscat_s(lib_path, L"nvngx_dlssg.dll");
         if (GetFileAttributesW(lib_path) != INVALID_FILE_ATTRIBUTES)
-            g_fg.module = LoadLibraryW(lib_path);
+        {
+            // The BYO file is verified (NVIDIA signature, machine-root
+            // chain, product name) before it is mapped - a writable folder
+            // next to the executable is otherwise the easiest DLL plant.
+            if (NsGateByoDll(lib_path, "nvngx_dlssg.dll"))
+            {
+                g_fg.module = LoadLibraryW(lib_path);
+                if (g_fg.module)
+                    Log("[fg] FG runtime from native\\libraries\\ (BYO, "
+                        "verified NVIDIA signature)");
+            }
+            else
+                Log("[fg] BYO refused: nvngx_dlssg.dll is not a "
+                    "NVIDIA-signed runtime - falling back to the bundled "
+                    "copy (%ls)", lib_path);
+        }
         if (!g_fg.module)
         {
             wcscpy_s(path, directory);

@@ -32,7 +32,9 @@ Run:  runtime\\python.exe test_window_mode.py
 """
 import ctypes
 import ctypes.wintypes
+import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -203,8 +205,31 @@ def main() -> int:
         so if an outside capture can see the overlay, opening it moves a lot of
         pixels; if the overlay is hidden, the region is left alone apart from
         the target window's own wobble.
+
+        With no rect the check used to diff the WHOLE screen: anything moving
+        on the desktop in those two seconds (a playing video, the clock, the
+        cursor) counted as "the menu" - a false overlay-visible on a busy
+        desktop. The menu panel's own rect is the marker now: centred plus
+        the config offset, the panel's size at the default scale.
         """
         import numpy as np
+        if rect is None:
+            # The REAL screen: the test's own surface is the target window
+            # (W x H), and in window mode the menu opens at the screen's
+            # bottom-right, not the window's.
+            screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+            screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+            pw, ph = 540, 1250
+            off = [745, 12]
+            try:
+                off = [int(v) for v in (autocheck_json_cfg.get("menu_offset") or off)]
+            except Exception:
+                pass
+            x = (screen_w - pw) // 2 + int(off[0])
+            y = (screen_h - ph) // 2 + int(off[1])
+            x = max(0, min(x, screen_w - pw))
+            y = max(0, min(y, screen_h - ph))
+            rect = (x, y, x + pw, y + ph)
         before = grab_region(cam, rect)
         autocheck.send_key(VK_NUMPAD2)
         pump(2.0)
@@ -235,6 +260,10 @@ def main() -> int:
     import dxcam
     cam = dxcam.create(output_idx=0, output_color="RGB")
     failures = []
+    import json
+    global autocheck_json_cfg
+    autocheck_json_cfg = json.loads(subprocess.check_output(
+        ["git", "show", "HEAD:config.json"], cwd=BASE))
     offset = autocheck.launch()
     try:
         if not wait_log(offset, "NR ON | FPS", 30.0):

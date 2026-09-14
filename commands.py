@@ -211,6 +211,8 @@ def apply_menu_action(st, action: tuple) -> None:
             new_params["style"] = value
             pipeline.request_apply(st, st.work_scale, st.cfg["profile"],
                                    new_params)
+    elif kind == "motion_backend":
+        pipeline.apply_motion_backend(st, action[1])
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])

@@ -1,4 +1,4 @@
-﻿"""Opt-in SR output, toggle, bypass and resize regression with real NVIDIA DLLs."""
+"""Opt-in SR output, toggle, bypass and resize regression with real NVIDIA DLLs."""
 import os
 from pathlib import Path
 import struct

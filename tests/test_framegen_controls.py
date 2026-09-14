@@ -36,14 +36,23 @@ def main():
         assert st.cfg["frame_generation"]
         menu.set_state(st.cfg)
         paint(menu)
-        slider = find(menu, "slider", "frame_multiplier")
-        assert slider is not None
-        track = slider.extra["track"]
-        for fraction, value in ((1, 4), (0.5, 3), (0, 2)):
-            actions = menu._slide(slider, track.x + track.w * fraction)
-            assert actions == [("frame_multiplier", value)], actions
+        # The multiplier rides the FG row: three small buttons beside the
+        # switch, the active one filled, disabled while FG is off.
+        btns = [i for i in menu.items
+                if i.kind == "button" and i.key.startswith("frame_multiplier:")]
+        assert len(btns) == 3, [i.extra["label"] for i in btns]
+        active = [i for i in btns if i.extra["filled"]]
+        assert len(active) == 1 and active[0].key == "frame_multiplier:2"
+        for value, key in ((2, "frame_multiplier:2"),
+                           (3, "frame_multiplier:3"),
+                           (4, "frame_multiplier:4")):
+            btn = next(i for i in btns if i.key == key)
+            actions = click(menu, btn)
+            assert actions == [("button", key)], actions
             commands.apply_menu_action(st, actions[0])
             assert st.cfg["frame_multiplier"] == value
+            menu.set_state(st.cfg)
+            paint(menu)
             worker = SimpleNamespace(stdin=io.BytesIO())
             protocol.send_frame(worker, 0, None, np.zeros((2, 2, 2), np.float16), False, 0,
                                 no_color=True, split=0.5, frame_generation=True, frame_multiplier=value)
@@ -56,7 +65,8 @@ def main():
         menu.set_state(st.cfg)
         paint(menu)
         assert not st.cfg["frame_generation"]
-        assert find(menu, "slider", "frame_multiplier") is None
+        assert not [i for i in menu.items if i.extra.get("filled")
+                    and i.key.startswith("frame_multiplier:")]
         assert save.call_count == 5
     # The prepared-capture flag rides the same header, independent of FG.
     worker = SimpleNamespace(stdin=io.BytesIO())

@@ -333,6 +333,9 @@ def apply_menu_action(st, action: tuple) -> None:
             print(f"[main] exit: button in the overlay menu "
                   f"(frames processed {st.frame_index})")
             st.running = False
+        elif name.startswith("frame_multiplier:"):
+            st.cfg["frame_multiplier"] = min(4, max(2, int(name.split(":", 1)[1])))
+            settings_io.save_menu_layout(st)
         elif name == "record":
             st.tray_commands.put("record")
         elif name == "screenshot":

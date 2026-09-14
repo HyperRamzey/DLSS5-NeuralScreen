@@ -606,10 +606,20 @@ class OverlayMenu:
                                      "labels": list(labels or options)}))
             cy += seg_h + gap
 
-        def toggle(key: str, label: str, on: bool, hint: str = "") -> None:
+        def toggle(key: str, label: str, on: bool, hint: str = "",
+                   inline_right: list[tuple[str, str, bool]] | None = None) -> None:
             nonlocal cy
             if not show:
                 return
+            # Small inline buttons at the row's right end, beside the switch:
+            # the multiplier rides the FG row itself (user, 14.09) instead of
+            # a second full-width row below it. Returns their x-span so the
+            # caller can lay them out.
+            inline_x = None
+            if inline_right:
+                btn_w = self._u(44)
+                btn_h = self._u(CTRL_H) - self._u(8)
+                inline_x = pad
             extra = {"label": label}
             hint_h = 0
             if hint:
@@ -626,6 +636,19 @@ class OverlayMenu:
                               pygame.Rect(pad, cy, inner_w, ctrl_h + hint_h),
                               value=1.0 if on else 0.0,
                               extra=extra))
+            if inline_x is not None:
+                # The buttons: right-aligned against the switch's left edge,
+                # small pills in one line with the toggle.
+                bx = (pad + inner_w - self._u(30) - self._u(12)  # switch track
+                      - len(inline_right) * (btn_w + self._u(8)))
+                for (opt_key, opt_label) in inline_right:
+                    items.append(Item("button", opt_key,
+                                      pygame.Rect(bx, cy + (ctrl_h - btn_h) // 2,
+                                                  btn_w, btn_h),
+                                      extra={"label": opt_label,
+                                             "filled": False,
+                                             "small": True}))
+                    bx += btn_w + self._u(6)
             cy += ctrl_h + hint_h + gap
 
         # The windows page: the full list of capturable windows, one row per
@@ -822,7 +845,9 @@ class OverlayMenu:
             # nobody reads twice, in the one place where the picture is being
             # judged. The keys live on the settings page, which is where you
             # go when you want to know or change them (user, 13.09).
-            toggle("nr", s["nr_on"] if nr_on else s["nr_off"], nr_on)
+            # The row is named for what the feature is, not for its state -
+            # the switch at the right end already carries on/off (user, 14.09).
+            toggle("nr", "DLSS 5 NR", nr_on)
 
             # Boost: the network runs at a reduced resolution and the detail
             # comes back off the native frame (the matched residual
@@ -836,11 +861,17 @@ class OverlayMenu:
             # the difference is not visible. The residual is what makes that
             # true: without it the same setting is visibly soft.
             fg = bool(self.state.get("frame_generation"))
-            toggle("frame_generation", s["frame_generation"], fg)
-            if fg:
-                multiplier = int(self.state.get("frame_multiplier", 2))
-                slider("frame_multiplier", 2, 4, multiplier, s["frame_multiplier"],
-                       value_text=f"×{multiplier}", ends=("×2", "×4"))
+            multiplier = int(self.state.get("frame_multiplier", 2))
+            # The multiplier rides the FG row: three small buttons between the
+            # label and the switch, the active one filled (user, 14.09).
+            toggle("frame_generation", "DLSS 4.5 FG", fg,
+                   inline_right=[("frame_multiplier:2", "×2"),
+                                 ("frame_multiplier:3", "×3"),
+                                 ("frame_multiplier:4", "×4")])
+            for idx, value in enumerate((2, 3, 4)):
+                btn = items[-3 + idx]
+                btn.extra["filled"] = fg and multiplier == value
+                btn.extra["disabled"] = not fg
 
 
             boost = bool(self.state.get("nr_small"))
@@ -1495,6 +1526,11 @@ class OverlayMenu:
             return [("gpu", value)]
         if key == "motion_backend":
             return [("motion_backend", value)]
+        if key == "frame_multiplier":
+            # Optimistic like style: the segment highlights at once, main
+            # applies the new multiplier to the worker.
+            self.state["frame_multiplier"] = int(value)
+            return [("frame_multiplier", int(value))]
         if key == "source":
             # The same two commands the Actions buttons sent: back to the
             # whole screen, or the window list page.
@@ -1583,6 +1619,11 @@ class OverlayMenu:
         for opt in getattr(self, "options", []):
             if opt.rect.collidepoint(pos):
                 return opt
+        # The SMALLEST hit wins: inline widgets live inside a row's rect
+        # (the multiplier buttons share the FG toggle's row), and the row
+        # must not swallow their clicks (user 14.09: clicking "×3" flipped
+        # the whole FG switch instead).
+        best: "Item | None" = None
         for item in self.items:
             if not item.rect.collidepoint(pos):
                 continue
@@ -1597,8 +1638,10 @@ class OverlayMenu:
                 strip = item.extra.get("strip")
                 if strip is not None and pos[1] > strip.bottom:
                     continue
-            return item
-        return None
+            if best is None or item.rect.w * item.rect.h \
+                    < best.rect.w * best.rect.h:
+                best = item
+        return best
 
     def inside(self, pos: tuple[int, int]) -> bool:
         return self.panel_rect.collidepoint(pos)
@@ -1883,9 +1926,13 @@ class OverlayMenu:
         # the word beside it, and this one is read from the corner of the eye
         # while a game is running.
         track_w = int(size * 1.8)
-        box = pygame.Rect(item.rect.x, item.rect.centery - size // 2,
-                          track_w, size)
-        # A hint grows the row; the box and the label stay on the first
+        # The switch sits at the row's right end, the label on the left -
+        # the reading order every settings panel uses (label, then the
+        # control at the edge), and the knob never shifts position when a
+        # label changes between "on"/"off" wording (user, 14.09).
+        box = pygame.Rect(item.rect.right - track_w,
+                          item.rect.centery - size // 2, track_w, size)
+        # A hint grows the row; the switch and the label stay on the first
         # line - only the hint is pushed under them.
         hint = item.extra.get("hint")
         if hint:
@@ -1906,14 +1953,16 @@ class OverlayMenu:
         text = item.extra.get("label")
         if not text:
             text = s["nr_on"] if on else s["nr_off"]
-        room = item.rect.right - box.right - self._u(12)
+        room = item.rect.w - 2 * self._u(12)
+        if hint:
+            room = item.rect.w
         label = self._clip(self._font, text,
                            _rgb(self.c["text"] if on else self.c["muted"]),
                            room)
-        surface.blit(label, (box.right + self._u(12),
-                             box.y + (box.h - label.get_height()) // 2))
+        surface.blit(label, (item.rect.x,
+                             item.rect.y + (self._u(CTRL_H) - label.get_height()) // 2))
         if hint:
-            y = box.bottom + self._u(8)
+            y = item.rect.y + self._u(CTRL_H) + self._u(8)
             for line in str(hint).split("\n"):
                 img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
                                  item.rect.w)

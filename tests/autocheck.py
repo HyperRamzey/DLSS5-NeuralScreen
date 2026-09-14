@@ -7,6 +7,7 @@ Every check reports PASS / FAIL / SKIP plus a reason. Exit: 0 = all PASS,
 1 = there is a FAIL.
 """
 import hashlib
+import re
 import json
 import os
 import subprocess
@@ -183,8 +184,12 @@ def zip_integrity():
         zsha = hashlib.sha256(zip_dll).hexdigest()
         if f"sha256 {zsha}" not in vt:
             return False, "VERSION.txt runtime sha != the DLL inside the archive"
-        if "NeuralScreen 1.9.0" not in vt:
-            return False, "VERSION.txt version does not match v1.9.0"
+        packer = (ROOT / "build_release_zip.py").read_text(encoding="utf-8")
+        m = re.search(r'VERSION = "([^"]+)"', packer)
+        if not m:
+            return False, "build_release_zip.py has no VERSION"
+        if f"NeuralScreen {m.group(1)}" not in vt:
+            return False, f"VERSION.txt version does not match {m.group(1)}"
     return True, f"{zpath.stat().st_size} bytes, all files, the hook, a default config, a truthful manifest"
 
 

@@ -878,7 +878,7 @@ class OverlayMenu:
             # the difference is not visible. The residual is what makes that
             # true: without it the same setting is visibly soft.
             boost = bool(self.state.get("nr_small"))
-            toggle("boost", s["boost"], boost, hint=s["boost_hint"] + "\n" + s["nr_min_hint"])
+            toggle("boost", s["boost"], boost)
 
             # The resolution the network runs at - only while Boost is on.
             #

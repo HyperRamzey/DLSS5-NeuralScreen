@@ -37,6 +37,9 @@ static struct FgState {
     bool history = false;
     ~FgState() { stop = true; wake.notify_all(); if (thread.joinable()) thread.join(); }
 } g_fg;
+// g_fg_present_fence lives in dlss5-feed-host64.cpp near the FgPresent
+// forward declaration: PresentFrame consumes it for the defer-tail token,
+// and the include of this file sits below that call site.
 
 static int g_fg_ui_enabled = -1;
 static unsigned g_fg_count = 1;
@@ -376,8 +379,10 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
     SpoutBridgeCopy(h.list, v.output, g_fg.w, g_fg.height);
     auto spout_post = Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     h.list->ResourceBarrier(1, &spout_post);
-    if (!WaitFenceValue(h.fence, EndCommands(), 30000))
+    const UINT64 fg_fence = EndCommands();
+    if (!WaitFenceValue(h.fence, fg_fence, 30000))
     { g_fg.failed = true; CloseFgResources(); return false; }
+    g_fg_present_fence = fg_fence;
     BYTE *disabled = nullptr;
     D3D12_RANGE read = {0, g_fg_count * 4}, written = {0, 0};
     if (SUCCEEDED(g_fg.disable_readback->Map(0, &read, reinterpret_cast<void **>(&disabled))))

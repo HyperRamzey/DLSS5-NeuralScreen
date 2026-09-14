@@ -1754,6 +1754,11 @@ static UINT g_hdr_split = UINT_MAX;
 static bool PresentHdr(VideoState &v, bool bypass);
 static bool FgRequested();
 static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATES state);
+// The fence value FgPresent submitted and waited on. PresentFrame reads it
+// for the defer-tail contract: the FG branch returns early, before the
+// ordinary EndCommands/submit path fills the caller's token. Defined in
+// frame_generation.inl.
+static UINT64 g_fg_present_fence = 0;
 static void StopFgPresentation();
 static void CloseFgResources();
 static void CloseSrResources();
@@ -2264,7 +2269,13 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
     // re-decide how the window is presented; on that hardware it decided
     // differently. Off means byte-identical to 1.7.x.
     if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
-    if (FgRequested() && FgPresent(v, v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) return true;
+    if (FgRequested() && FgPresent(v, v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+    {
+        // FG submitted and waited on its own fence; hand that token to the
+        // defer-tail contract (present_done must exist and exceed eval_done).
+        if (submitted) *submitted = g_fg_present_fence;
+        return true;
+    }
     StopFgPresentation();
     ID3D12Resource *bb = nullptr;
     if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),

@@ -24,23 +24,7 @@ from i18n import STRINGS as UI_STRINGS
 # numbers size the shared motion buffer in the SHMI handshake.
 from protocol import WORK_MAX_H, WORK_MAX_W  # noqa: F401
 from winapi import list_capturable_windows
-from library_updates import checker as library_checker
 from resolution_limits import safe_processing_size
-
-
-def show_update_notice(st):
-    if not library_checker.take_notice():
-        return
-    menu = st.display.menu
-    menu.set_state(menu_payload(st))
-    menu.page = "updates"
-    menu.scroll = 0
-    menu.open_choice = None
-    menu.capturing = None
-    menu.visible = True
-    st.display.set_menu_opaque(True)
-    st.display.set_menu_input(True)
-    print('[libraries] startup update notice opened')
 
 
 def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
@@ -758,7 +742,6 @@ def menu_payload(st) -> dict:
         "hdr": bool(st.cfg.get("hdr", False)),
         "motion_backend": st.cfg.get("motion_backend", "cpu"),
         "skip_static": bool(st.cfg.get("skip_static", False)),
-        "library_updates_enabled": st.cfg.get("library_updates_enabled", False) is True,
         "frame_generation": bool(st.cfg.get("frame_generation", False)),
         "frame_multiplier": min(4, max(2, int(st.cfg.get("frame_multiplier", 2)))),
         # Is the network idling on an unchanged screen right now? The
@@ -809,7 +792,6 @@ def menu_payload(st) -> dict:
             (f"{h:X}: {t}" for h, t in wins if h == st.window_hwnd), ""),
         "version": APP_VERSION,
         "channel": CHANNEL_LABEL,
-        "library_updates": library_checker.snapshot(),
     }
 
 

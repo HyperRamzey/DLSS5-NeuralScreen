@@ -171,12 +171,25 @@ static bool EnsureFg(VideoState &v, DXGI_FORMAT format)
     CloseFgResources();
     if (!g_fg.module)
     {
+        // The BYO library folder next to the worker, then the worker's own
+        // directory: users drop nvngx_dlssg.dll into native\libraries\ to
+        // pick the build they want, and native\ stays the bundled fallback.
         wchar_t path[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, path, MAX_PATH);
         if (auto slash = wcsrchr(path, L'\\')) *(slash + 1) = 0;
         wchar_t directory[MAX_PATH]; wcscpy_s(directory, path);
-        wcscat_s(path, L"nvngx_dlssg.dll");
-        g_fg.module = LoadLibraryW(path);
+        wchar_t libraries[MAX_PATH]; wcscpy_s(libraries, directory);
+        wcscat_s(libraries, L"libraries\\");
+        wchar_t lib_path[MAX_PATH]; wcscpy_s(lib_path, libraries);
+        wcscat_s(lib_path, L"nvngx_dlssg.dll");
+        if (GetFileAttributesW(lib_path) != INVALID_FILE_ATTRIBUTES)
+            g_fg.module = LoadLibraryW(lib_path);
+        if (!g_fg.module)
+        {
+            wcscpy_s(path, directory);
+            wcscat_s(path, L"nvngx_dlssg.dll");
+            g_fg.module = LoadLibraryW(path);
+        }
         if (!g_fg.module) { Log("[fg] nvngx_dlssg.dll load failed: %lu", GetLastError()); return false; }
         auto init = reinterpret_cast<PFN_NR_InitExt>(GetProcAddress(g_fg.module, "NVSDK_NGX_D3D12_Init_Ext"));
         g_fg.create = reinterpret_cast<PFN_NR_Create>(GetProcAddress(g_fg.module, "NVSDK_NGX_D3D12_CreateFeature"));

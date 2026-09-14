@@ -30,7 +30,6 @@ import channels
 import dialogs
 import pipeline
 import settings_io
-from library_updates import checker as library_checker
 from hotkeys import build_bindings, parse_binding
 from i18n import STRINGS as UI_STRINGS
 from paths import BASE_DIR
@@ -182,12 +181,6 @@ def apply_menu_action(st, action: tuple) -> None:
         st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
         settings_io.save_menu_layout(st)
         print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
-    elif kind == "toggle" and action[1] == "library_updates_enabled":
-        enabled = not bool(st.cfg.get("library_updates_enabled", False))
-        st.cfg["library_updates_enabled"] = enabled
-        settings_io.save_menu_layout(st)
-        if enabled:
-            library_checker.start()
     elif kind == "toggle" and action[1] == "frame_generation":
         st.cfg["frame_generation"] = not bool(st.cfg.get("frame_generation", False))
         settings_io.save_menu_layout(st)
@@ -332,8 +325,6 @@ def apply_menu_action(st, action: tuple) -> None:
             # it can be reached; resume() on a controller that was never
             # suspended posts a message nobody acts on.
             st.hotkeys.resume()
-            if getattr(st.display.menu, "page", None) == "updates":
-                st.display.menu.page = "main"
             st.display.menu.visible = False
             st.display.set_menu_opaque(False)
             st.display.set_menu_input(False)
@@ -344,12 +335,6 @@ def apply_menu_action(st, action: tuple) -> None:
             st.running = False
         elif name == "record":
             st.tray_commands.put("record")
-        elif name == "check_libraries":
-            library_checker.start()
-        elif name == "update_libraries":
-            library_checker.update_all()
-        elif name.startswith("update_library:"):
-            library_checker.update(name.split(":", 1)[1])
         elif name == "screenshot":
             st.tray_commands.put("screenshot_menu")
         elif name == "window_mode":

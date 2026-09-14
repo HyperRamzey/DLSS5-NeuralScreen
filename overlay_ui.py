@@ -175,8 +175,6 @@ class OverlayMenu:
         self.visible = False
         self.lang = "en"
         self.state: dict = {
-            "library_updates": (False, ()),
-            "library_updates_enabled": False,
             "nr": True,
             "work_scale": 1.0,
             # Where the work size hits the NGX cap. Sent by main because only it
@@ -633,26 +631,7 @@ class OverlayMenu:
         # The windows page: the full list of capturable windows, one row per
         # window. Hovering a row highlights the real window's outline on the
         # screen (main draws the frame); clicking switches the capture.
-        if self.page == "updates":
-            section(s["lib_notice"])
-            busy, libraries = self.state["library_updates"]
-            for label, installed, latest, status in libraries:
-                if status in ("current", "no_source", "newer", "unknown", "missing"):
-                    continue
-                for caption, value in ((label, installed + " → " + latest),
-                                       (s["lib_" + status], "")):
-                    items.append(Item("info", label + caption,
-                                      pygame.Rect(pad, cy, inner_w, self._u(LABEL_H)),
-                                      extra={"label": caption, "value": value}))
-                    cy += self._u(LABEL_H) + gap
-            if not busy and any(r[3] in ("update", "download_failed", "install_failed") for r in libraries):
-                items.append(Item("button", "update_libraries", pygame.Rect(pad, cy, inner_w, act_h),
-                                  extra={"label": s["lib_install"], "filled": True}))
-                cy += act_h + gap
-            items.append(Item("button", "close", pygame.Rect(pad, cy, inner_w, act_h),
-                              extra={"label": s["lib_close"], "filled": False}))
-            cy += act_h + gap
-        elif self.page == "windows":
+        if self.page == "windows":
             section(s["sec_windows"])
             wins = self.state.get("windows") or []
             if not wins:
@@ -825,30 +804,6 @@ class OverlayMenu:
                     cy += self._u(LABEL_H) + self._u(4)
                 if show and about:
                     cy += self._u(6)
-            section(s["lib_section"])
-            toggle("library_updates_enabled", s["lib_opt_in"],
-                   bool(self.state.get("library_updates_enabled")), hint=s["lib_opt_in_hint"])
-            busy, libraries = self.state.get("library_updates", (False, ()))
-            act_h = self._u(ACTION_H)
-            items.append(Item("button", "check_libraries",
-                              pygame.Rect(pad, cy, inner_w, act_h),
-                              extra={"label": s["lib_checking" if busy else "lib_check"],
-                                     "filled": False}))
-            cy += act_h + gap
-            for label, installed, latest, status in libraries:
-                for suffix, caption, value in (
-                        ("version", label, installed + (" → " + latest if latest != "?" else "")),
-                        ("status", s["lib_" + status], "")):
-                    items.append(Item("info", label + suffix,
-                                      pygame.Rect(pad, cy, inner_w, self._u(LABEL_H)),
-                                      extra={"label": caption, "value": value}))
-                    cy += self._u(LABEL_H) + gap
-                if status in ("update", "download_failed", "install_failed") and not busy and latest != "?":
-                    items.append(Item("button", "update_library:" + label,
-                                      pygame.Rect(pad, cy, inner_w, act_h),
-                                      extra={"label": s["lib_install"] + " " + label,
-                                             "filled": False}))
-                    cy += act_h + gap
             if channel:
                 act_h = self._u(ACTION_H)
                 if show:
@@ -1058,7 +1013,7 @@ class OverlayMenu:
                               extra={"label": s["back"],
                                      "filled": False}))
             cy += act_h + pad
-        elif self.page != "updates":
+        else:
             # The name and nothing else, centred: the key and the
             # explanation under it turned one button into a paragraph.
             items.append(Item("action", "exit",

@@ -529,6 +529,20 @@ static bool InitDirectNr(const wchar_t *data_path)
         dll_name = dll_path;
         Log("[pure] NS_NR_DLL=%ls", dll_name);
     }
+    else
+    {
+        // The BYO library folder wins over the bundled copy: native\libraries\
+        // is where users drop their own runtime build (see libraries/README).
+        wchar_t worker_dir[MAX_PATH] = {}, candidate[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, worker_dir, MAX_PATH);
+        if (auto slash = wcsrchr(worker_dir, L'\\')) *(slash + 1) = 0;
+        wcscat_s(worker_dir, L"libraries\\nvngx_dlssnr.dll");
+        if (GetFileAttributesW(worker_dir) != INVALID_FILE_ATTRIBUTES)
+        {
+            dll_name = worker_dir;
+            Log("[pure] NR runtime from native\\libraries\\ (BYO)");
+        }
+    }
     // NS_NO_FORWARDER=1 keeps the old shape, where the calls leave this
     // executable - which the feature library serves only while the executable
     // is named nvngx.dll. Kept for comparison, and as a way out on a machine

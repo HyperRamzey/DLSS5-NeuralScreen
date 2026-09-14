@@ -53,11 +53,10 @@ _mockup_*.py
 test_bake_menu.py
 requirements.txt
 
-native/*.part
-native/*.ready
-native/*.update.json
-native/*.update.tmp
-native/*.bak
 native/nvngx_dlss.dll
 
 native/nvngx_dlssg.dll
+
+# BYO library folder: user-placed runtime dlls never enter git
+native/libraries/*.dll
+native/libraries/*.part

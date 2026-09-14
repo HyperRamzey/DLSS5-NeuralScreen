@@ -365,7 +365,17 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
         std::lock_guard<std::mutex> lock(g_fg.mutex);
         for (auto &s : g_fg.slots) if (s.state == 0) { slot = &s; break; }
         if (!slot) for (auto &s : g_fg.slots) if (s.state == 2) { slot = &s; break; }
-        if (!slot) { WaitFenceValue(h.fence, EndCommands(), 30000); return true; }
+        if (!slot)
+        {
+            // Starvation: every slot is mid-flight. The submitted work still
+            // ends here - record its token, or PresentFrame hands the defer
+            // contract a STALE g_fg_present_fence from an earlier frame and
+            // the token-order guard kills the worker (the blink-out class).
+            const UINT64 fence = EndCommands();
+            WaitFenceValue(h.fence, fence, 30000);
+            g_fg_present_fence = fence;
+            return true;
+        }
         slot->state = 1;
     }
     // The reserved slot is invisible to the presenter until the fence completes.

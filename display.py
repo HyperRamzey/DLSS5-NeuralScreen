@@ -927,8 +927,19 @@ class Display:
         try:
             present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
             if present:
-                user32.SetWindowPos(present, -1, 0, 0, 0, 0,
-                                    0x0001 | 0x0002 | 0x0010)
+                # The worker's ReassertPresentTopmost skips its raise while
+                # the HUD sits above the picture - mirror that here. Two
+                # unconditional TOPMOST inserts every 30 frames (and on every
+                # follow step) churn the pair's z-order and read as a periodic
+                # blink while idle (flicker audit, finding 1).
+                top = user32.GetTopWindow(None)
+                if top != present:
+                    buf = ctypes.create_unicode_buffer(64)
+                    ours = top and user32.GetClassNameW(top, buf, 64) > 0 and buf.value in (
+                        "pygame", "NeuralScreenPresent")
+                    if not ours:
+                        user32.SetWindowPos(present, -1, 0, 0, 0, 0,
+                                            0x0001 | 0x0002 | 0x0010)
         except Exception:
             pass
         try:

@@ -4454,8 +4454,23 @@ static bool WgcGrab(VideoState &v)
         frame.Close();
         if (st == StageResult::SizeChanged)
         {
-            Log("[wgc] the window changed -> %ux%u, format %u - recreating",
+            // Deadband: animated resizes sweep through many intermediate
+            // sizes, and every recreate flips the display affinity twice and
+            // (with FG) restarts the presenter - the drag-resize blink. Only
+            // a size that HOLDS for a quarter second is worth a rebuild.
+            static UINT last_w = 0, last_h = 0;
+            static ULONGLONG first_seen = 0;
+            const ULONGLONG now = GetTickCount64();
+            if (new_w != last_w || new_h != last_h)
+            {
+                last_w = new_w; last_h = new_h; first_seen = now;
+                return false;  // hold the previous picture while it settles
+            }
+            if (now - first_seen < 250)
+                return false;  // still moving - wait for it to settle
+            Log("[wgc] the window settled at %ux%u, format %u - recreating",
                 new_w, new_h, (unsigned)new_format);
+            last_w = last_h = 0; first_seen = 0;
             OpenWgc(g_wgc_hwnd);
             return false;
         }

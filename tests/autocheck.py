@@ -390,7 +390,7 @@ def running_instances():
             if "pythonw.exe" in l or "nvngx.dll" in l]
 
 
-def launch():
+def launch(overrides: dict | None = None):
     """Start the program with the DEFAULT config and return the log offset.
 
     The worktree config.json is the user's live file - whatever they tweaked
@@ -398,24 +398,26 @@ def launch():
     and GUI check that launches the app "the way a user does". Tests want the
     shipped defaults: git HEAD's config.json is copied to a disposable path
     and passed with --config. The path is cleaned up at quit_app time.
+
+    overrides: a test that needs a specific launch state (menu open at
+    start, a theme) passes {key: value} - applied on top of the defaults,
+    so the user's file is never touched at all.
     """
     import json
-    import shutil
-    import tempfile
     global _test_config_path
     offset = log_offset()
     head = subprocess.run(["git", "show", "HEAD:config.json"], cwd=ROOT,
                           capture_output=True)
     cfg = json.loads(head.stdout.decode("utf-8"))
-    # The personal file keeps what the user set; the test copy starts clean
-    # at the defaults the release ships.
+    if overrides:
+        cfg.update(overrides)
     path = ROOT / "_work" / "test-config.json"
     path.parent.mkdir(exist_ok=True)
-    shutil.copyfile(ROOT / "config.json", path)
     with path.open("w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
     _test_config_path = path
-    subprocess.run(["cscript", "//nologo", "NeuralScreen.vbs", "--config", str(path)], cwd=ROOT, capture_output=True)
+    subprocess.run(["cscript", "//nologo", "NeuralScreen.vbs", "--config", str(path)],
+                   cwd=ROOT, capture_output=True)
     return offset
 
 

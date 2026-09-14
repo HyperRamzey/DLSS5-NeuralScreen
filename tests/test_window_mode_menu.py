@@ -13,10 +13,10 @@ test forces a centred offset; the panel must be visible in the centre and
 NOT at the right edge (the old corner jump is gone).
 
 The test forces a light theme, the menu-open config and a centred offset,
-and restores the user's config afterwards.
+and launches on the defaults, overriding only its own state.
 """
 import ctypes
-import json
+
 import os
 import struct
 import subprocess
@@ -90,19 +90,18 @@ def main() -> int:
         print(f"FAIL: NeuralScreen is already running ({busy}) - stop it first")
         return 1
 
-    # Force the menu-open + light theme config; restore the user's after.
-    user_cfg = json.loads(CFG.read_text(encoding="utf-8"))
-    CFG_BACKUP.write_text(json.dumps(user_cfg, indent=2), encoding="utf-8")
-    test_cfg = dict(user_cfg)
-    test_cfg["open_menu_on_start"] = True
-    test_cfg["theme"] = "light"
-    test_cfg["split"] = 0.0
-    test_cfg["nr_small"] = True
-    test_cfg["work_scale"] = 0.65
-    # A centred offset: the panel must stay where the config says, not jump
-    # to the bottom-right corner (the old place_bottom_right behaviour).
-    test_cfg["menu_offset"] = [0, 0]
-    CFG.write_text(json.dumps(test_cfg, indent=2), encoding="utf-8")
+    # Launch state on top of the shipped defaults, passed to launch():
+    # the user's config.json is never read, let alone rewritten.
+    overrides = {
+        "open_menu_on_start": True,
+        "theme": "light",
+        "split": 0.0,
+        "nr_small": True,
+        "work_scale": 0.65,
+        # A centred offset: the panel must stay where the config says, not
+        # jump to the bottom-right corner (the old place_bottom_right).
+        "menu_offset": [0, 0],
+    }
 
     restore_numlock = False
     if not numlock_on():
@@ -148,7 +147,7 @@ def main() -> int:
         return False
 
     failures = []
-    offset = autocheck.launch()
+    offset = autocheck.launch(overrides)
     try:
         if not autocheck.wait_for(offset, "NR ON | FPS", 30.0):
             print("FAIL: NeuralScreen did not start processing")
@@ -249,8 +248,6 @@ def main() -> int:
         pygame.quit()
         if restore_numlock:
             toggle_numlock()
-        # Restore the user's config.
-        CFG.write_text(json.dumps(user_cfg, indent=2), encoding="utf-8")
 
     for f in failures:
         print("FAIL:", f)

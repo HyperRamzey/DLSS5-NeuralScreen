@@ -2200,20 +2200,19 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     }
     factory->MakeWindowAssociation(g_present_hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
     factory->Release();
-    // R11: latency 1 + the waitable object. MaximumFrameLatency(1) says the
-    // swapchain holds ONE queued present; GetFrameLatencyWaitableObject then
-    // releases it to the presenter one vblank before the previous frame
-    // reaches the screen - the pacing sleep is DWM's, not ours.
+    // R11: latency 1 + the waitable object - but ONLY while Frame
+    // Generation owns the present loop. The ordinary NR path presents
+    // Present(0,0) per frame without consuming the waitable: with latency 1
+    // the swapchain would queue one present and every ordinary present
+    // would block or drop unpredictably against the compositor - the
+    // fullscreen flicker. Default latency while NR runs; latency 1 is set
+    // by FgStart (the FG thread consumes the releases) and restored to the
+    // default by FgStop.
     IDXGISwapChain2 *sc2 = nullptr;
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain2), reinterpret_cast<void **>(&sc2));
     if (SUCCEEDED(hr) && sc2 != nullptr)
-    {
-        sc2->SetMaximumFrameLatency(1);
-        g_fg_waitable = sc2->GetFrameLatencyWaitableObject();
         sc2->Release();
-    }
-    else
-        g_fg_waitable = nullptr;  // pre-8.1 or a blocked QI: the wall-clock path stays
+    g_fg_waitable = nullptr;
     hr = sc1->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void **>(&g_present_swap));
     sc1->Release();
     if (FAILED(hr) || g_present_swap == nullptr)
@@ -2339,8 +2338,16 @@ static void FollowCapturedWindow()
             if (left < r.left) left = r.left;
             if (top < r.top) top = r.top;
         }
-        SetWindowPos(g_present_hwnd, HWND_TOPMOST, left, top, w, hgt,
-                     SWP_NOACTIVATE);
+        // The raise is the client HUD raise's business (P3 ownership): a
+        // bare move keeps the window in place inside the topmost band
+        // (SWP_NOZORDER) instead of re-inserting it above the HUD on every
+        // follow step - the picture-over-HUD ping-pong read as hard
+        // flicker with the menu open.
+        const bool picture_on_top = GetTopWindow(nullptr) == g_present_hwnd;
+        SetWindowPos(g_present_hwnd,
+                     picture_on_top ? nullptr : HWND_TOPMOST,
+                     left, top, w, hgt,
+                     SWP_NOACTIVATE | (picture_on_top ? SWP_NOZORDER : 0));
     }
 }
 
@@ -2361,8 +2368,15 @@ static void ReassertPresentTopmost()
     HWND top = GetTopWindow(0);
     if (top == nullptr || top == g_present_hwnd) return;
     wchar_t cls[64];
-    if (GetClassNameW(top, cls, 64) > 0 && wcscmp(cls, L"pygame") == 0)
-        return;  // the HUD is on top - leave it there
+    // Both our windows count as "the pair is fine": the HUD class is pygame,
+    // and our own picture class must not be re-raised above - the client's
+    // HUD raise owns the HUD-over-picture order now (v1.10-review P3), and
+    // the old single-class check re-inserted the picture over the HUD every
+    // 300 frames while the client inserted the HUD back over the picture -
+    // the ping-pong read as hard flicker.
+    if (GetClassNameW(top, cls, 64) > 0
+        && (wcscmp(cls, L"pygame") == 0 || wcscmp(cls, L"NeuralScreenPresent") == 0))
+        return;  // ours on top - leave it there
     RECT r;
     if (GetWindowRect(top, &r) && r.right == r.left && r.bottom == r.top)
         return;  // zero-sized (IME, helpers) cannot cover the picture

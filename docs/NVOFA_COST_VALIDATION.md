@@ -88,10 +88,23 @@ assuming a low matching cost means the vector is correct.
 
 These are vector-level synthetic measurements on one GPU/driver at one gray
 resolution, not game FPS or final NR/FG image-quality measurements. Neither an
-optimal threshold nor a general confidence probability is established. The next
-candidate is a static-hypothesis/photometric check alongside cost, evaluated on
-the same holdouts and final rendered text before enabling it. The current CPU
-trust path provides a useful comparison, including its flat-region failure.
+optimal threshold nor a general confidence probability is established.
+
+**The static-hypothesis candidate was run and declined (R10).** The experiment
+now carries the leg: warp the previous frame by the raw NVOFA vector and keep
+the vector only where the warped match beats standing still (7x7 window,
+margin 0.5 - the CPU trust's own numbers). On the same 71 holdout pairs the
+leg removes under 1% of the vectors and moves nothing: textured static EPE
+1.4136 -> 1.4134, flat 1.2957 -> 1.2952, static 0.2369 unchanged, while the
+moving-window EPE even degrades on the fast sequence (0.0740 -> 0.1466). The
+reason is structural: the 8-bit cost already encodes photometric agreement
+per vector - the warp test re-measures the same agreement the cost table was
+built from, and where cost is wrong the warp is wrong the same way. The CPU
+DIS trust earns its keep because DIS has no cost channel at all; NVOFA has
+one, so the second test is redundant. No runtime filter ships.
+
+The current CPU trust path provides a useful comparison, including its
+flat-region failure.
 
 The official [NVIDIA programming guide](https://docs.nvidia.com/video-technologies/optical-flow-sdk/nvofa-programming-guide/index.html)
 defines higher cost as lower reliability and recommends the 8-bit format; it

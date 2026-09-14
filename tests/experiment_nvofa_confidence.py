@@ -68,6 +68,32 @@ def regions(previous, current):
     return truth, {'moving': moving, 'static': static, 'revealed': revealed}
 
 
+def static_hypothesis_ok(gray, previous, raw):
+    """The static hypothesis on the raw NVOFA vector, per flow-grid cell.
+
+    Warp the previous frame by the vector at the cell centre; keep the
+    vector where the warped match beats standing still (7x7 window,
+    margin 0.5 - the same numbers the CPU trust in guides.py was swept
+    to). Cells whose window says nothing moved at all are skipped: the
+    test is meaningless where current == previous, and zeroing those
+    vectors is free of consequence anyway.
+    """
+    grid_x, grid_y = np.meshgrid(np.arange(GW), np.arange(GH))
+    map_x = (grid_x + raw.astype(np.float32)[..., 0]).astype(np.float32)
+    map_y = (grid_y + raw.astype(np.float32)[..., 1]).astype(np.float32)
+    previous_f = previous.astype(np.float32)
+    gray_f = gray.astype(np.float32)
+    warped = cv2.remap(previous_f, map_x, map_y, cv2.INTER_LINEAR,
+                       borderMode=cv2.BORDER_REPLICATE)
+    win = (7, 7)
+    err_flow = cv2.boxFilter(cv2.absdiff(gray_f, warped), -1, win)
+    err_zero = cv2.boxFilter(cv2.absdiff(gray_f, previous_f), -1, win)
+    ok = err_flow < err_zero - 0.5
+    flat = err_zero < 1.0  # nothing moved at all: the test says nothing
+    ok[flat] = True
+    return ok
+
+
 def expand_cost(cost):
     # Largest cost among the four bilinear flow taps. Reject a contaminated
     # vector rather than interpolating a rejected neighbour into a good one.
@@ -162,6 +188,7 @@ def run_case(name, positions, textured=True):
             cost = np.fromfile(output/f'cost-{index:04d}.bin', np.uint8).reshape(GH//4, GW//4)
             if index == 0:
                 assert not mv.any(), 'reset must emit zero motion'
+                previous_gray = gray
                 continue
             truth, masks = regions(positions[index-1], positions[index])
             expanded_cost = expand_cost(cost)
@@ -180,6 +207,16 @@ def run_case(name, positions, textured=True):
                 item['bad_recall'] = float((rejected & bad & valid).sum()/max(1, (bad & valid).sum()))
                 item['good_rejected'] = float((rejected & ~bad & valid).sum()/max(1, (~bad & valid).sum()))
                 row['filtered'][str(threshold)] = item
+            # Static-hypothesis leg (R10): warp the previous frame by the raw
+            # vector; keep the vector where the warped match beats standing
+            # still (window-averaged, margin - the same numbers the CPU trust
+            # was swept to).
+            static_ok = static_hypothesis_ok(gray, previous_gray, raw)
+            keep = static_ok[:, :, None]  # one verdict per flow-grid cell
+            row['filtered']['static'] = metrics(np.where(keep, raw, 0.0),
+                                                truth, masks)
+            row['static_rejected'] = float((~static_ok).mean())
+            previous_gray = gray
             rows.append(row)
         p.stdin.close(); p.wait(timeout=10)
         assert p.returncode == 0, p.returncode

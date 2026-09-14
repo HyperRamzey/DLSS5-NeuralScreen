@@ -2360,15 +2360,25 @@ class OverlayMenu:
             surface.blit(img, (item.rect.right - img.get_width(),
                                item.rect.centery - img.get_height() // 2))
             return
-        pygame.draw.rect(surface, _rgb(self.c["surface"]), item.rect,
-                         border_radius=self._u(RADIUS // 2))
+        # "filled": the active choice inside an inline group (the FG
+        # multiplier) reads as a selected segment - accent background, the
+        # label on it - and NOT as a hover state, so the selection stays
+        # visible with the cursor elsewhere (user 14.09: the active
+        # multiplier was invisible, the renderer had no filled handling).
+        filled = bool(item.extra.get("filled")) and not disabled
+        small = bool(item.extra.get("small"))
         pygame.draw.rect(surface,
-                         _rgb(self.c["accent"] if hot and not disabled
+                         _rgb(self.c["accent"] if filled else self.c["surface"]),
+                         item.rect, border_radius=self._u(RADIUS // 2))
+        pygame.draw.rect(surface,
+                         _rgb(self.c["accent"] if (hot and not disabled) or filled
                               else self.c["border"]),
                          item.rect, self._u(1), border_radius=self._u(RADIUS // 2))
-        label = self._clip(self._font, item.extra.get("label", item.key),
-                           _rgb(self.c["muted"] if disabled
+        label = self._clip(self._small_font if small else self._font,
+                           item.extra.get("label", item.key),
+                           _rgb(self.c["bg"] if filled
+                                else self.c["muted"] if disabled
                                 else item.extra.get("color", self.c["text"])),
-                           item.rect.w - self._u(16))
+                           item.rect.w - self._u(12 if small else 16))
         surface.blit(label, (item.rect.centerx - label.get_width() // 2,
                              item.rect.centery - label.get_height() // 2))

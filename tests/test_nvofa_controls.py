@@ -23,6 +23,15 @@ import tempfile
 
 
 def main():
+    native = (ROOT / "native" / "nvofa.inl").read_text(encoding="utf-8-sig")
+    dump = native.split("static void DumpNvofa(VideoState &v)", 2)[-1]
+    assert "if (!pair.first) continue;" in dump, \
+        "an ordinary NVOFA dump must skip the opt-in cost texture when absent"
+    confidence = (ROOT / "tests" / "experiment_nvofa_confidence.py").read_text(
+        encoding="utf-8")
+    assert "NS_NVOFA_COST='1'" in confidence, \
+        "the confidence experiment reads cost files and must request the channel"
+
     assert all(normalize_backend(v) == "cpu" for v in [None, {}, [], 1, "gpu", "CPU"])
     assert normalize_backend("nvofa") == "nvofa"
     assert _payload()["motion_backend"] == "cpu"

@@ -18,6 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent  # the project root (tests/ lives inside it)
 FAILS = []
 
+NATIVE = ROOT / "native"
+NATIVE_INCLUDE_DIRS = (NATIVE, NATIVE / "include", NATIVE / "src")
+NATIVE_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s*([<"])([^>"]+)[>"]', re.MULTILINE)
+
 
 def check(name, fn):
     try:
@@ -31,30 +36,92 @@ def check(name, fn):
         print(f"[FAIL] {name}: exception {exc!r}")
 
 
+def native_include_closure(entry_points):
+    """Return every existing project-local file reached by quoted includes."""
+    native_root = NATIVE.resolve()
+    pending = [Path(path).resolve() for path in entry_points]
+    seen = set()
+    while pending:
+        source = pending.pop()
+        if source in seen or not source.is_file():
+            continue
+        seen.add(source)
+        text = source.read_text(encoding="utf-8-sig", errors="replace")
+        for delimiter, include in NATIVE_INCLUDE_RE.findall(text):
+            candidates = [] if delimiter == "<" else [source.parent / include]
+            candidates.extend(folder / include for folder in NATIVE_INCLUDE_DIRS)
+            for candidate in candidates:
+                resolved = candidate.resolve()
+                try:
+                    resolved.relative_to(native_root)
+                except ValueError:
+                    continue
+                if resolved.is_file():
+                    pending.append(resolved)
+                    break
+    return seen
+
+
 def fresh_worker():
-    """nvngx.dll is built after the last commit and contains the hook."""
-    dll = ROOT / "native" / "nvngx.dll"
-    if not dll.exists():
-        return False, "no native/nvngx.dll"
-    data = dll.read_bytes()
-    if b"NS_ARCH_SPOOF" not in data:
-        return False, "no NS_ARCH_SPOOF in the binary (an old build?)"
-    # freshness: the mtime must not be older than any source it is built
-    # from. The .cpp is not alone any more - the HDR path lives in headers
-    # and an .inl included by it, and editing one of those without a
-    # rebuild leaves a binary that disagrees with the tree in silence.
-    sources = [ROOT / "native" / "dlss5-feed-host64.cpp",
-               ROOT / "native" / "hdr_display.h",
-               ROOT / "native" / "hdr_shaders.h",
-               ROOT / "native" / "hdr_present.inl",
-               ROOT / "native" / "ns_forwarder.cpp",
-               ROOT / "native" / "spout_bridge.cpp",
-               ROOT / "native" / "spout_bridge.h"]
-    stale = [s.name for s in sources
-             if s.exists() and dll.stat().st_mtime < s.stat().st_mtime]
-    if stale:
-        return False, f"the dll is older than {', '.join(stale)} - rerun build-host.bat"
-    return True, f"{dll.stat().st_size} bytes, the hook is there, fresh"
+    """Native binaries are newer than all of their local build inputs."""
+    build_script = NATIVE / "build-host.bat"
+    host_roots = [NATIVE / "dlss5-feed-host64.cpp",
+                  NATIVE / "spout_bridge.cpp"]
+    forwarder_roots = [NATIVE / "ns_forwarder.cpp"]
+    required_inputs = host_roots + forwarder_roots + [build_script]
+    missing = [path.relative_to(ROOT).as_posix() for path in required_inputs
+               if not path.is_file()]
+    if missing:
+        return False, f"missing native build inputs: {', '.join(missing)}"
+
+    host_inputs = native_include_closure(host_roots)
+    host_inputs.update({build_script,
+                        NATIVE / "SpoutDX.lib",
+                        NATIVE / "lib" / "Windows_x86_64" / "x64" /
+                        "nvsdk_ngx_d.lib"})
+    forwarder_inputs = native_include_closure(forwarder_roots)
+    forwarder_inputs.add(build_script)
+
+    # These used to be outside the hand-written freshness list. Keep a small
+    # contract here as a regression guard for the scanner itself; future
+    # quoted includes are picked up automatically.
+    expected_host_inputs = {
+        NATIVE / "dll_trust.h",
+        NATIVE / "frame_generation.inl",
+        NATIVE / "hdr_present.inl",
+        NATIVE / "nvofa.inl",
+        NATIVE / "quality_shaders.h",
+        NATIVE / "src" / "feed_ipc.h",
+    }
+    missed = expected_host_inputs - host_inputs
+    if missed:
+        names = sorted(path.relative_to(ROOT).as_posix() for path in missed)
+        return False, f"native dependency scan missed: {', '.join(names)}"
+
+    outputs = [
+        ("worker", NATIVE / "nvngx.dll", host_inputs),
+        ("forwarder", NATIVE / "nvngx.dll_ns-forwarder.dll", forwarder_inputs),
+    ]
+    details = []
+    for label, binary, dependencies in outputs:
+        if not binary.is_file():
+            return False, f"no {binary.relative_to(ROOT).as_posix()}"
+        absent = [path.relative_to(ROOT).as_posix() for path in dependencies
+                  if not path.is_file()]
+        if absent:
+            return False, f"missing {label} build inputs: {', '.join(sorted(absent))}"
+        stale = [path.relative_to(ROOT).as_posix() for path in dependencies
+                 if binary.stat().st_mtime_ns < path.stat().st_mtime_ns]
+        if stale:
+            return False, (f"{label} is older than {', '.join(sorted(stale))} "
+                           "- rerun build-host.bat")
+        details.append(f"{label}: {len(dependencies)} inputs")
+
+    dll = NATIVE / "nvngx.dll"
+    if b"NS_ARCH_SPOOF" not in dll.read_bytes():
+        return False, "no NS_ARCH_SPOOF in the worker (an old build?)"
+    return True, (f"{dll.stat().st_size} bytes, the hook is there; "
+                  + ", ".join(details) + ", fresh")
 
 
 def personal_config_keys():

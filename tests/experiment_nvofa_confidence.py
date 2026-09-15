@@ -132,7 +132,8 @@ def run_case(name, positions, textured=True):
         pygame.display.flip()
     show(frames[0])
     env = dict(os.environ, NS_HDR='0', NS_FRAMEGEN='0', NS_NR_SMALL='0',
-               NS_MOTION_BACKEND='nvofa', NS_NVOFA_DUMP=str(output))
+               NS_MOTION_BACKEND='nvofa', NS_NVOFA_DUMP=str(output),
+               NS_NVOFA_COST='1')
     env.pop('NS_NVOFA_TEST_FAIL_AT', None)
     p = subprocess.Popen([str(ROOT/'native/nvngx.dll'), '--live'], cwd=ROOT/'native', env=env,
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

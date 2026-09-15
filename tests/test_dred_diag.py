@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
+
 BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -38,8 +40,19 @@ def main() -> int:
         deadline = time.time() + 30
         dred_line = None
         nr_line = None
+        offset = 0
+        tail = ""
         while time.time() < deadline:
-            text = LOG.read_text(encoding="utf-8", errors="replace")
+            # Read only what the process appended. A persistent capture
+            # failure used to make the application log/recreate in a tight
+            # loop; loading the complete growing log every 500 ms amplified
+            # that failure and could itself raise MemoryError.
+            with LOG.open("r", encoding="utf-8", errors="replace") as stream:
+                stream.seek(offset)
+                chunk = stream.read()
+                offset = stream.tell()
+            text = tail + chunk
+            tail = text[-4096:]
             if dred_line is None:
                 m = re.search(r"\[host\] DRED (breadcrumbs enabled|settings unavailable)",
                               text)
@@ -51,16 +64,30 @@ def main() -> int:
                 break
             time.sleep(0.5)
     finally:
-        proc.terminate()
+        # Capture the descendants while the parent still exists. Terminating
+        # python.exe first orphaned nvngx.dll, and killing by image name could
+        # also stop a worker that did not belong to this test.
+        try:
+            parent = psutil.Process(proc.pid)
+            owned = parent.children(recursive=True) + [parent]
+        except (psutil.Error, ProcessLookupError):
+            owned = []
+        for child in reversed(owned):
+            try:
+                child.terminate()
+            except psutil.Error:
+                pass
+        _gone, alive = psutil.wait_procs(owned, timeout=5)
+        for child in alive:
+            try:
+                child.kill()
+            except psutil.Error:
+                pass
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-        # terminate() kills only python.exe - the worker (nvngx.dll) is a
-        # child of main.py and survives, which makes the next GUI test fail
-        # with "NeuralScreen is already running". Kill it by name.
-        subprocess.run(["taskkill", "/F", "/IM", "nvngx.dll"],
-                       capture_output=True)
+            proc.wait()
 
     if dred_line is None:
         failures.append("no DRED line in the log at all")

@@ -10,7 +10,10 @@ Checks:
 * the MACK ack comes back ok=1;
 * frames with the small motion flag still come back at the full size;
 * the frames are real pictures (the upscaled motion did not break NGX).
+* DDA/WGC does not move full-size MV to COPY_DEST before the small-motion
+  scaler declares its UAV transition.
 """
+import re
 import struct
 import subprocess
 import sys
@@ -86,6 +89,22 @@ def send_frame(worker, index: int, frame: np.ndarray, motion: np.ndarray,
 
 def main() -> int:
     failures = []
+    source = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
+        encoding="utf-8-sig")
+    motion_only = source.split(
+        "static bool UploadMotionOnly", 1)[-1].split(
+        "// ---------------------------------------------------------------------------", 1)[0]
+    guarded_copy = re.search(
+        r"if\s*\(\s*v\.inputs_ready\s*&&\s*!motion_small\s*\)\s*\{"
+        r".*?Transition\(v\.mv\.tex,\s*"
+        r"D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,\s*"
+        r"D3D12_RESOURCE_STATE_COPY_DEST\)",
+        motion_only, re.DOTALL)
+    if not guarded_copy:
+        failures.append(
+            "UploadMotionOnly must reserve SRV->COPY_DEST for full-size motion; "
+            "ScaleMotionInto owns the small-motion UAV transition")
+
     params = dict(PROFILES["Strong / Cinematic"])
     header = struct.pack(HEADER_FMT, VIDEO_MAGIC, WORK_W, WORK_H, WARMUP, 0,
                          0, 0, int(params["style"]), int(params["auto_mask"]),

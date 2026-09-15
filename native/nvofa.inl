@@ -254,6 +254,9 @@ static void DumpNvofa(VideoState &v)
     char folder[MAX_PATH]={}; if(!GetEnvironmentVariableA("NS_NVOFA_DUMP",folder,MAX_PATH)) return;
     auto &f=g_nvofa;
     for (auto pair : {std::make_pair(f.flow.get(),"flow"),std::make_pair(f.cost.get(),"cost"),std::make_pair(v.mv.tex,"motion")}) {
+        // Cost output is opt-in. A plain quality dump still needs flow and
+        // expanded motion, and must not dereference the absent cost texture.
+        if (!pair.first) continue;
         auto desc=pair.first->GetDesc();D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};UINT rows;UINT64 rowbytes,bytes;
         h.dev->GetCopyableFootprints(&desc,0,1,0,&fp,&rows,&rowbytes,&bytes);
         D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_READBACK;

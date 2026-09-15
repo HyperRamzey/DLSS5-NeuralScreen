@@ -151,6 +151,21 @@ from protocol import (  # noqa: F401
 FPS_LOG_INTERVAL = 2.0  # seconds, FPS log to the console
 PERF_LOG_INTERVAL = 5.0  # seconds, log of the mean pipeline stage timings
 PERF_KEYS = ("grab", "resize_full", "guides", "send", "recv", "show")
+MAX_CONSECUTIVE_CAPTURE_FAILURES = 3
+CAPTURE_RETRY_BACKOFF = 30.0
+CAPTURE_FAILURE_IDLE = 0.05
+
+
+def _next_capture_failure(failures: int, now: float) -> tuple[int, float]:
+    """Advance the bounded capture-recovery state.
+
+    A zero deadline means another immediate recreation is allowed. A nonzero
+    deadline quarantines the capture until that monotonic time.
+    """
+    failures += 1
+    if failures >= MAX_CONSECUTIVE_CAPTURE_FAILURES:
+        return 0, now + CAPTURE_RETRY_BACKOFF
+    return failures, 0.0
 
 
 def _resize_interp(src: np.ndarray, dst_w: int, dst_h: int) -> int:
@@ -368,33 +383,85 @@ def main() -> int:
     try:
         startup.bring_up(st)
 
+        capture_failures = 0
+        capture_retry_at = 0.0
+        capture_owner = st.capture
 
         def _recreate_capture() -> None:
             """Recreate the capture (a fresh DDA session) after a failure or mode change."""
+            nonlocal capture_owner
             try:
                 st.capture.close()
             except Exception:
                 pass
             st.capture = ScreenCapture(monitor_idx=st.monitor)
+            capture_owner = st.capture
 
         def _safe_grab() -> np.ndarray | None:
-            """grab() that recreates the capture on failure.
+            """Grab with a bounded recreation budget and quarantine backoff.
 
             Launching a game in fullscreen invalidates Desktop Duplication
             (DXGI_ERROR_ACCESS_LOST / a mode change) - dxcam may raise instead
-            of returning None. We recreate the DDA session and return None (the
-            loop skips the iteration).
+            of returning None. Two fresh sessions are tried immediately. A
+            persistent failure then gets one probe per backoff instead of an
+            allocation/logging loop that can exhaust memory. A monitor or
+            window switch replaces the capture object and clears the gate.
             """
-            try:
-                return st.capture.grab()
-            except Exception as exc:
-                print(f"[main] capture failed ({exc}) - recreating the DDA session")
+            nonlocal capture_failures, capture_retry_at, capture_owner
+            now = time.monotonic()
+            if st.capture is not capture_owner:
+                capture_owner = st.capture
+                capture_failures = 0
+                capture_retry_at = 0.0
+
+            probing = capture_retry_at > 0.0
+            if probing:
+                if now < capture_retry_at:
+                    time.sleep(min(CAPTURE_FAILURE_IDLE, capture_retry_at - now))
+                    return None
+                print("[main] retrying capture after the recovery backoff")
                 try:
                     _recreate_capture()
-                except Exception as exc2:
-                    print(f"[main] recreating the capture failed: {exc2}",
-                          file=sys.stderr)
+                except Exception as exc:
+                    capture_retry_at = now + CAPTURE_RETRY_BACKOFF
+                    print(f"[main] capture retry failed ({exc}) - next probe in "
+                          f"{CAPTURE_RETRY_BACKOFF:.0f}s", file=sys.stderr)
+                    time.sleep(CAPTURE_FAILURE_IDLE)
+                    return None
+                capture_retry_at = 0.0
+                # A probe gets one real grab, not another burst of immediate
+                # recreations when the underlying failure is still present.
+                capture_failures = MAX_CONSECUTIVE_CAPTURE_FAILURES - 1
+
+            try:
+                frame = st.capture.grab()
+            except Exception as exc:
+                capture_failures, blocked_until = _next_capture_failure(
+                    capture_failures, now)
+                if blocked_until:
+                    capture_retry_at = blocked_until
+                    try:
+                        st.capture.close()
+                    except Exception:
+                        pass
+                    print(f"[main] capture failed repeatedly ({exc}) - paused for "
+                          f"{CAPTURE_RETRY_BACKOFF:.0f}s", file=sys.stderr)
+                else:
+                    print(f"[main] capture failed ({exc}) - recreating the session "
+                          f"({capture_failures}/{MAX_CONSECUTIVE_CAPTURE_FAILURES})")
+                    try:
+                        _recreate_capture()
+                    except Exception as exc2:
+                        print(f"[main] recreating the capture failed: {exc2}",
+                              file=sys.stderr)
+                time.sleep(CAPTURE_FAILURE_IDLE)
                 return None
+            if frame is not None:
+                if capture_failures or probing:
+                    print("[main] capture recovered")
+                capture_failures = 0
+                capture_retry_at = 0.0
+            return frame
 
 
         # The loop's own state, next to the loop that owns it.

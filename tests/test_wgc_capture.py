@@ -48,9 +48,11 @@ except Exception:
 
 from main import (FRAME_FLAG_NO_COLOR, FRAME_FLAG_WANT_PIXELS,  # noqa: E402
                   FRAME_FMT, FRAME_MAGIC, HEADER_FMT, OUT_FMT, OUT_MAGIC,
-                  PROFILES, VIDEO_MAGIC, WORKER_EXE)
+                  PROFILES, RACK_FMT, RESIZE_ACK_MAGIC, RESIZE_FMT,
+                  RESIZE_MAGIC, VIDEO_MAGIC, WORKER_EXE)
 
 W, H = 960, 540
+RESIZED_W, RESIZED_H = 800, 450
 WARMUP = 8
 
 # WGCW: capture one window. Mirrors VideoWgcCmd / VideoWgcAck in the worker.
@@ -97,7 +99,7 @@ def send_capture_frame(worker, index: int, motion: np.ndarray) -> None:
     worker.stdin.flush()
 
 
-def recv_result(worker):
+def recv_result(worker, width=W, height=H):
     """The result pixels, or None when the worker had no captured frame yet."""
     head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
     magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
@@ -106,10 +108,53 @@ def recv_result(worker):
     if not ok or nbytes == 0:
         return None                      # nothing captured yet - try again
     data = read_exact(worker.stdout, nbytes)
-    return np.frombuffer(data, dtype=np.uint8).reshape(H, W, 4).copy()
+    return np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4).copy()
+
+
+def send_resize(worker, width: int, height: int, params: dict) -> bool:
+    worker.stdin.write(struct.pack(
+        RESIZE_FMT, RESIZE_MAGIC, width, height, WARMUP, 0, 0, 0,
+        int(params["style"]), int(params["auto_mask"]),
+        int(params.get("ui_correction", 0)), float(params["intensity"]),
+        float(params["local_tone"]), float(params["local_structure"]),
+        float(params["skin_structure"]), 0, 0))
+    worker.stdin.flush()
+    ack = read_exact(worker.stdout, struct.calcsize(RACK_FMT))
+    magic, ok, _ngx, _reserved, _pts = struct.unpack(RACK_FMT, ack)
+    if magic != RESIZE_ACK_MAGIC:
+        raise AssertionError(f"foreign reply to RNSZ: 0x{magic:08X}")
+    return bool(ok)
+
+
+def check_source_contract() -> None:
+    source = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
+        encoding="utf-8-sig")
+    open_wgc = source.split("static bool OpenWgc(HWND hwnd)", 1)[1].split(
+        "static void RecreateWgcPool", 1)[0]
+    assert open_wgc.index("winrt::init_apartment") < open_wgc.index(
+        "GraphicsCaptureSession::IsSupported"), \
+        "the WGC support query must run after WinRT apartment initialization"
+    grab = source.split("static bool WgcGrab(VideoState &v)", 1)[1].split(
+        "static bool UploadVideoFrame", 1)[0]
+    assert "frame.ContentSize()" in grab, \
+        "WGC resize detection must use ContentSize, not the old pool surface"
+    assert "RecreateWgcPool(g_wgc->pending_w, g_wgc->pending_h)" in grab, \
+        "a static window must finish a pending resize without another frame"
+    recreate = source.split("static void RecreateWgcPool", 1)[1].split(
+        "static bool WgcGrab", 1)[0]
+    assert "g_wgc->pool.Recreate(" in recreate and "CloseCaptureBridge();" in recreate, \
+        "a WGC resize must recreate the frame pool and size-dependent bridge"
+    print("OK: WGC initializes WinRT first and recreates its pool from ContentSize")
 
 
 def main() -> int:
+    try:
+        check_source_contract()
+    except (AssertionError, IndexError) as exc:
+        print("FAIL:", exc)
+        return 1
+    if "--source-only" in sys.argv:
+        return 0
     if not WORKER_EXE.is_file():
         print(f"FAIL: worker not found: {WORKER_EXE}")
         return 1
@@ -203,6 +248,31 @@ def main() -> int:
             failures.append(f"the frames are not the window's content "
                             f"(median only {share * 100:.1f}% of pixels match it)")
 
+        # Resize the existing HWND, then rebuild the video resources to the
+        # same dimensions. WGC keeps handing out old-size surfaces until the
+        # frame pool is explicitly recreated from frame.ContentSize().
+        resized = ctypes.windll.user32.SetWindowPos(
+            ctypes.c_void_p(hwnd), None, 0, 0, RESIZED_W, RESIZED_H,
+            0x0002 | 0x0004 | 0x0010)  # NOMOVE | NOZORDER | NOACTIVATE
+        if not resized:
+            failures.append("SetWindowPos could not resize the WGC target")
+        elif not send_resize(worker, RESIZED_W, RESIZED_H, params):
+            failures.append("the worker refused the matching video resize")
+        else:
+            resized_motion = np.zeros((RESIZED_H, RESIZED_W, 2), dtype=np.float16)
+            resized_pixels = None
+            for i in range(80):
+                repaint(100 + i)
+                send_capture_frame(worker, 100 + i, resized_motion)
+                got = recv_result(worker, RESIZED_W, RESIZED_H)
+                if got is not None:
+                    resized_pixels = got
+                time.sleep(0.01)
+            if resized_pixels is None:
+                failures.append("no pixels arrived after the captured window resize")
+            else:
+                print(f"WGC resize: pipeline returned {RESIZED_W}x{RESIZED_H} pixels")
+
         off_ok, _w, _h = send_wgc(worker, 0)
         print(f"WGCW off: ok={off_ok}")
         if not off_ok:
@@ -210,14 +280,23 @@ def main() -> int:
     finally:
         try:
             worker.stdin.close()
-        except Exception:
+        except (OSError, BrokenPipeError):
             pass
-        worker.wait(timeout=10)
+        try:
+            worker.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            worker.kill()
+            worker.wait()
         pygame.quit()
         err = worker.stderr.read().decode("utf-8", "replace")
         tail = [l for l in err.splitlines() if "[wgc]" in l or "[cap]" in l]
         if tail:
             print("worker log:", " | ".join(tail[-4:]))
+
+    resize_marker = (f"[wgc] frame pool recreated for ContentSize "
+                     f"{RESIZED_W}x{RESIZED_H}")
+    if resize_marker not in err:
+        failures.append("WGC did not recreate its frame pool after ContentSize changed")
 
     if failures:
         for f in failures:

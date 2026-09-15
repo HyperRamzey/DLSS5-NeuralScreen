@@ -3441,29 +3441,33 @@ static void CloseGray()
     g_gray_pitch = 0;
 }
 
-static void CloseDda()
+// Release the size/format-dependent bridge while leaving the capture source,
+// D3D11 device and context alive. WGC uses this when its frame pool is
+// recreated for a new ContentSize; DDA uses it for an in-place format change.
+static void CloseCaptureBridge()
 {
-    if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
-    CloseFgResources();
-    g_dda_active = false;
     g_dda_ready = false;
     g_hdr_capture = false;
     g_capture_float = false;
     CloseHdrResources();
     if (g_dda_d12) { g_dda_d12->Release(); g_dda_d12 = nullptr; }
     if (g_dda_nt)  { CloseHandle(g_dda_nt); g_dda_nt = nullptr; }
+    if (g_dda_signal) { g_dda_signal->Release(); g_dda_signal = nullptr; }
+    if (g_dda_signal11) { g_dda_signal11->Release(); g_dda_signal11 = nullptr; }
+    if (g_dda_dst) { g_dda_dst->Release(); g_dda_dst = nullptr; }
     if (g_dda_shared) { g_dda_shared->Release(); g_dda_shared = nullptr; }
+}
+
+static void CloseDda()
+{
+    if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
+    CloseFgResources();
+    g_dda_active = false;
+    CloseCaptureBridge();
     if (g_dda_dup) { g_dda_dup->Release(); g_dda_dup = nullptr; }
     if (g_dda_ctx) { g_dda_ctx->Release(); g_dda_ctx = nullptr; }
     if (g_dda_d11) { g_dda_d11->Release(); g_dda_d11 = nullptr; }
-    if (g_dda_signal) { g_dda_signal->Release(); g_dda_signal = nullptr; }
-    if (g_dda_signal11) { g_dda_signal11->Release(); g_dda_signal11 = nullptr; }
     if (g_dda_fence_ev) { CloseHandle(g_dda_fence_ev); g_dda_fence_ev = nullptr; }
-    // The swizzle destination is created together with the shared texture
-    // (inside the same "first frame" block); it must die with the chain,
-    // otherwise a resolution change would keep the old-sized dst and the
-    // swizzle would copy into a stale resource.
-    if (g_dda_dst) { g_dda_dst->Release(); g_dda_dst = nullptr; }
 }
 
 // Compute pipeline to swizzle BGRA->RGBA (the DDA frame and v.color are both
@@ -4251,13 +4255,7 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
             // on this path and they must not survive it.
             Log("[cap] capture format %u -> %u - rebuilding the bridge",
                 (unsigned)sd.Format, (unsigned)fd.Format);
-            CloseHdrResources();
-            if (g_dda_d12) { g_dda_d12->Release(); g_dda_d12 = nullptr; }
-            if (g_dda_nt)  { CloseHandle(g_dda_nt); g_dda_nt = nullptr; }
-            if (g_dda_signal) { g_dda_signal->Release(); g_dda_signal = nullptr; }
-            if (g_dda_signal11) { g_dda_signal11->Release(); g_dda_signal11 = nullptr; }
-            if (g_dda_dst) { g_dda_dst->Release(); g_dda_dst = nullptr; }
-            if (g_dda_shared) { g_dda_shared->Release(); g_dda_shared = nullptr; }
+            CloseCaptureBridge();
             return StageResult::FormatChanged;
         }
         D3D11_BOX box = { 0, 0, 0, sd.Width, sd.Height, 1 };
@@ -4302,12 +4300,7 @@ fail_capture:
     // would be copied into and then dereferenced as NULL on the next frame.
     // Tear down ONLY the bridge - the source (dup/wgc, ctx, d11) stays up,
     // so the next StageCapturedFrame rebuilds the channel from scratch.
-    if (g_dda_d12) { g_dda_d12->Release(); g_dda_d12 = nullptr; }
-    if (g_dda_nt)  { CloseHandle(g_dda_nt); g_dda_nt = nullptr; }
-    if (g_dda_signal) { g_dda_signal->Release(); g_dda_signal = nullptr; }
-    if (g_dda_signal11) { g_dda_signal11->Release(); g_dda_signal11 = nullptr; }
-    if (g_dda_dst) { g_dda_dst->Release(); g_dda_dst = nullptr; }
-    if (g_dda_shared) { g_dda_shared->Release(); g_dda_shared = nullptr; }
+    CloseCaptureBridge();
     return StageResult::Failed;
 }
 
@@ -4486,6 +4479,9 @@ struct WgcSession
     ns_wgc::GraphicsCaptureSession session{nullptr};
     ns_wgdx::Direct3D11::IDirect3DDevice device{nullptr};
     bool hdr = false;
+    UINT pool_w = 0, pool_h = 0;
+    UINT pending_w = 0, pending_h = 0;
+    ULONGLONG pending_since = 0;
 };
 
 static WgcSession *g_wgc = nullptr;   // g_wgc_active / g_wgc_hwnd live up with the present window
@@ -4532,14 +4528,24 @@ static bool OpenWgc(HWND hwnd)
     CloseWgc();
     if (hwnd == nullptr) { Log("[wgc] window capture off"); return true; }
     if (!IsWindow(hwnd)) { Log("[wgc] %p is not a window", (void *)hwnd); return false; }
-    if (!ns_wgc::GraphicsCaptureSession::IsSupported())
-    { Log("[wgc] Windows Graphics Capture is not supported here"); return false; }
-    if (!EnsureDdaSwizzle()) return false;
-    if (!EnsureCaptureDevice()) return false;
-    // WinRT needs an apartment on this thread. The worker initialises none of
-    // its own; a second call on an already-initialised MTA throws and is fine.
+    // No WinRT API may run before this thread owns an apartment. IsSupported
+    // used to be called first and outside a try block; on a process where no
+    // dependency happened to initialise COM for us, C++/WinRT terminated the
+    // worker with 0xC0000409 before WGC could even log a refusal.
     try { winrt::init_apartment(winrt::apartment_type::multi_threaded); }
     catch (winrt::hresult_error const &) {}
+    try
+    {
+        if (!ns_wgc::GraphicsCaptureSession::IsSupported())
+        { Log("[wgc] Windows Graphics Capture is not supported here"); return false; }
+    }
+    catch (winrt::hresult_error const &e)
+    {
+        Log("[wgc] support query threw 0x%08X", (unsigned)e.code());
+        return false;
+    }
+    if (!EnsureDdaSwizzle()) return false;
+    if (!EnsureCaptureDevice()) return false;
 
     WgcSession *s = new WgcSession();
     try
@@ -4569,6 +4575,8 @@ static bool OpenWgc(HWND hwnd)
         s->pool = ns_wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
             s->device, s->hdr ? ns_wgdx::DirectXPixelFormat::R16G16B16A16Float
                                     : ns_wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
+        s->pool_w = (UINT)size.Width;
+        s->pool_h = (UINT)size.Height;
         s->session = s->pool.CreateCaptureSession(s->item);
         try { s->session.IsCursorCaptureEnabled(false); }
         catch (winrt::hresult_error const &) { Log("[wgc] cursor capture stays on"); }
@@ -4597,6 +4605,31 @@ static bool OpenWgc(HWND hwnd)
         delete s;
         return false;
     }
+}
+
+static void RecreateWgcPool(UINT width, UINT height)
+{
+    winrt::Windows::Graphics::SizeInt32 size = {};
+    size.Width = static_cast<int32_t>(width);
+    size.Height = static_cast<int32_t>(height);
+    CloseFgResources();
+    CloseCaptureBridge();
+    g_wgc->pool.Recreate(
+        g_wgc->device,
+        g_wgc->hdr ? ns_wgdx::DirectXPixelFormat::R16G16B16A16Float
+                   : ns_wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+        2, size);
+    g_wgc->pool_w = g_dda_w = width;
+    g_wgc->pool_h = g_dda_h = height;
+    g_wgc->pending_w = g_wgc->pending_h = 0;
+    g_wgc->pending_since = 0;
+    // Do not let the WANT_PIXELS dry-spell recovery replace the pool we just
+    // recreated with a full CloseWgc/OpenWgc cycle. One successful frame
+    // clears this flag again in SwizzleCaptureIntoColor.
+    g_no_colour_retried = true;
+    if (PhaseEnabled())
+    { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
+    Log("[wgc] frame pool recreated for ContentSize %ux%u", width, height);
 }
 
 // Grab the latest frame of the captured WINDOW into v.color.tex.
@@ -4640,9 +4673,49 @@ static bool WgcGrab(VideoState &v)
         // Nothing new: the window has not redrawn. Same meaning as
         // DXGI_ERROR_WAIT_TIMEOUT on the duplication path - the caller keeps
         // the previous frame.
-        if (frame == nullptr) return false;
+        if (frame == nullptr)
+        {
+            // A static window may emit only one final resize frame. Complete
+            // the debounced recreation even if no second frame arrives.
+            if (g_wgc->pending_since != 0 &&
+                GetTickCount64() - g_wgc->pending_since >= 250)
+                RecreateWgcPool(g_wgc->pending_w, g_wgc->pending_h);
+            return false;
+        }
         ProfileCapture(t_acq, 0, "wgc");
         g_capture_visual_changed = true;
+
+        // A WGC surface keeps the dimensions used to create the frame pool.
+        // After a window resize only ContentSize changes; looking at the
+        // texture descriptor therefore leaves the old pool alive forever.
+        // Wait for an animated resize to settle, then recreate only the pool
+        // and its size-dependent bridge. The capture item/session stay live.
+        const auto content = frame.ContentSize();
+        if (content.Width <= 0 || content.Height <= 0)
+        { frame.Close(); return false; }
+        const UINT content_w = (UINT)content.Width;
+        const UINT content_h = (UINT)content.Height;
+        if (content_w != g_wgc->pool_w || content_h != g_wgc->pool_h)
+        {
+            const ULONGLONG now = GetTickCount64();
+            if (content_w != g_wgc->pending_w || content_h != g_wgc->pending_h)
+            {
+                g_wgc->pending_w = content_w;
+                g_wgc->pending_h = content_h;
+                g_wgc->pending_since = now;
+                frame.Close();
+                return false;
+            }
+            if (now - g_wgc->pending_since < 250)
+            { frame.Close(); return false; }
+
+            frame.Close();
+            RecreateWgcPool(content_w, content_h);
+            return false;
+        }
+        g_wgc->pending_w = g_wgc->pending_h = 0;
+        g_wgc->pending_since = 0;
+
         auto access = frame.Surface().as<INsDxgiInterfaceAccess>();
         ID3D11Texture2D *tex = nullptr;
         if (FAILED(access->GetInterface(__uuidof(ID3D11Texture2D), (void **)&tex)) ||
@@ -4655,24 +4728,15 @@ static bool WgcGrab(VideoState &v)
         frame.Close();
         if (st == StageResult::SizeChanged)
         {
-            // Deadband: animated resizes sweep through many intermediate
-            // sizes, and every recreate flips the display affinity twice and
-            // (with FG) restarts the presenter - the drag-resize blink. Only
-            // a size that HOLDS for a quarter second is worth a rebuild.
-            static UINT last_w = 0, last_h = 0;
-            static ULONGLONG first_seen = 0;
-            const ULONGLONG now = GetTickCount64();
-            if (new_w != last_w || new_h != last_h)
-            {
-                last_w = new_w; last_h = new_h; first_seen = now;
-                return false;  // hold the previous picture while it settles
-            }
-            if (now - first_seen < 250)
-                return false;  // still moving - wait for it to settle
-            Log("[wgc] the window settled at %ux%u, format %u - recreating",
+            // Recreate() should make the surface and bridge agree. If a
+            // driver still hands us a different surface, discard only the
+            // bridge and rebuild it from the next real frame.
+            Log("[wgc] frame surface changed to %ux%u, format %u - rebuilding bridge",
                 new_w, new_h, (unsigned)new_format);
-            last_w = last_h = 0; first_seen = 0;
-            OpenWgc(g_wgc_hwnd);
+            CloseFgResources();
+            CloseCaptureBridge();
+            g_wgc->pool_w = g_dda_w = new_w;
+            g_wgc->pool_h = g_dda_h = new_h;
             return false;
         }
         if (st != StageResult::Ok) return false;
@@ -4737,7 +4801,12 @@ static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small,
     if (!motion_small && !FillUpload(v.mv, mv, v.w * 4, v.hgt)) return false;
     if (!BeginCommands()) return false;
     ProfileGpuBegin(PS_MOTION);
-    if (v.inputs_ready)
+    // Full-size motion is copied into v.mv below and therefore needs SRV ->
+    // COPY_DEST. Downscaled motion is different: ScaleMotionInto writes v.mv
+    // as a UAV and owns its SRV/COPY_DEST -> UAV transition. Moving it to
+    // COPY_DEST here first made ScaleMotionInto declare the wrong StateBefore
+    // on every DDA/WGC frame after the first.
+    if (v.inputs_ready && !motion_small)
     {
         D3D12_RESOURCE_BARRIER pre = Transition(v.mv.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                                 D3D12_RESOURCE_STATE_COPY_DEST);

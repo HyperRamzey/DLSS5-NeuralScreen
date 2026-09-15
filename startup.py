@@ -30,7 +30,7 @@ import threading
 
 import numpy as np
 
-from capture import ScreenCapture, resolve_output_idx
+from capture import ScreenCapture, list_adapters, resolve_output_idx
 from display import Display
 from gpuinfo import describe as gpu_describe, probe as gpu_probe
 from guides import TemporalGuideGenerator
@@ -154,6 +154,31 @@ def _apply_gpu_env(cfg: dict) -> None:
         os.environ["NS_GPU"] = str(int(gpu))
 
 
+def _working_card_name(cfg: dict) -> str:
+    """The name of the card the worker will really run on, or "".
+
+    NS_GPU is a wish, not an order: an index that is not a usable NVIDIA
+    adapter falls back to the first NVIDIA card in DXGI order (the worker
+    says so itself: "[host] NS_GPU=... is not a usable NVIDIA adapter").
+    The fallback is mirrored here so the environment header and the GPU
+    line name the SAME card the pipeline runs on - NVAPI enumerates in
+    its own order, and its first card can be the one that does no work
+    at all (issue #81: the panel said RTX 3050 while a 4070 Super did
+    everything).
+    """
+    adapters = list_adapters()
+    if not adapters:
+        return ""
+    try:
+        wanted = int(cfg.get("gpu"))
+    except (TypeError, ValueError):
+        wanted = None
+    for i, name in adapters:
+        if i == wanted:
+            return name
+    return adapters[0][1]
+
+
 #: What _log_environment found, kept for the About block. The log header
 #: is what users are asked to paste into an issue, and the same four facts
 #: belong where a user can read them without finding the log first.
@@ -181,7 +206,7 @@ def _log_environment(cfg: dict) -> None:
         print(f"[env] NeuralScreen {APP_VERSION} | Windows unknown")
     try:
         import gpuinfo
-        g = gpuinfo.probe()
+        g = gpuinfo.probe(_working_card_name(cfg))
         print(f"[env] GPU: {g.get('name') or 'unknown'} "
               f"({g.get('family') or '?'}, arch 0x{g.get('arch_group', 0):X})")
     except Exception:
@@ -356,9 +381,11 @@ def bring_up(st) -> None:
     # work_scale (see SharedFrameBuffer), so it is created once per process.
     st.shm = SharedFrameBuffer(st.width, st.height)
     # Which card this is and whether NR works on it. The model comes from
-    # nvapi, but the support verdict comes from the worker rather than the
-    # architecture: only it knows whether feature 18 was created.
-    gpu_info = gpu_probe()
+    # nvapi, picked by the name of the adapter the worker will really run
+    # on (NVAPI's own order is not DXGI's - issue #81); the support verdict
+    # comes from the worker rather than the architecture, because only it
+    # knows whether feature 18 was created.
+    gpu_info = gpu_probe(_working_card_name(st.cfg))
     st.gpu_text = gpu_describe(gpu_info)
     st.gpu_ok: bool | None = None
     st.gpu_alerted = False          # the "cannot run the pass" alert, once per verdict

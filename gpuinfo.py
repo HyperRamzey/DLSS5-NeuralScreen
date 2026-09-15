@@ -45,8 +45,32 @@ class _ArchInfo(ctypes.Structure):
                 ("revision", ctypes.c_uint32)]
 
 
-def probe() -> dict:
-    """{name, arch, arch_group, family, official} — empty fields on failure."""
+def _choose_index(names: list, hint) -> int:
+    """Which card the hint names, or 0 - the first one.
+
+    The hint is the DXGI name of the adapter the pipeline will really run
+    on. NVAPI enumerates in its own order and the two disagree on
+    multi-GPU machines - the first NVAPI card can be the one that does no
+    work at all (issue #81: the menu said RTX 3050 while the 4070 Super
+    did everything). No hint, no cards, or nothing matching keeps the
+    first card, which is what a single-card machine wants.
+    """
+    if hint:
+        wanted = str(hint).strip().casefold()
+        for i, nm in enumerate(names):
+            if str(nm).strip().casefold() == wanted:
+                return i
+    return 0
+
+
+def probe(name_hint: str | None = None) -> dict:
+    """{name, arch, arch_group, family, official} — empty fields on failure.
+
+    name_hint says WHICH card to describe, by its DXGI name: the caller
+    passes the adapter the worker will really run on, so the line on
+    screen and the log name the card that does the work (issue #81).
+    Without a hint the first card is described.
+    """
     out = {"name": "", "arch": "", "arch_group": 0, "family": "",
            "official": False}
     try:
@@ -67,22 +91,34 @@ def probe() -> dict:
                                 ctypes.POINTER(ctypes.c_uint32))(p_enum)
         if enum(handles, ctypes.byref(count)) != 0 or count.value == 0:
             return out
-        gpu = handles[0]
 
         p_name = qi(_ID_GET_NAME)
-        if p_name:
-            buf = ctypes.create_string_buffer(64)
-            fn = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
-                                  ctypes.c_char_p)(p_name)
-            if fn(gpu, buf) == 0:
-                # "NVIDIA GeForce RTX 5070 Ti" -> "RTX 5070 Ti": the full name
-                # does not fit the menu line, and the vendor adds nothing there.
-                name = buf.value.decode("ascii", "replace").strip()
-                for prefix in ("NVIDIA GeForce ", "NVIDIA "):
-                    if name.startswith(prefix):
-                        name = name[len(prefix):]
-                        break
-                out["name"] = name
+        # Every card's name first: the hint can only be matched against a
+        # name, and reading the names is the only way to know which handle
+        # is which - NVAPI's order is not DXGI's (see _choose_index).
+        names = []
+        name_fn = (ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
+                                    ctypes.c_char_p)(p_name)
+                   if p_name else None)
+        for h in handles[:count.value]:
+            nm = ""
+            if name_fn is not None:
+                buf = ctypes.create_string_buffer(64)
+                if name_fn(h, buf) == 0:
+                    nm = buf.value.decode("ascii", "replace").strip()
+            names.append(nm)
+        chosen = _choose_index(names, name_hint)
+        gpu = handles[chosen]
+
+        name = names[chosen]
+        if name:
+            # "NVIDIA GeForce RTX 5070 Ti" -> "RTX 5070 Ti": the full name
+            # does not fit the menu line, and the vendor adds nothing there.
+            for prefix in ("NVIDIA GeForce ", "NVIDIA "):
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+                    break
+            out["name"] = name
 
         p_arch = qi(_ID_GET_ARCH)
         if p_arch:

@@ -113,6 +113,7 @@ ABOUT = {
     "test_recorder_audio.py": "the audio track keeps up with the video",
     "test_recorder_high_rate_audio.py": "a 192 kHz loopback is resampled to AAC without aborting video",
     "test_recorder_fallback.py": "the NVENC codec chain falls back AV1->HEVC->H.264",
+    "test_recorder_lifecycle.py": "recordings drain, verify and publish atomically from .partial",
     "test_rec_indicator.py": "the recording indicator draws only while recording, never in the file",
     "test_shot_dir.py": "the screenshot folder is configured, persisted and shown on the button",
     "test_screenshot_before_dialog.py": "Save As opens only after a screenshot frame is frozen",

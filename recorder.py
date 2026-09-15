@@ -16,16 +16,52 @@ inside - exactly the NR result that is on screen.
 
 from __future__ import annotations
 
+import os
 import queue
 import sys
 import threading
 import time
+from dataclasses import dataclass
+from enum import Enum
 from fractions import Fraction
+from pathlib import Path
 
 import av
 import numpy as np
 
 from audio import LoopbackCapture
+
+
+class RecordingStatus(str, Enum):
+    """Observable lifecycle states for a recording."""
+
+    RECORDING = "recording"
+    FINALIZING = "finalizing"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
+class RecordingError(RuntimeError):
+    """A fatal recorder error with the lifecycle stage that produced it."""
+
+    def __init__(self, stage: str, cause: BaseException):
+        self.stage = stage
+        self.cause = cause
+        super().__init__(f"{stage}: {cause}")
+
+
+@dataclass(frozen=True)
+class RecordingResult:
+    """Terminal outcome returned by wait()/close().
+
+    ``path`` is the file that actually remains: the published MP4 on success,
+    or the recoverable ``.partial`` file on failure (``None`` if no file was
+    created). ``error`` is never discarded or converted to a log-only string.
+    """
+
+    status: RecordingStatus
+    path: str | None
+    error: BaseException | None
 
 
 class VideoRecorder:
@@ -47,9 +83,6 @@ class VideoRecorder:
     #: How many frames wait for the encoder. More means more memory (33 MB per
     #: frame at 4K), less means we start dropping frames earlier on spikes.
     QUEUE_DEPTH = 4
-    #: How long close() waits for room to post the sentinel. Generous on
-    #: purpose: by then there is no picture left to stall.
-    PUT_TIMEOUT_S = 0.25
     #: How long write() waits for room before dropping a frame. Stalling the
     #: pipeline for the sake of the recording is not acceptable: the user
     #: looks at the screen, not at the file. A dropped frame does not affect
@@ -62,6 +95,9 @@ class VideoRecorder:
     #: The queue only fills when the encoder has stalled, and a stalled
     #: encoder is exactly when the screen must not be held hostage to it.
     FRAME_PUT_TIMEOUT_S = 1.0 / 60.0
+    #: Bounded compatibility wait used by close(). New callers can use
+    #: finish() + wait() and never block the UI thread.
+    FINISH_TIMEOUT_S = 30.0
 
     #: NVENC codecs, best first. AV1 is the newest and most efficient, but the
     #: RTX 30 series has no AV1 encoder at all - on those cards the first
@@ -102,7 +138,11 @@ class VideoRecorder:
 
     def __init__(self, path: str, width: int, height: int, fps: float = 60.0,
                  audio: bool = True):
-        self.path = path
+        # ``path`` remains the requested public destination for compatibility
+        # with commands.py. Bytes are written next to it under a .partial name
+        # and only published after close + read-back verification succeeds.
+        self.path = str(Path(path))
+        self.partial_path = f"{self.path}.partial"
         self.width = width
         self.height = height
         self.fps = fps
@@ -110,59 +150,17 @@ class VideoRecorder:
         self._queue: queue.Queue = queue.Queue(maxsize=self.QUEUE_DEPTH)
         self._thread: threading.Thread | None = None
         self._encode_error: BaseException | None = None
-        self._stop = threading.Event()
-        self._container = av.open(path, mode="w")
-        self._stream = self._open_video_stream(width, height, fps)
-        self._stream.width = width
-        # An odd height is rounded up by the encoder (yuv420p needs even
-        # dimensions) and the last row comes out duplicated. One-window mode
-        # makes odd sizes normal - a window with a title bar is 539 high - and
-        # a duplicated bottom row is a better answer than cropping a real one.
-        self._stream.height = height
-        self._stream.pix_fmt = "yuv420p"
-        # MP4 (mov) muxer + nvenc: constant time_base 1/fps, pts is a counter.
-        # (The NUT pitfall with time_base != 1/30 does not apply: we write
-        # straight into MP4, without an ffmpeg subprocess.)
-        self._stream.time_base = Fraction(1, int(round(fps)))
-        # Colour metadata is MANDATORY: without it players interpret the frames
-        # differently (contrast/colours "drift"). Desktop capture is sRGB FULL
-        # range (not limited/BT.709-tv: limited tags over full-range data give
-        # "heavy contrast" - the player stretches 16-235 across 0-255).
-        # FFmpeg numeric enums: range JPEG/full=2; colorspace BT709=1;
-        # primaries BT709=1 (sRGB primaries == BT.709); transfer
-        # IEC61966_2_1 (sRGB)=13 (NOT 14 - 14 is BT2020_10, verified with
-        # ffprobe: at 14 the file is tagged bt2020-10).
-        # PyAV attribute names: color_range/colorspace/color_primaries/
-        # color_trc (NOT color_space/color_transfer - those do not exist).
-        try:
-            self._stream.color_range = 2        # AVCOL_RANGE_JPEG = full
-            self._stream.colorspace = 1         # AVCOL_SPC_BT709
-            self._stream.color_primaries = 1    # AVCOL_PRI_BT709
-            self._stream.color_trc = 13         # AVCOL_TRC_IEC61966_2_1 = sRGB
-        except Exception as exc:
-            print(f"[record] color metadata failed: {exc}", file=sys.stderr)
-        # Bitrate as a CEILING under VBR with a quality target (cq), not as a
-        # goal: on fast motion (a shooter) a fixed bitrate forces the encoder to
-        # sacrifice quality to hit the number. The GOP is short and has no
-        # B-frames: at the pipeline's variable fps B-frames desynchronise the
-        # frames, and a long GOP gives artefacts on scene changes.
-        try:
-            self._stream.bit_rate = self.BIT_RATE
-            self._stream.gop_size = max(30, int(round(fps)) * 2)  # keyframe every 2 s
-            self._stream.max_b_frames = 0
-        except Exception as exc:
-            print(f"[record] encoder params failed: {exc}", file=sys.stderr)
-        # Encoder options are passed as strings through options - PyAV has no
-        # max_bit_rate/rc_buffer_size attributes.
-        if self.ENCODER_OPTIONS:
-            try:
-                self._stream.options = dict(self.ENCODER_OPTIONS)
-            except Exception as exc:
-                print(f"[record] encoder options failed: {exc}",
-                      file=sys.stderr)
-        # --- audio: a second track from WASAPI loopback --------------------
-        # Set up before the clock starts so that samples captured while the
-        # endpoint spins up still belong at the beginning of the track.
+        self._state_lock = threading.RLock()
+        self._finish_requested = threading.Event()
+        self._abort_publish = threading.Event()
+        self._done = threading.Event()
+        self._status = RecordingStatus.RECORDING
+        self._result: RecordingResult | None = None
+        self._stopped_at: float | None = None
+        self._container = None
+        self._stream = None
+        # Audio fields are initialised before opening the container so cleanup
+        # after a constructor failure is deterministic.
         self._audio: LoopbackCapture | None = None
         self._astream = None
         self._fifo: av.AudioFifo | None = None
@@ -170,11 +168,64 @@ class VideoRecorder:
         self._audio_input_samples = 0  # source-rate clock for the resampler
         self._audio_samples = 0      # frames handed to the fifo, our audio clock
         self.audio_padded = 0        # frames of silence inserted into gaps
-        if audio:
-            self._open_audio()
         self._frame_idx = 0
         self._reserved = False  # needs_frame() reserved the next slot
         self.written = 0
+        self._started = 0.0
+        try:
+            # The suffix no longer identifies the format, so be explicit.
+            # PyAV may not create anything until the first packet; touching the
+            # staging path now guarantees that even an early encoder stall has
+            # an exact, inspectable path in its terminal result.
+            Path(self.partial_path).touch()
+            self._container = av.open(self.partial_path, mode="w", format="mp4")
+            self._stream = self._open_video_stream(width, height, fps)
+            self._stream.width = width
+            # An odd height is rounded up by the encoder (yuv420p needs even
+            # dimensions) and the last row comes out duplicated. One-window
+            # mode makes odd sizes normal, and duplication is better than crop.
+            self._stream.height = height
+            self._stream.pix_fmt = "yuv420p"
+            self._stream.time_base = Fraction(1, int(round(fps)))
+            # Desktop capture is sRGB full range. Keep conversion and stream
+            # metadata aligned or players visibly change contrast/colour.
+            try:
+                self._stream.color_range = 2
+                self._stream.colorspace = 1
+                self._stream.color_primaries = 1
+                self._stream.color_trc = 13
+            except Exception as exc:
+                print(f"[record] color metadata failed: {exc}", file=sys.stderr)
+            try:
+                self._stream.bit_rate = self.BIT_RATE
+                self._stream.gop_size = max(30, int(round(fps)) * 2)
+                self._stream.max_b_frames = 0
+            except Exception as exc:
+                print(f"[record] encoder params failed: {exc}", file=sys.stderr)
+            if self.ENCODER_OPTIONS:
+                try:
+                    self._stream.options = dict(self.ENCODER_OPTIONS)
+                except Exception as exc:
+                    print(f"[record] encoder options failed: {exc}",
+                          file=sys.stderr)
+            if audio:
+                self._open_audio()
+        except BaseException:
+            # A half-constructed object cannot expose its result API. Do not
+            # leave a misleading final MP4 or an orphaned staging file behind.
+            try:
+                if self._container is not None:
+                    self._container.close()
+            except Exception:
+                pass
+            self._container = None
+            try:
+                os.unlink(self.partial_path)
+            except FileNotFoundError:
+                pass
+            raise
+        # Codec/audio setup time is not recording time. This also preserves
+        # needs_frame()'s contract that slot zero is closed at construction.
         self._started = time.perf_counter()
 
     def _open_video_stream(self, width: int, height: int, fps: float):
@@ -287,43 +338,34 @@ class VideoRecorder:
         The wait on the video queue is bounded so that audio keeps flowing even
         while the pipeline is between frames.
 
-        The loop ends on the stop event OR on the None sentinel, whichever
-        comes first. The sentinel is the normal path (close() puts it after
-        draining the queue); the event is the escape hatch for a close() that
-        must not wait for a stuck encoder. Either way the container is closed
-        HERE, on this thread - close() never touches it while we are alive.
+        finish() first prevents new writes, then sets _finish_requested. The
+        loop exits only after a timed queue read proves that every accepted
+        frame has been consumed. This avoids the old stop-event race, where
+        close() could set the event while queued frames were still pending.
         """
+        fatal: BaseException | None = None
         try:
-            while not self._stop.is_set():
+            while True:
                 try:
                     item = self._queue.get(timeout=0.05)
                 except queue.Empty:
+                    if self._finish_requested.is_set():
+                        break
                     self._pump_audio()
                     continue
-                if item is None:
-                    self._pump_audio()
-                    break
                 pts, rgba = item
                 try:
                     self._pump_audio()
                     self._encode_one(pts, rgba)
                 except BaseException as exc:   # noqa: BLE001 - report back to main
                     self._encode_error = exc
+                    fatal = RecordingError("encode", exc)
                     print(f"[record] encoding aborted: {exc}", file=sys.stderr)
                     break
+                finally:
+                    self._queue.task_done()
         finally:
-            # The container is ours alone: flush the audio, write the trailer
-            # and close it. On a stuck encoder this still runs - the trailer
-            # is best-effort, and the file is left without one only if the
-            # container itself refuses to close.
-            self._close_audio()
-            try:
-                for packet in self._stream.encode(None):  # flush encoder
-                    self._container.mux(packet)
-                self._container.close()
-            except Exception as exc:
-                print(f"[record] close failed: {exc}", file=sys.stderr)
-            self._container = None
+            self._finalize_recording(fatal)
 
     def _pump_audio(self) -> None:
         """Move captured samples into the container; pad gaps with silence.
@@ -419,20 +461,22 @@ class VideoRecorder:
         when write() would keep it, and the first slot (pts 0) is dropped by
         write() anyway.
         """
-        if self._encode_error is not None:
+        with self._state_lock:
+            if (self._status is not RecordingStatus.RECORDING
+                    or self._encode_error is not None):
+                return False
+            elapsed = time.perf_counter() - self._started
+            slot = int(elapsed * self.fps)
+            if slot > self._frame_idx:
+                # Reserve the slot: write() will put the frame into it. The
+                # reservation is what keeps the file at the real duration -
+                # recomputing the slot in write() (after the frame's round-trip
+                # through the worker) skips every second slot at a ~27 fps
+                # pipeline (73 frames / 4.8 s instead of ~150).
+                self._frame_idx = slot
+                self._reserved = True
+                return True
             return False
-        elapsed = time.perf_counter() - self._started
-        slot = int(elapsed * self.fps)
-        if slot > self._frame_idx:
-            # Reserve the slot: write() will put the frame into it. The
-            # reservation is what keeps the file at the real duration -
-            # recomputing the slot in write() (after the frame's round-trip
-            # through the worker) skips every second slot at a ~27 fps
-            # pipeline (73 frames / 4.8 s instead of ~150).
-            self._frame_idx = slot
-            self._reserved = True
-            return True
-        return False
 
     def write(self, rgba: np.ndarray) -> None:
         """Queue a frame for the encoder (RGBA8 full-res, 4 channels).
@@ -458,33 +502,40 @@ class VideoRecorder:
             raise ValueError(
                 f"display mode changed: frame {rgba.shape[1]}x{rgba.shape[0]} "
                 f"!= recorder {self.width}x{self.height}")
-        if self._encode_error is not None:
-            exc, self._encode_error = self._encode_error, None
-            raise RuntimeError(f"encoder thread failed: {exc}")
-        if self._thread is None:
-            self._thread = threading.Thread(target=self._encode_loop,
-                                            name="nr-encode", daemon=True)
-            self._thread.start()
-        # needs_frame() reserved the next free slot when it said yes; the
-        # elapsed clock has moved on since (the frame spent a round-trip
-        # in the worker, ~36 ms at 27 fps), so recomputing pts here would
-        # skip the reserved slot and drop every second frame (73 frames /
-        # 4.8 s instead of ~150). Write into the reserved slot; the
-        # stream rate keeps the file at 30 fps.
-        if not self._reserved:
-            # A direct write() without needs_frame() (tests): reserve the
-            # next slot ourselves.
-            self._frame_idx += 1
-        self._reserved = False
-        pts = self._frame_idx
-        try:
-            self._queue.put((pts, rgba), timeout=self.FRAME_PUT_TIMEOUT_S)
-        except queue.Full:
-            # The encoder cannot keep up. Dropping the frame is more honest than
-            # holding up the main loop: the user would notice on screen, not in
-            # the file. The reserved slot is lost - the next needs_frame()
-            # waits for the next one.
-            self.dropped += 1
+        # The lifecycle lock covers both the state check and the bounded put.
+        # Therefore finish() cannot observe an empty queue while a previously
+        # accepted writer is still about to enqueue its frame.
+        with self._state_lock:
+            if self._encode_error is not None:
+                raise RecordingError("encode", self._encode_error)
+            if self._status is not RecordingStatus.RECORDING:
+                if self._result is not None and self._result.error is not None:
+                    raise self._result.error
+                raise RuntimeError("recording is already finalizing")
+            if self._thread is None:
+                self._start_thread_locked()
+            # needs_frame() reserved the next free slot when it said yes; the
+            # elapsed clock has moved on since (the frame spent a round-trip
+            # in the worker, ~36 ms at 27 fps), so recomputing pts here would
+            # skip the reserved slot and drop every second frame.
+            if not self._reserved:
+                # A direct write() without needs_frame() (tests): reserve the
+                # next slot ourselves.
+                self._frame_idx += 1
+            self._reserved = False
+            pts = self._frame_idx
+            try:
+                self._queue.put((pts, rgba), timeout=self.FRAME_PUT_TIMEOUT_S)
+            except queue.Full:
+                # The encoder cannot keep up. Dropping the frame is more honest
+                # than holding up the main loop.
+                self.dropped += 1
+
+    def _start_thread_locked(self) -> None:
+        """Start the sole container-owning thread while _state_lock is held."""
+        self._thread = threading.Thread(target=self._encode_loop,
+                                        name="nr-encode", daemon=True)
+        self._thread.start()
 
     def _encode_one(self, pts: int, rgba: np.ndarray) -> None:
         """The encoding proper - only from the _encode_loop thread."""
@@ -506,69 +557,179 @@ class VideoRecorder:
             self._container.mux(packet)
         self.written += 1
 
-    def close(self) -> None:
-        """Stop the encoder thread and let it finish the file.
+    def finish(self) -> bool:
+        """Request a non-blocking, queue-draining finalization.
 
-        The thread is the sole owner of the container while it runs, so the
-        container is closed THERE, never from here. This method only signals
-        and waits:
-
-          * drain the queue (put the sentinel with a timeout - a full queue
-            must not block close() forever if the encoder is stuck);
-          * set the stop event as the escape hatch: the loop checks it every
-            50 ms and exits even when the sentinel never gets consumed;
-          * join with a timeout, then report what the thread left behind.
-
-        The old code put the sentinel without a timeout and joined from the
-        main thread: a stuck encoder left the queue full, the put() blocked
-        forever, and close() deadlocked the whole app.
+        Returns True only for the call that changes RECORDING -> FINALIZING.
+        No accepted frame can appear after this transition: write() performs
+        its state check and queue put under the same lock. Use wait() to poll
+        or await the immutable RecordingResult.
         """
-        if self._container is None:
-            return
-        if self._thread is not None:
-            try:
-                self._queue.put(None, timeout=self.PUT_TIMEOUT_S)
-            except queue.Full:
-                # The encoder is stuck and the queue is full - the sentinel
-                # will never be consumed. The stop event below is the way out.
-                print("[record] queue full on close - stopping via the event",
-                      file=sys.stderr)
-            self._stop.set()
-            self._thread.join(timeout=30.0)
-            if self._thread.is_alive():
-                # The encoder is stuck (NVENC stall, driver hang). The
-                # container is still owned by the thread - touching it from
-                # here would be undefined behaviour. The thread is daemon, so
-                # the process can still exit; the file is left without a
-                # trailer.
-                print("[record] encoder did not finish within 30 s - "
-                      "the file is left without a trailer", file=sys.stderr)
-                self._thread = None
-                return
-            self._thread = None
-        else:
-            # No frame was ever written, so the encode thread never started
-            # and nobody owns the container - close it here. The flush still
-            # runs: it opens the encoder and writes the header, so the file
-            # is a valid (empty) MP4 instead of 0 bytes.
+        with self._state_lock:
+            if self._status is not RecordingStatus.RECORDING:
+                return False
+            self._status = RecordingStatus.FINALIZING
+            self._stopped_at = time.perf_counter()
+            self._reserved = False
+            self._finish_requested.set()
+            if self._thread is None:
+                # Even an empty recording is finalized on the worker, so this
+                # method never performs codec or filesystem work itself.
+                self._start_thread_locked()
+            return True
+
+    def wait(self, timeout: float | None = None) -> RecordingResult | None:
+        """Return the terminal result, or None when *timeout* expires."""
+        if not self._done.wait(timeout):
+            return None
+        with self._state_lock:
+            return self._result
+
+    def close(self, timeout: float | None = FINISH_TIMEOUT_S) -> RecordingResult:
+        """Compatibility wrapper: finish(), wait, then return or raise.
+
+        Existing no-argument callers remain synchronous. New UI code can use
+        finish() + wait(0) to keep its event loop responsive. A failed close
+        raises the stored RecordingError; commands.py/main.py already guard
+        close() with try/except, while callers needing detail can inspect
+        status/result/error/result_path afterwards.
+        """
+        self.finish()
+        result = self.wait(timeout)
+        if result is None:
+            result = self._fail_after_timeout(timeout)
+        if result.status is RecordingStatus.FAILED:
+            error = result.error or RecordingError(
+                "finalize", RuntimeError("recording failed without an error"))
+            raise error
+        return result
+
+    def _fail_after_timeout(self, timeout: float | None) -> RecordingResult:
+        """Freeze a timeout as the terminal result and forbid late publish."""
+        seconds = self.FINISH_TIMEOUT_S if timeout is None else timeout
+        error = RecordingError(
+            "timeout",
+            TimeoutError(f"encoder did not finish within {seconds:g} s"),
+        )
+        with self._state_lock:
+            if self._result is not None:
+                return self._result
+            self._abort_publish.set()
+            self._status = RecordingStatus.FAILED
+            self._result = RecordingResult(
+                RecordingStatus.FAILED, self._remaining_partial_path(), error)
+            self._done.set()
+            print(f"[record] {error}; partial file was not published",
+                  file=sys.stderr)
+            return self._result
+
+    def _finalize_recording(self, fatal: BaseException | None) -> None:
+        """Close, verify, and atomically publish; called by the worker only."""
+        with self._state_lock:
+            if self._status is RecordingStatus.RECORDING:
+                # An asynchronous encoder failure can arrive before finish().
+                self._status = RecordingStatus.FINALIZING
+                self._stopped_at = time.perf_counter()
+                self._finish_requested.set()
+
+        error = fatal
+        if error is None and self._encode_error is not None:
+            error = RecordingError("encode", self._encode_error)
+
+        try:
+            if self._container is None:
+                raise RuntimeError("container is already closed")
             self._close_audio()
-            try:
-                for packet in self._stream.encode(None):  # flush encoder
-                    self._container.mux(packet)
-                self._container.close()
-            except Exception as exc:
-                print(f"[record] close failed: {exc}", file=sys.stderr)
+            for packet in self._stream.encode(None):
+                self._container.mux(packet)
+            self._container.close()
+        except BaseException as exc:                 # noqa: BLE001
+            close_error = RecordingError("close", exc)
+            if error is None:
+                error = close_error
+            else:
+                print(f"[record] secondary {close_error}", file=sys.stderr)
+            print(f"[record] close failed: {exc}", file=sys.stderr)
+        finally:
             self._container = None
+
+        if error is None and not self._abort_publish.is_set():
+            try:
+                self._verify_partial()
+            except BaseException as exc:             # noqa: BLE001
+                error = RecordingError("verify", exc)
+                print(f"[record] verification failed: {exc}", file=sys.stderr)
+
+        # Timeout and publish contend on this lock. Whichever wins defines the
+        # immutable result: a timeout can never be followed by a late MP4 that
+        # contradicts FAILED, and a completed replace cannot become a timeout.
+        with self._state_lock:
+            if self._result is None:
+                if error is None and not self._abort_publish.is_set():
+                    try:
+                        os.replace(self.partial_path, self.path)
+                    except BaseException as exc:     # noqa: BLE001
+                        error = RecordingError("publish", exc)
+                        print(f"[record] publish failed: {exc}", file=sys.stderr)
+                if error is None:
+                    self._status = RecordingStatus.PUBLISHED
+                    self._result = RecordingResult(
+                        RecordingStatus.PUBLISHED, self.path, None)
+                else:
+                    self._status = RecordingStatus.FAILED
+                    self._result = RecordingResult(
+                        RecordingStatus.FAILED,
+                        self._remaining_partial_path(), error)
+                self._done.set()
+            self._thread = None
+
         if self.dropped:
             print(f"[record] frames dropped: {self.dropped} "
                   f"(encoder could not keep up)", file=sys.stderr)
-        if self._encode_error is not None:
-            # The encoder thread died on the last frame(s): the error was
-            # never surfaced through write() (nobody called it after the
-            # failure). Report it here instead of silently writing a
-            # truncated file.
-            print(f"[record] encoder error: {self._encode_error}",
-                  file=sys.stderr)
+        if error is not None:
+            print(f"[record] recording failed: {error}", file=sys.stderr)
+
+    def _verify_partial(self) -> None:
+        """Read back enough of the closed MP4 to reject broken/empty output."""
+        partial = Path(self.partial_path)
+        if self.written <= 0:
+            raise RuntimeError("recording contains no video frames")
+        if not partial.is_file() or partial.stat().st_size <= 0:
+            raise RuntimeError("partial MP4 is missing or empty")
+        with av.open(str(partial), mode="r", format="mp4") as container:
+            if not container.streams.video:
+                raise RuntimeError("partial MP4 has no video stream")
+            if next(container.decode(video=0), None) is None:
+                raise RuntimeError("partial MP4 has no decodable video frame")
+
+    def _remaining_partial_path(self) -> str | None:
+        return self.partial_path if Path(self.partial_path).is_file() else None
+
+    @property
+    def status(self) -> RecordingStatus:
+        with self._state_lock:
+            return self._status
+
+    @property
+    def result(self) -> RecordingResult | None:
+        with self._state_lock:
+            return self._result
+
+    @property
+    def error(self) -> BaseException | None:
+        with self._state_lock:
+            if self._result is not None:
+                return self._result.error
+            return self._encode_error
+
+    @property
+    def result_path(self) -> str | None:
+        with self._state_lock:
+            return self._result.path if self._result is not None else None
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
 
     def _close_audio(self) -> None:
         """Stop the capture, write what is left and flush the AAC encoder.
@@ -603,4 +764,5 @@ class VideoRecorder:
 
     @property
     def duration_ms(self) -> float:
-        return (time.perf_counter() - self._started) * 1000.0
+        end = self._stopped_at if self._stopped_at is not None else time.perf_counter()
+        return (end - self._started) * 1000.0

@@ -19,7 +19,7 @@ import numpy as np
 BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
-from recorder import VideoRecorder  # noqa: E402
+from recorder import RecordingStatus, VideoRecorder  # noqa: E402
 
 W, H = 1920, 1080
 FRAMES = 40
@@ -39,13 +39,18 @@ def make_frame(i: int) -> np.ndarray:
 def main() -> int:
     failures = []
     out = Path(tempfile.gettempdir()) / "ns-test-recorder.mp4"
+    partial = Path(f"{out}.partial")
     out.unlink(missing_ok=True)
+    partial.unlink(missing_ok=True)
 
     # audio=False on purpose: this test is about the video encode thread, and
     # a loopback that is missing or busy would muddy its timings.
     # The audio track has its own test - test_recorder_audio.py.
     rec = VideoRecorder(str(out), W, H, fps=FPS, audio=False)
+    if out.exists() or not partial.is_file():
+        failures.append("recording did not start exclusively under .partial")
     worst = 0.0
+    result = None
     try:
         for i in range(FRAMES):
             frame = make_frame(i)
@@ -54,7 +59,7 @@ def main() -> int:
             worst = max(worst, (time.perf_counter() - t0) * 1000.0)
             time.sleep(1.0 / FPS)      # the pipeline pace
     finally:
-        rec.close()
+        result = rec.close()
 
     print(f"worst write(): {worst:.1f} ms, dropped {rec.dropped}, "
           f"written {rec.written}")
@@ -67,6 +72,12 @@ def main() -> int:
     if rec.written + rec.dropped != FRAMES:
         failures.append(f"frames accounted for {rec.written}+{rec.dropped}, "
                         f"but {FRAMES} were handed over")
+    if result.status is not RecordingStatus.PUBLISHED:
+        failures.append(f"terminal status is {result.status}, not published")
+    if result.path != str(out) or result.error is not None:
+        failures.append(f"wrong terminal result: {result}")
+    if partial.exists():
+        failures.append(".partial still exists after successful publication")
 
     if not out.is_file() or out.stat().st_size == 0:
         print("FAIL: the file was not created")
@@ -88,6 +99,7 @@ def main() -> int:
             failures.append(f"the first frame is not the first handed over (R={r})")
 
     out.unlink(missing_ok=True)
+    partial.unlink(missing_ok=True)
     if failures:
         for f in failures:
             print("FAIL:", f)

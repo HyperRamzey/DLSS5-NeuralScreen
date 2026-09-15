@@ -14,8 +14,8 @@ null-muxer container. These tests fake that probe:
 Plus the two review findings that came with the fallback:
   * needs_frame() gates WANT_PIXELS: one frame per stream slot, and no
     demand once the encoder has failed;
-  * close() cannot deadlock on a stuck encoder: a full queue and a thread
-    that never consumes it must not block the caller.
+  * close() cannot deadlock on a stuck encoder, records an exact timeout, and
+    forbids that worker from publishing a contradictory late result.
 """
 import sys
 import tempfile
@@ -29,7 +29,7 @@ import numpy as np
 BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
-from recorder import VideoRecorder  # noqa: E402
+from recorder import RecordingError, RecordingStatus, VideoRecorder  # noqa: E402
 
 W, H = 640, 360
 FPS = 30.0
@@ -151,7 +151,10 @@ def test_all_codecs_fail_raises(out: Path, failures: list) -> None:
                 failures.append(f"unexpected error: {exc}")
     finally:
         av.open = real
+    if out.exists() or Path(f"{out}.partial").exists():
+        failures.append("failed constructor left a final or .partial file")
     out.unlink(missing_ok=True)
+    Path(f"{out}.partial").unlink(missing_ok=True)
 
 
 def test_needs_frame_gates_want_pixels(out: Path, failures: list) -> None:
@@ -171,6 +174,9 @@ def test_needs_frame_gates_want_pixels(out: Path, failures: list) -> None:
         rec._encode_error = RuntimeError("boom")
         if rec.needs_frame():
             failures.append("needs_frame() True after an encoder failure")
+        # This test injected the error only to exercise the gate. Do not turn
+        # its unrelated cleanup into a deliberately failed recording.
+        rec._encode_error = None
     finally:
         rec.close()
     out.unlink(missing_ok=True)
@@ -211,23 +217,48 @@ def test_close_does_not_deadlock_on_stuck_encoder(out: Path,
                                                  failures: list) -> None:
     rec = VideoRecorder(str(out), W, H, fps=FPS, audio=False)
     gate = threading.Event()
+    entered = threading.Event()
+    real_encode_one = rec._encode_one
 
-    def stuck() -> None:
-        gate.wait()          # never released: an NVENC stall that never ends
+    def stuck(pts: int, rgba: np.ndarray) -> None:
+        entered.set()
+        gate.wait()          # an NVENC stall that outlives close()'s timeout
+        real_encode_one(pts, rgba)
 
-    rec._thread = threading.Thread(target=stuck, name="stuck-encode", daemon=True)
-    rec._thread.start()
-    for i in range(rec.QUEUE_DEPTH):
-        rec._queue.put((i + 1, make_frame(i)))   # fill the queue
-    rec._thread.join = lambda timeout=None: None  # the 30 s join elapses
-    t0 = time.perf_counter()
-    rec.close()
-    dt = time.perf_counter() - t0
-    if dt > 2.0:
-        failures.append(f"close() blocked for {dt:.1f} s on a stuck encoder")
-    if rec._thread is not None:
-        failures.append("close() left the thread reference behind")
-    out.unlink(missing_ok=True)
+    rec._encode_one = stuck
+    worker = None
+    try:
+        rec.write(make_frame(0))
+        if not entered.wait(2.0):
+            failures.append("the encoder did not enter the simulated stall")
+            return
+        worker = rec._thread
+        for i in range(rec.QUEUE_DEPTH):
+            rec.write(make_frame(i + 1))         # fill the queue behind it
+        t0 = time.perf_counter()
+        try:
+            rec.close(timeout=0.05)
+            failures.append("stuck encoder close() did not report a timeout")
+        except RecordingError as exc:
+            if exc.stage != "timeout":
+                failures.append(f"stuck encoder failed at {exc.stage}, not timeout")
+        dt = time.perf_counter() - t0
+        if dt > 0.5:
+            failures.append(f"close() blocked for {dt:.2f} s on a stuck encoder")
+        if rec.status is not RecordingStatus.FAILED:
+            failures.append(f"timeout status is {rec.status}, not failed")
+        if rec.result is None or rec.result.path != rec.partial_path:
+            failures.append(f"timeout did not preserve partial path: {rec.result}")
+    finally:
+        gate.set()
+        if worker is not None:
+            worker.join(30.0)
+            if worker.is_alive():
+                failures.append("encoder stayed alive after the simulated stall ended")
+        if out.exists():
+            failures.append("timed-out encoder published a late final MP4")
+        out.unlink(missing_ok=True)
+        Path(f"{out}.partial").unlink(missing_ok=True)
 
 
 def main() -> int:

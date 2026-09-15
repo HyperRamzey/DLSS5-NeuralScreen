@@ -101,6 +101,9 @@ DEFAULT_BINDINGS = {
     # One-window mode: the window that had the focus becomes the only thing
     # processed. Num5 is the middle of the block and free of any habit.
     8: (MOD_NOREPEAT, VK_NUMPAD[5], "window_mode", "Num5"),
+    # Frame Generation on/off, next to the NR toggle on the block (user
+    # request 15.09: the FG switch lives two pages deep in the menu).
+    9: (MOD_NOREPEAT, VK_NUMPAD[7], "framegen", "Num7"),
 }
 
 # Key name -> VK (for parsing the config)

@@ -183,9 +183,18 @@ def apply_menu_action(st, action: tuple) -> None:
         print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
     elif kind == "toggle" and action[1] == "frame_generation":
         st.cfg["frame_generation"] = not bool(st.cfg.get("frame_generation", False))
+        # A fresh attempt re-arms the refusal alert: if the runtime says no
+        # again, the user is told again (issue #76 - the silent ON).
+        if st.cfg["frame_generation"]:
+            st.fg_alerted = False
         settings_io.save_menu_layout(st)
     elif kind == "frame_multiplier":
         st.cfg["frame_multiplier"] = min(4, max(2, int(action[1])))
+        # A different multiplier is a fresh attempt at the feature: if the
+        # runtime refused the previous one, it gets to answer again (issue
+        # #82 - 2x may work where 3x does not).
+        if st.cfg.get("frame_generation"):
+            st.fg_alerted = False
         settings_io.save_menu_layout(st)
     elif kind == "toggle" and action[1] == "skip_static":
         # A per-frame flag in the header, not a worker setting: no restart,
@@ -225,9 +234,18 @@ def apply_menu_action(st, action: tuple) -> None:
         pipeline.request_apply(st, st.work_scale, st.cfg["profile"], new_params)
     elif kind == "profile":
         if action[1] in PROFILES:
-            pipeline.request_apply(st, st.work_scale, action[1], dict(PROFILES[action[1]]))
+            # A built-in profile moves the four sliders only (user rule
+            # 15.09): the model is its own control and survives a profile
+            # change. Taking the style from the profile made "Natural"
+            # silently overwrite a Cinematic the user had just picked.
+            new_params = dict(PROFILES[action[1]])
+            new_params["style"] = int(st.params.get("style", 1))
+            pipeline.request_apply(st, st.work_scale, action[1], new_params)
         elif action[1] in st.presets:
-            pipeline.request_apply(st, st.work_scale, action[1], dict(st.presets[action[1]]))
+            # A user preset DOES carry its own model - that is what saving
+            # it promised.
+            pipeline.request_apply(st, st.work_scale, action[1],
+                                   dict(st.presets[action[1]]))
         else:
             print(f"[main] unknown profile {action[1]!r} - ignored",
                   file=sys.stderr)
@@ -335,6 +353,10 @@ def apply_menu_action(st, action: tuple) -> None:
             st.running = False
         elif name.startswith("frame_multiplier:"):
             st.cfg["frame_multiplier"] = min(4, max(2, int(name.split(":", 1)[1])))
+            # Same re-arm as the menu's multiplier buttons: a new value is
+            # a new attempt.
+            if st.cfg.get("frame_generation"):
+                st.fg_alerted = False
             settings_io.save_menu_layout(st)
         elif name == "record":
             st.tray_commands.put("record")
@@ -411,8 +433,9 @@ def apply_menu_action(st, action: tuple) -> None:
                     {"profiles": list(PROFILES) + list(st.presets)})
                 print(f"[main] preset deleted: {st.cfg['profile']}")
                 st.display.alert(f"Preset deleted: {st.cfg['profile']}")
-                pipeline.request_apply(st, st.work_scale, "Natural",
-                              dict(PROFILES["Natural"]))
+                new_params = dict(PROFILES["Natural"])
+                new_params["style"] = int(st.params.get("style", 1))
+                pipeline.request_apply(st, st.work_scale, "Natural", new_params)
         elif name == "channel":
             # The channel label in the settings page opens the
             # channel (user rule 2026-09-08).
@@ -518,6 +541,18 @@ def drain_commands(st) -> bool:
                 st.tray._set_state(nr=not st.paused)
             elif cmd == "screenshot_menu":
                 open_save_dialog(st)
+            elif cmd == "framegen":
+                # A plain on/off for Frame Generation (user request 15.09).
+                # The same path the menu switch takes, so the config write,
+                # the alert re-arm and the header pair all behave the same.
+                apply_menu_action(st, ("toggle", "frame_generation"))
+                state = bool(st.cfg.get("frame_generation", False))
+                st.display.menu.set_state({"frame_generation": state})
+                print(f"[main] frame generation: {'on' if state else 'off'} "
+                      f"({int(st.cfg.get('frame_multiplier', 2))}x)")
+                st.display.alert(UI_STRINGS[st.lang].get(
+                    "fg_on" if state else "fg_off",
+                    "DLSS FG ON" if state else "DLSS FG OFF"))
             elif cmd == "record":
                 # Num0: record the NR frame into an MP4. The frames
                 # are requested from the worker through

@@ -65,13 +65,13 @@ DEFAULTS = dict(profile=0, preset=0, style=1, auto_mask=1, ui_correction=0,
 LIVE = (
     ("style", dict(style=0), dict(style=1), {}),
     ("intensity", dict(intensity=0.0), dict(intensity=1.0), {}),
-    ("local_tone", dict(local_tone=0.0), dict(local_tone=1.5), {}),
+    ("local_tone", dict(local_tone=0.0), dict(local_tone=2.0), {}),
     ("local_structure", dict(local_structure=0.0),
-     dict(local_structure=1.5), {}),
+     dict(local_structure=2.0), {}),
     # Inert without the auto mask - which is one of the reasons the mask is
     # on in every profile now. The explicit extra stays: this test must not
     # depend on what the shipped defaults happen to be.
-    ("skin_structure", dict(skin_structure=-1.0), dict(skin_structure=2.0),
+    ("skin_structure", dict(skin_structure=-1.0), dict(skin_structure=2.5),
      dict(auto_mask=1)),
     ("auto_mask", dict(auto_mask=0), dict(auto_mask=1), {}),
 )
@@ -217,7 +217,8 @@ def main() -> int:
             print(f"    stability - one frame {STABLE_FRAMES} times, no reset:")
             for label, over in (("defaults", {}),
                                 ("top of the range",
-                                 dict(local_tone=1.5, local_structure=1.5))):
+                                 dict(local_tone=2.0, local_structure=2.0,
+                                      skin_structure=2.5))):
                 apply(proc, dict(DEFAULTS, **over))
                 series = pump(proc, frames=STABLE_FRAMES, reset_first=True,
                               collect=True)

@@ -104,5 +104,53 @@ def main():
     print("OK: FG controls, multiplier steps, persistence and wire flags")
 
 
+def _fg_verdict_checks() -> None:
+    """The switch follows reality (issue #76), pure unit level."""
+    from types import SimpleNamespace
+
+    # A refusal AFTER the enable marker -> off with the alert armed.
+    alerts = []
+    logs = ["[fg] UI: on, 2x", "[fg] Init_Ext -> 0xBAD00002",
+            "[fg] CreateFeature failed 0xBAD00002"]
+    st = SimpleNamespace(cfg={"frame_generation": True}, worker_logs=logs,
+                         fg_alerted=False,
+                         lang="en", display=SimpleNamespace(
+                             alert=lambda *a, **k: alerts.append(a)))
+    with patch.object(settings_io, "save_menu_layout"):
+        settings_io.refresh_fg_ok(st)
+    assert st.cfg["frame_generation"] is False, "the switch must flip back off"
+    assert st.fg_alerted is True, "the alert must be armed once"
+    assert len(alerts) == 1, f"exactly one alert, got {len(alerts)}"
+    # The switch is off now: refresh is a no-op, nothing re-fires.
+    settings_io.refresh_fg_ok(st)
+    assert len(alerts) == 1, "the switch already off must not alert again"
+    # Flipping it back on re-arms the alert (the user retries).
+    st.cfg["frame_generation"] = True
+    st.fg_alerted = False
+    with patch.object(settings_io, "save_menu_layout"):
+        settings_io.refresh_fg_ok(st)
+    assert len(alerts) == 2, "a fresh attempt must be told again"
+
+    # Success ("[fg] 2x enabled at ...") leaves the switch alone.
+    logs_ok = ["[fg] UI: on, 2x", "[fg] 2x enabled at 3840x2160, format=28"]
+    st2 = SimpleNamespace(cfg={"frame_generation": True}, worker_logs=logs_ok,
+                          fg_alerted=False, lang="en",
+                          display=SimpleNamespace(alert=lambda *a, **k: print("ALERT?")))
+    settings_io.refresh_fg_ok(st2)
+    assert st2.cfg["frame_generation"] is True, "a working FG must stay on"
+    assert st2.fg_alerted is False
+
+    # A stale refusal from BEFORE the last "UI: on" must not flip the switch.
+    logs_stale = ["[fg] CreateFeature failed 0xBAD00002", "[fg] UI: off, 2x",
+                  "[fg] UI: on, 2x"]
+    st3 = SimpleNamespace(cfg={"frame_generation": True}, worker_logs=logs_stale,
+                          fg_alerted=False, lang="en",
+                          display=SimpleNamespace(alert=lambda *a, **k: None))
+    settings_io.refresh_fg_ok(st3)
+    assert st3.cfg["frame_generation"] is True, "a stale refusal must not flip it"
+    print("    fg_verdict: refusal flips + alerts once; success and stale do not")
+
+
 if __name__ == "__main__":
     main()
+    _fg_verdict_checks()

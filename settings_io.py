@@ -190,17 +190,24 @@ WORK_SCALE_MIN = 0.1
 # it allowed values where the picture gets worse rather than stronger.
 #
 #   intensity        clamped at 1.0 inside NVIDIA's DLL. 1.0, 1.25, 1.5, 2
-#                    and 2.5 all hash to the same frame.
-#   tone, structure  the detail metric keeps climbing past 1.5, but what is
-#                    climbing is shimmer: the metric counts trembling noise
-#                    as fine detail. 1.5 is where the picture stops
-#                    improving and only starts moving.
+#                    and 2.5 all hash to the same frame (re-measured 15.09
+#                    on 310.8.0 and again with the +0.5 tops request - still
+#                    dead). The slider STAYS at 1.0: a longer travel would be
+#                    the exact lie the range was rebuilt to remove.
+#   tone, structure  the detail metric keeps climbing past 1.5, and so does
+#                    the shimmer: the metric counts trembling noise as fine
+#                    detail. Measured 15.09: 2.0 still moves the picture
+#                    (distinct frames) and is a stronger look, so the top
+#                    moved 1.5 -> 2.0 on request; shimmer at 2.0/2.0 is
+#                    ~2.1 of 255 against ~1.5 at the old tops (test_param_effect
+#                    pins the ceilings).
 #   skin_structure   inert unless auto_mask is on, and -1 is "off".
+#                    2.5 measured alive on 15.09; the top moved 2.0 -> 2.5.
 PARAM_RANGE = {
     "intensity": (0.0, 1.0),
-    "local_tone": (0.0, 1.5),
-    "local_structure": (0.0, 1.5),
-    "skin_structure": (-1.0, 2.0),
+    "local_tone": (0.0, 2.0),
+    "local_structure": (0.0, 2.0),
+    "skin_structure": (-1.0, 2.5),
 }
 
 
@@ -363,10 +370,17 @@ def resolve_params(cfg: dict) -> dict:
     """
     if cfg["profile"] in PROFILES:
         params = dict(PROFILES[cfg["profile"]])
+        # A built-in profile never picks the model any more (user rule
+        # 15.09): profiles move the four sliders, the model is its own
+        # control. A fresh config with no style key gets Natural; a saved
+        # one keeps whatever the user chose (the override below).
+        params["style"] = 1
     else:
         params = dict(load_presets(cfg).get(cfg["profile"], PROFILES["Natural"]))
-    # The saved style overrides the profile's, the same way the four
-    # sliders do - the user picked it after picking the profile.
+        # A user preset DOES carry the model it was saved with - that is
+        # what "save preset" promises.
+    # The live style overrides either source: it is the value the user
+    # last set in the menu, and it is saved on every menu close.
     style = cfg.get("style")
     if isinstance(style, int) and not isinstance(style, bool) and 0 <= style <= 2:
         params["style"] = style
@@ -571,6 +585,64 @@ def refresh_gpu_ok(st) -> None:
                 "unprocessed"), 8.0)
 
 
+# FG's own refusal lines, the same shape as NR's: the worker says what the
+# runtime answered. Init_Ext logs its HRESULT on every attempt, so success
+# must be excluded by VALUE (NVSDK_NGX_Result_Success is 0x00000001).
+FG_VERDICT_FAIL = ("[fg] CreateFeature failed",
+                   "[fg] nvngx_dlssg.dll load failed",
+                   "[fg] presenter failed")
+
+
+def fg_verdict(lines):
+    """True / False / None from the worker's FG lines, NEWEST FIRST.
+
+    Only lines NEWER than the last "[fg] UI: on" marker count: a refusal
+    from an earlier, already-handled attempt must not flip the switch
+    again. Success is the presenter's own "[fg] Nx enabled at ..." line.
+    None means the runtime has not answered yet.
+    """
+    for line in lines:
+        if "[fg] UI: on" in line:
+            return None            # just enabled - no answer yet
+        if "[fg] UI: off" in line:
+            return None            # disabled - nothing to judge
+        if "enabled at" in line and "[fg]" in line:
+            return True            # "[fg] 2x enabled at 3840x2160"
+        if "[fg] Init_Ext -> 0x" in line and "0x00000001" not in line:
+            return False           # the FG runtime itself refused
+        if any(token in line for token in FG_VERDICT_FAIL):
+            return False
+    return None
+
+
+def refresh_fg_ok(st) -> None:
+    """The FG switch reflects reality (issue #76).
+
+    When the FG runtime refuses on this card the switch used to stay ON
+    while nothing interpolated - no rate split in the header, no reason
+    anywhere on screen. The worker knows (it logs the refusal), so on a
+    refusal the switch goes back off with an alert naming the reason.
+    Once per attempt: flipping the switch back on arms the alert again.
+    """
+    if not bool(st.cfg.get("frame_generation", False)):
+        return
+    if getattr(st, "fg_alerted", False):
+        return
+    verdict = fg_verdict(reversed(st.worker_logs[-200:]))
+    if verdict is not False:
+        return
+    st.fg_alerted = True
+    st.cfg["frame_generation"] = False
+    save_menu_layout(st)
+    # Eight seconds like the NR refusal: this is the reason frame
+    # generation will not appear at all, not a notification that something
+    # was applied.
+    st.display.alert(UI_STRINGS[st.lang].get(
+        "fg_fail",
+        "Frame Generation could not start on this GPU - the switch is "
+        "back off"), 8.0)
+
+
 def warn_hdr(st) -> None:
     """Warn only when an HDR display actually uses the SDR capture path.
 
@@ -731,7 +803,7 @@ def menu_payload(st) -> dict:
             (PROFILES.get(st.cfg["profile"])
              or st.presets.get(st.cfg["profile"]) or {}).items()
             if k in ("intensity", "local_tone", "local_structure",
-                     "skin_structure", "style")},
+                     "skin_structure")},
         "lang": st.lang,
         "recording": st.recorder is not None,
         "work_size": f"{st.work_w}x{st.work_h}",

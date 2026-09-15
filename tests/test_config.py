@@ -141,7 +141,8 @@ def main() -> int:
 
     # 8. Numeric strings and range boundaries survive load and resolution.
     # The boundaries are the measured ones now: intensity stops at 1.0
-    # because NVIDIA's DLL clamps it there, tone and structure at 1.5.
+    # because NVIDIA's DLL clamps it there, tone and structure at 2.0,
+    # skin_structure at 2.5 (the +0.5 tops move, 15.09).
     for key, raw, want in (
             ("intensity", "0.0", 0.0),
             ("local_tone", "1.5", 1.5),
@@ -169,9 +170,9 @@ def main() -> int:
     # A user with intensity 2.5 saved was already seeing what 1.0 gives.
     for key, raw, want in (("intensity", 2.5, 1.0),
                            ("intensity", -0.1, 0.0),
-                           ("local_tone", 2.5, 1.5),
-                           ("local_structure", 2.0, 1.5),
-                           ("skin_structure", 2.5, 2.0),
+                           ("local_tone", 2.5, 2.0),
+                           ("local_structure", 2.5, 2.0),
+                           ("skin_structure", 2.6, 2.5),
                            ("skin_structure", -1.1, -1.0)):
         old_cfg = dict(GOOD)
         old_cfg[key] = raw

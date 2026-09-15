@@ -11,8 +11,8 @@ same neural network that DLSS 5 games use, and comes back sharper.
 > **Notice.** Not affiliated with NVIDIA; NVIDIA, DLSS and the NVIDIA logo
 > are NVIDIA Corporation's trademarks. The bundled NVIDIA runtimes
 > (`nvngx_dlssnr.dll`, `nvngx_dlssg.dll`) are NVIDIA's property, included
-> unmodified as received, research/educational use only, no warranty, use
-> at your own risk. Rights holders: say the word and the next build ships without them.
+> unmodified, research/educational use only, no warranty, use at your own
+> risk. Rights holders: say the word and the next build ships without them.
 
 ## How it looks
 
@@ -28,8 +28,8 @@ same neural network that DLSS 5 games use, and comes back sharper.
 </table>
 
 *One menu inside the overlay, in a light and a dark theme; the settings page;
-the window list. The **Before / after wipe** slider splits the screen down the
-middle so you can see what the effect is actually doing.*
+the window list — and the **Before / after wipe** slider that splits the
+screen down the middle.*
 
 ## What you need
 
@@ -72,6 +72,7 @@ the menu. The hotkeys are on the numpad, so **Num Lock has to be on**.
 |---|---|
 | **Num2** | open / close the menu |
 | **Num1** | neural rendering on / off |
+| **Num7** | frame generation on / off |
 | **Num3** | screenshot |
 | **Num0** | start / stop recording, with sound |
 | **Num4** / **Num6** | processing resolution down / up |
@@ -86,31 +87,31 @@ closed, clicks go straight through it.
 
 The whole screen is the default. **Source**, second in the menu, switches
 between **Fullscreen** and **Window mode**; choosing the second opens the list
-of windows, and hovering a row highlights that window on the screen. **Num5**
-is the shortcut when the window is already in front of you: point at it and
-press. The overlay follows the window as it moves, and resizing it — a video
-going fullscreen, a different player size — reconfigures the worker in place,
-with no black moment. Minimising the window pauses processing.
+of windows, and hovering a row highlights that window. **Num5** is the
+shortcut when the window is already in front of you: point at it and press.
+The overlay follows the window as it moves, and resizing it — a video going
+fullscreen, a different player size — reconfigures the worker in place, with
+no black moment. Minimising the window pauses processing.
 
 ## The menu
 
-The dot next to your graphics card is green when neural rendering is really
-running on it, red when it is not.
+The dot next to your graphics card is green when neural rendering really runs
+on it, red when it is not.
 
 - **Source** — the whole screen or one window, and which window.
 - **Profile** — how strong the effect is, from *Faithful* to *Extreme*;
   *Natural* by default. The four sliders underneath are the same thing in
   detail. **Save preset** stores the current values under a name and puts it
   in the Profile list; **Delete preset** removes it. Dark scenes are
-  brightened automatically so shadows keep their detail.
+  brightened automatically so shadows keep their detail. A profile moves the
+  sliders only — the model below stays where you put it.
 - **Model** — *which* network produces the picture, as opposed to how
   strongly. Three of them, and they are three different outputs rather than
-  three strengths: **Default** is the one that suits a desktop, **Natural**
-  and **Cinematic** are tuned for games and soften photographs and small
-  text.
-  Measured on a desktop capture, fine detail against the untouched frame:
-  Default **+18.7%**, Natural **−11.4%**, Cinematic **−23.4%**. Picking a
-  profile sets a style; this overrides it.
+  three strengths: **Default** suits a desktop, **Natural** and **Cinematic**
+  are tuned for games and soften photographs and small text. Measured on a
+  desktop capture, fine detail against the untouched frame: Default
+  **+18.7%**, Natural **−11.4%**, Cinematic **−23.4%**. A saved preset keeps
+  the model it was saved with.
 - **Before / after wipe** — leaves the left part of the screen unprocessed so
   you can see what the effect is doing. Back to 0 when done.
 - **Boost** — on by default. The network runs at a reduced resolution and a
@@ -119,27 +120,28 @@ running on it, red when it is not.
   The picture stays sharp — the network's result is composed onto your
   original frame, so text and edges keep full resolution. Turn it off to
   compare.
-- **DLSS 4.5 FG** — Frame Generation, opt-in, with a ×2 / ×3 / ×4 multiplier
-  beside the switch. DLSS-G's own desktop build: the depth is flat and the
-  motion is estimated, there is no engine cooperation, so UI and text can
-  distort — that is the known cost of the approach. The header pairs the two
-  honest rates when they differ: "47 / 111 fps" is the network's output, then
-  what the presenter shows. Validated on RTX 50-series; adapters beyond it
-  are unconfirmed.
+- **DLSS 4.5 FG** — Frame Generation, off by default, with a ×2 / ×3 / ×4
+  multiplier beside the switch (and on **Num7**). DLSS-G's own desktop
+  build: the depth is flat and the motion is estimated, there is no engine
+  cooperation, so UI and text can distort — the known cost of the approach.
+  The header pairs the two honest rates when they differ: "47 / 111 fps" is
+  the network's output, then what the presenter shows. DLSS-G has a hardware
+  floor of its own: on a card below Ada the runtime refuses and **the switch
+  flips back off with a short notice** — no silent ON. Validated on RTX
+  50-series; adapters beyond it are unconfirmed.
 
 Everything else is behind the sliders icon: which monitor is processed and
 which card does it, HDR compatibility, the screenshot folder, Spout2 output,
-the recording indicator, leaving an unchanged screen alone, opening the menu
-on launch, autostart, the key assignments, the theme — and the language, of
-which there are **12**: English, Russian, French, German, Spanish, Italian,
-Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
+the recording indicator, leaving an unchanged screen alone, the key
+assignments, the theme — and the language, of which there are **12**: English,
+Russian, French, German, Spanish, Italian, Portuguese, Polish, Ukrainian,
+Chinese, Japanese and Korean.
 
 ## Swapping a runtime
 
-Everything ships in the archive and nothing is downloaded. To run your own
-build of a runtime (a newer DLSS-G, say), drop the DLL into
-**`native/libraries/`** - it wins over the bundled copy (a README sits
-there); `nr_dll` config / `NS_NR_DLL` env remain the NR override.
+Everything ships in the archive. To run your own runtime build (a newer
+DLSS-G, say), drop the DLL into **`native/libraries/`** — it wins over the
+bundled copy; `nr_dll` / `NS_NR_DLL` remain the NR override.
 
 ## Recording and screenshots
 
@@ -154,7 +156,7 @@ settings once and it will start there every time.
 **Recording externally:**
 
 - **OBS (recommended):** turn on **Spout2 output (OBS)** in the settings, then
-  add a **Spout2 Capture** source in OBS. Works in any mode. Off by default.
+  add a **Spout2 Capture** source in OBS. Works in any mode.
 - **NVIDIA App:** it has no Spout input, so use one-window mode — pick the
   window, record, then switch back to **Fullscreen**. In that mode the overlay
   is visible to screen capture; in full-screen mode it hides itself.
@@ -171,11 +173,9 @@ drawn over it — a Windows rule. Switch the game to *borderless*.
 **The menu pointer is missing or frozen.** A fullscreen game hides the system
 cursor, and the overlay only shows that one. Borderless fixes it.
 
-**The picture is soft.** Turn *Boost* off, or move its slider up a step.
-
 **Everything is too bright and the sliders do nothing.** HDR is on for that
-display. Turn it off (Win+Alt+B), or try **HDR compatibility** in the settings,
-under CAPTURE — it is experimental; see [HDR setup](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
+display. Turn it off (Win+Alt+B), or try **HDR compatibility** in the
+settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
 
 **A key does nothing.** Something else claimed it; reassign it in the menu.
 
@@ -187,14 +187,14 @@ under CAPTURE — it is experimental; see [HDR setup](https://github.com/perseva
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
 - **Window mode, active-state bug (in progress):** when another window takes
-  focus, the NR window can stop responding to dragging. An audit found seven
-  sources; three are fixed (z-order churn, the WGC resize reopen loop, the FG
-  fence token) and the rest is under active work.
+  focus, the NR window can stop responding to dragging. Three of the found
+  sources are fixed (z-order churn, the WGC reopen loop, the FG fence token);
+  the rest is under active work.
 
 ## License
 
 The code here is MIT. NVIDIA's runtimes ship unmodified and remain NVIDIA's
 property: `nvngx_dlssnr.dll` is the leaked 310.8.0 build (sm_75/86/89/120
 kernels, RTX 20-50), `nvngx_dlssg.dll` is the public 310.9.1.0
-redistributable - both included as received, no guarantees, research-only.
-Interface faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).
+redistributable — both as received, no guarantees, research-only. Interface
+faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).

@@ -57,6 +57,7 @@ THEMES = {
 # config["hotkeys"].
 HOTKEY_ROWS = (
     ("toggle", "hk_nr"),
+    ("framegen", "hk_framegen"),
     ("settings", "hk_menu"),
     ("screenshot_menu", "hk_shot"),
     ("record", "hk_record"),
@@ -1506,6 +1507,10 @@ class OverlayMenu:
         payload. Floats are compared with a tolerance a slider cannot land
         inside: the sliders step in hundredths, and a saved config comes back
         through float() twice.
+
+        The model does NOT count (user rule 15.09): it is its own control,
+        reverting the profile restores the four sliders and leaves the
+        model where the user put it.
         """
         defaults = self.state.get("param_defaults") or {}
         if not defaults:
@@ -1517,8 +1522,6 @@ class OverlayMenu:
             if abs(float(params.get(key, 0.0))
                    - float(defaults[key])) > 0.005:
                 return True
-        if "style" in defaults:
-            return int(self.state.get("style", 1)) != int(defaults["style"])
         return False
 
     def _button_click(self, key: str) -> list[tuple]:

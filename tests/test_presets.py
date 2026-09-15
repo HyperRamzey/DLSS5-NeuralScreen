@@ -75,7 +75,7 @@ def main() -> int:
     cfg_old = _base_cfg()
     cfg_old["presets"] = old
     loaded = load_presets(cfg_old).get("From 1.8.2", {})
-    if loaded.get("intensity") != 1.0 or loaded.get("local_structure") != 1.5:
+    if loaded.get("intensity") != 1.0 or loaded.get("local_structure") != 2.0:
         failures.append(f"an old preset must be pulled into range, got {loaded}")
     if "ui_correction" in loaded or "profile" in loaded:
         failures.append(f"the dead fields must not survive the load, got {loaded}")
@@ -153,6 +153,31 @@ def main() -> int:
     # 6. The built-in profiles are untouched by the preset machinery.
     if "Natural" not in PROFILES or "My Game" in PROFILES:
         failures.append("built-in profiles must not be polluted by presets")
+
+    # 7. The model is NOT carried by built-in profiles any more (user rule
+    #    15.09): switching to a profile leaves the chosen model alone, and
+    #    a fresh config opens on Natural.
+    import settings_io as _sio
+    cfg7 = _base_cfg()
+    cfg7["profile"] = "Strong / Cinematic"
+    no_key = _sio.resolve_params(cfg7)
+    if no_key["style"] != 1:
+        failures.append(f"a fresh config must open on Natural (style 1), "
+                        f"got {no_key['style']}")
+    cfg7["style"] = 2
+    kept = _sio.resolve_params(cfg7)
+    if kept["style"] != 2:
+        failures.append(f"the live model must survive a profile switch, "
+                        f"got {kept['style']}")
+    # ...while a preset still carries its own model.
+    cfg7b = _base_cfg()
+    cfg7b["presets"] = good
+    cfg7b["profile"] = "My Game"
+    _sio.PROFILES  # sanity: import resolved
+    preset_params = _sio.resolve_params(cfg7b)
+    if preset_params["style"] != 2:
+        failures.append(f"a preset must keep the model it was saved with, "
+                        f"got {preset_params['style']}")
 
     if failures:
         print("FAIL:")

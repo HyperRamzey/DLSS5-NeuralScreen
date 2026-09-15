@@ -308,13 +308,16 @@ def main() -> int:
         if out != [("profile", "Natural")]:
             failures.append(f"revert: expected [('profile', 'Natural')], "
                             f"got {out}")
-    # The model is part of the profile too.
+    # The model is NOT part of the profile any more (user rule 15.09): it
+    # is its own control, and a model change must not offer "revert" -
+    # reverting the profile restores the four sliders and leaves the model
+    # where the user put it.
     menu.set_state({"params": {"intensity": 1.0, "local_tone": 0.5,
                                "local_structure": 1.0, "skin_structure": -1.0},
                     "style": 2})
     menu.layout(3840, 2160)
-    if find(menu, "button", "revert_profile") is None:
-        failures.append("a changed model must offer revert too")
+    if find(menu, "button", "revert_profile") is not None:
+        failures.append("a changed model must NOT offer revert any more")
     menu.set_state({"style": 1})
     # Back to a painted layout: the source segment below reads the cells the
     # drawer fills, and the state changes above invalidated them.

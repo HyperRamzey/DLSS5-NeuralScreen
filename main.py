@@ -275,6 +275,7 @@ class _Pipeline:
         "gpu_ok",
         "gpu_alerted",
         "gpu_switch_pending",
+        "fg_alerted",
         "gray_active",
         "mon_origin",
         "guide_fails",
@@ -550,6 +551,9 @@ def main() -> int:
             # something was added to this loop.
             if st.frame_index % 30 == 0:
                 settings_io.refresh_gpu_ok(st)
+                # And whether Frame Generation came up at all (issue #76:
+                # the switch used to stay ON after the runtime refused).
+                settings_io.refresh_fg_ok(st)
                 # And whether the display being captured is in HDR. The
                 # network is trained on SDR: on an HDR desktop the result
                 # reads as "everything is too bright and the sliders do

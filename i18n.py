@@ -1767,6 +1767,20 @@ STRINGS["ru"].update({
 
 STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
 
+for _strings in STRINGS.values():
+    _strings.update({
+        "fg_on": "DLSS FG ON",
+        "fg_off": "DLSS FG OFF",
+        "fg_fail": "Frame Generation could not start on this GPU - the switch is back off",
+        "hk_framegen": "Frame Generation on/off",
+    })
+STRINGS["ru"].update({
+    "fg_on": "DLSS FG ВКЛ",
+    "fg_off": "DLSS FG ВЫКЛ",
+    "fg_fail": "Генерация кадров не запустилась на этой видеокарте - переключатель выключен обратно",
+    "hk_framegen": "Генерация кадров вкл/выкл",
+})
+
 STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множитель кадров'})
 
 STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})

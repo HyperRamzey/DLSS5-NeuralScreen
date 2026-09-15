@@ -1721,6 +1721,8 @@ static constexpr uint32_t CAPTURE_MAGIC = 0x31504143u; // CAP1
 static constexpr uint32_t FRAME_FLAG_PREPARED = 0x1000u;
 static constexpr uint32_t FRAME_MAGIC = 0x314D5246u; // "FRM1"
 static constexpr uint32_t OUT_MAGIC   = 0x3154554Fu; // "OUT1"
+static constexpr uint32_t OUT_STATUS_OK = 0x1u;
+static constexpr uint32_t OUT_STATUS_SKIPPED = 0x2u;
 static constexpr uint32_t RESIZE_MAGIC    = 0x5A534E52u; // "RNSZ" -- reconfigure on the fly (work size + params)
 static constexpr uint32_t RESIZE_ACK_MAGIC = 0x4B434152u; // "RACK" -- worker -> client reply to RNSZ
 static constexpr uint32_t SHM_MAGIC     = 0x494D4853u; // "SHMI" -- client -> worker: frame payload lives in shared memory
@@ -3831,11 +3833,11 @@ static bool DeliverPixels(const std::vector<BYTE> &output, uint32_t index,
         memcpy(g_out_map + 8, output.data(), output.size());
         ++seq;                              // even: done
         memcpy(g_out_map, &seq, sizeof(seq));
-        VideoResultHeader out = { OUT_MAGIC, index, 1u, OUT_BYTES_IN_SHM,
+        VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK, OUT_BYTES_IN_SHM,
                                   g_last_eval_result, pts };
         return WriteExact(g_wire, &out, sizeof(out));
     }
-    VideoResultHeader out = { OUT_MAGIC, index, 1u,
+    VideoResultHeader out = { OUT_MAGIC, index, OUT_STATUS_OK,
                               static_cast<uint32_t>(output.size()),
                               g_last_eval_result, pts };
     return WriteExact(g_wire, &out, sizeof(out))
@@ -6159,7 +6161,7 @@ static int RunVideo()
             { Log("[cap] gray update failed; refusing mismatched motion"); return 10; }
             prepared_index = fh.index;
             prepared = true;
-            VideoResultHeader ack = {OUT_MAGIC, fh.index, 1u, 0u, 0u, fh.pts};
+            VideoResultHeader ack = {OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, 0u, fh.pts};
             if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
@@ -6269,7 +6271,7 @@ static int RunVideo()
                 // Not a single real desktop frame yet: keep the protocol
                 // paired with an empty OUT1 and wait for the screen to change,
                 // WITHOUT running NGX on an empty colour (evaluate on zero hangs).
-                VideoResultHeader empty = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
+                VideoResultHeader empty = { OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, g_last_eval_result, fh.pts };
                 if (!WriteExact(g_wire, &empty, sizeof(empty))) return 10;
                 ProfileFrameResult(v, fh, false, "idle");
                 if (phase_on) ++g_ph_idle;
@@ -6320,7 +6322,9 @@ static int RunVideo()
                     // the frame it sits in can still move - keep the overlay on it.
                     FollowCapturedWindow();
                     ReassertPresentTopmost();
-                    VideoResultHeader idle = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
+                    VideoResultHeader idle = { OUT_MAGIC, fh.index,
+                        OUT_STATUS_OK | OUT_STATUS_SKIPPED, 0u,
+                        g_last_eval_result, fh.pts };
                     if (!WriteExact(g_wire, &idle, sizeof(idle))) return 10;
                     ProfileFrameResult(v, fh, false, "idle");
                     if (phase_on) ++g_ph_idle;
@@ -6469,7 +6473,7 @@ static int RunVideo()
             }
             else
             {
-                VideoResultHeader out = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
+                VideoResultHeader out = { OUT_MAGIC, fh.index, OUT_STATUS_OK, 0u, g_last_eval_result, fh.pts };
                 if (!WriteExact(g_wire, &out, sizeof(out))) return 10;
             }
         }

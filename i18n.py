@@ -1802,3 +1802,23 @@ STRINGS['zh'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multip
 STRINGS['ja'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'フレーム倍率'})
 
 STRINGS['ko'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '프레임 배수'})
+
+for _strings in STRINGS.values():
+    _strings.update({
+        "frame_limit": "Frame limit",
+        "frame_limit_30": "30 fps",
+        "frame_limit_60": "60 fps",
+        "frame_limit_custom": "Custom",
+        "frame_limit_unlimited": "Unlimited",
+        "frame_limit_custom_value": "Custom limit",
+        "nr_short": "NR",
+        "fg_short": "FG",
+        "skipped_short": "SKIP",
+    })
+STRINGS["ru"].update({
+    "frame_limit": "Ограничение кадров",
+    "frame_limit_custom": "Своё",
+    "frame_limit_unlimited": "Без ограничений",
+    "frame_limit_custom_value": "Свой предел",
+    "skipped_short": "ПРОП.",
+})

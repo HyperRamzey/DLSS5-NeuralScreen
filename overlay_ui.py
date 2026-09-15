@@ -191,6 +191,8 @@ class OverlayMenu:
             "display_fps": None,
             "frame_generation": False,
             "frame_multiplier": 2,
+            "frame_limit_mode": "unlimited",
+            "frame_limit_custom": 90,
             "screen_size": "",
             "profile": "",
             "profiles": [],
@@ -907,6 +909,18 @@ class OverlayMenu:
                 btn = items[-3 + idx]
                 btn.extra["filled"] = multiplier == value
 
+            limit_mode = str(self.state.get("frame_limit_mode", "unlimited"))
+            choice("frame_limit_mode", s.get("frame_limit", "Frame limit"),
+                   limit_mode, ["30", "60", "custom", "unlimited"],
+                   labels=[s.get("frame_limit_30", "30 fps"),
+                           s.get("frame_limit_60", "60 fps"),
+                           s.get("frame_limit_custom", "Custom"),
+                           s.get("frame_limit_unlimited", "Unlimited")])
+            if limit_mode == "custom":
+                custom = int(self.state.get("frame_limit_custom", 90))
+                slider("frame_limit_custom", 15, 240, custom,
+                       s.get("frame_limit_custom_value", "Custom limit"),
+                       value_text=f"{custom} fps")
 
             boost = bool(self.state.get("nr_small"))
             toggle("boost", s["boost"], boost)
@@ -1575,6 +1589,11 @@ class OverlayMenu:
             # applies the new multiplier to the worker.
             self.state["frame_multiplier"] = int(value)
             return [("frame_multiplier", int(value))]
+        if key == "frame_limit_mode":
+            if value in ("30", "60", "custom", "unlimited"):
+                self.state["frame_limit_mode"] = value
+                return [("frame_limit_mode", value)]
+            return []
         if key == "source":
             # The same two commands the Actions buttons sent: back to the
             # whole screen, or the window list page.
@@ -1603,6 +1622,14 @@ class OverlayMenu:
             item.value = value
             self.state["frame_multiplier"] = value
             return [("frame_multiplier", value)]
+        if item.key == "frame_limit_custom":
+            value = min(240, max(15, int(value + 0.5)))
+            if value == item.value:
+                return []
+            item.value = value
+            self.state["frame_limit_custom"] = value
+            item.extra["value_text"] = f"{value} fps"
+            return [("frame_limit_custom", value)]
         value = round(round(value / 0.05) * 0.05, 2)
         if abs(value - item.value) < 1e-9:
             return []
@@ -1886,26 +1913,22 @@ class OverlayMenu:
         # here with no upper bound - "NVIDIA GeForce RTX 5070 Ti Laptop GPU"
         # is a real one - so it is the only thing that gets elided, and it
         # disappears rather than collide when the room runs out.
-        # The frame rate stays a frame rate. It used to be replaced by the
-        # word "idle" while the network skipped an unchanged screen, and the
-        # reading jumped between a number and a word as the screen came and
-        # went - a counter that twitches instead of counting (user, 13.09).
-        # The loop keeps running through a skipped stretch, so the number is
-        # true the whole time. State belongs in the sentence on the left;
-        # numbers stay numbers.
+        # NR is the rate of real neural evaluations. Idle acknowledgements do
+        # not inflate it; their cumulative count is shown separately. FG is
+        # the worker presenter's reported output rate, not an inferred display
+        # refresh rate.
         fps = st.get("fps")
         shown = st.get("display_fps")
         readings = []
         if not paused and not failed:
-            # Frame Generation: the presenter's rate next to the network's.
-            # "42 / 84 fps" - the first is what the network produced, the
-            # second what the screen shows (real + generated frames).
-            if isinstance(shown, (int, float)) and isinstance(fps, (int, float)) \
-                    and shown > fps + 0.5:
-                readings.append(f"{fps:.0f} / {shown:.0f} fps")
-            else:
-                readings.append(f"{fps:.1f} fps"
-                                if isinstance(fps, (int, float)) else "— fps")
+            readings.append(
+                f"{s.get('nr_short', 'NR')} {fps:.1f}"
+                if isinstance(fps, (int, float)) else
+                f"{s.get('nr_short', 'NR')} —")
+            if isinstance(shown, (int, float)) and shown > 0:
+                readings.append(f"{s.get('fg_short', 'FG')} {shown:.0f}")
+            skipped = max(0, int(st.get("skipped_static", 0) or 0))
+            readings.append(f"{s.get('skipped_short', 'SKIP')} {skipped}")
             readings.append(str(st.get("resolution", "—")))
         x = rect.right - pad
         for value in reversed(readings):

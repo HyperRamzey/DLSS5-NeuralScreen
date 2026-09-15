@@ -91,6 +91,7 @@ import commands
 import startup
 import settings_io
 import pipeline
+from pacing import FramePacer, FrameRateMeter
 # The restart cooldown is the loop's business too: it is what the
 # deferred apply waits for.
 from pipeline import (AUTO_REVIVE_BACKOFF,  # noqa: F401
@@ -137,7 +138,8 @@ from protocol import (  # noqa: F401
     GRAY_ACK_FMT, GRAY_ACK_MAGIC, GRAY_FMT, GRAY_MAGIC, HEADER_FMT,
     MOTION_ACK_FMT, MOTION_ACK_MAGIC, MOTION_FMT, MOTION_MAGIC,
     OUTS_ACK_FMT, OUTS_ACK_MAGIC, OUTS_FMT, OUTS_MAGIC, OUT_BYTES_IN_SHM,
-    OUT_FMT, OUT_MAGIC, RACK_FMT, RESIZE_ACK_MAGIC, RESIZE_FLAG_NR_SMALL,
+    FrameReply, OUT_FMT, OUT_MAGIC, OUT_STATUS_OK, OUT_STATUS_SKIPPED, RACK_FMT,
+    RESIZE_ACK_MAGIC, RESIZE_FLAG_NR_SMALL,
     RESIZE_FMT, RESIZE_MAGIC, SHM_ACK_FMT, SHM_ACK_MAGIC, SHM_FMT,
     SHM_MAGIC, VIDEO_MAGIC, WGC_ACK_FMT, WGC_ACK_MAGIC, WGC_FMT,
     WGC_MAGIC, WINDOW_ACK_FMT, WINDOW_ACK_MAGIC, WINDOW_FLAG_CAPTURABLE,
@@ -319,6 +321,7 @@ class _Pipeline:
         "pending_apply",
         "pending_shot",
         "shot_rgba",
+        "skipped_static_frames",
         "perf",
         "present_attempted",
         "present_mode",
@@ -469,7 +472,8 @@ def main() -> int:
         # The loop's own state, next to the loop that owns it.
         guide = None  # Num1 before the first NR frame must not raise NameError
         startup_pending = True  # open the menu once the picture is alive
-        fps_window: list[float] = []
+        nr_rate = FrameRateMeter(FPS_LOG_INTERVAL)
+        frame_pacer = FramePacer()
         last_log = time.monotonic()
         last_fps = 0.0
         last_perf_log = time.monotonic()
@@ -933,6 +937,9 @@ def main() -> int:
                 st.work_frame = None
                 continue
             _perf("recv", t0)
+            frame_skipped = bool(getattr(st.reader, "last_skipped", False))
+            if frame_skipped:
+                st.skipped_static_frames += 1
             # A frame arrived - the failure chain is broken. Without the reset
             # the counter accumulated across the whole session and three
             # unrelated failures (even an hour apart) turned NR off.
@@ -1070,12 +1077,17 @@ def main() -> int:
                     st.display.raise_topmost()
                 st.display.alert(UI_STRINGS[st.lang]["nr_on"])
             _perf("show", t0)
+            completed_at = time.perf_counter()
+            if not bypass and not frame_skipped:
+                nr_rate.record(completed_at)
+            last_fps = nr_rate.rate(completed_at)
             st.display.set_hud({
                 "fps": last_fps,
                 # What the presenter shows with Frame Generation on - the
                 # worker reports it every two seconds. The HUD pairs the
                 # network rate with it ("42 / 84 fps"); None while FG is off.
                 "display_fps": settings_io._fg_displayed_fps(st),
+                "skipped_static": st.skipped_static_frames,
                 "status": status,
                 "resolution": f"{st.width}x{st.height}",
                 "profile": st.cfg["profile"],
@@ -1103,18 +1115,16 @@ def main() -> int:
                 else:
                     st.display.alert(UI_STRINGS[st.lang]["started"], 3.5)
             st.work_frame = next_frame  # None -> grab at the start of the next iteration
-            fps_window.append(time.perf_counter() - loop_start)
-            if len(fps_window) > 120:
-                fps_window.pop(0)
 
-            if now - last_log >= FPS_LOG_INTERVAL:
-                last_fps = len(fps_window) / sum(fps_window) if fps_window else 0.0
+            log_now = time.monotonic()
+            if log_now - last_log >= FPS_LOG_INTERVAL:
                 scene = f" | scene {guide.scene_score:.3f}" if guide is not None else ""
-                print(f"[main] {status} | FPS {last_fps:5.1f} | frames {st.frame_index} | "
+                print(f"[main] {status} | NR {last_fps:5.1f} fps | "
+                      f"skipped {st.skipped_static_frames} | frames {st.frame_index} | "
                       f"work {st.work_w}x{st.work_h}{scene}")
-                last_log = now
+                last_log = log_now
 
-            if now - last_perf_log >= PERF_LOG_INTERVAL:
+            if log_now - last_perf_log >= PERF_LOG_INTERVAL:
                 parts = []
                 for key in PERF_KEYS:
                     samples = st.perf[key]
@@ -1123,7 +1133,9 @@ def main() -> int:
                     samples.clear()
                 if parts:
                     print("[perf] " + " | ".join(parts))
-                last_perf_log = now
+                last_perf_log = log_now
+
+            frame_pacer.wait(settings_io.frame_limit_fps(st.cfg), loop_start)
 
         print("[main] exiting at the user's request")
     except KeyboardInterrupt:

@@ -240,6 +240,26 @@ DEFAULT_LANG = "en"
 # turning load_config() into a pile of unrelated compatibility checks.
 CONFIG_SCHEMA_VERSION = 1
 
+# Processing-rate limiter.  The named modes are stable config values; custom
+# remains a separate number so switching to 30/60 and back does not erase it.
+FRAME_LIMIT_MODES = ("30", "60", "custom", "unlimited")
+FRAME_LIMIT_CUSTOM_MIN = 15
+FRAME_LIMIT_CUSTOM_MAX = 240
+
+
+def frame_limit_fps(cfg: dict) -> int:
+    """Resolve the persisted limiter mode to an FPS cap; zero is unlimited."""
+    mode = str(cfg.get("frame_limit_mode", "unlimited"))
+    if mode in ("30", "60"):
+        return int(mode)
+    if mode != "custom":
+        return 0
+    try:
+        value = int(cfg.get("frame_limit_custom", 90))
+    except (TypeError, ValueError, OverflowError):
+        value = 90
+    return min(FRAME_LIMIT_CUSTOM_MAX, max(FRAME_LIMIT_CUSTOM_MIN, value))
+
 
 # The NGX plumbing a preset carries along with the four sliders: the range
 # it must be in, and what to use when it is not there at all. Presets saved
@@ -435,6 +455,14 @@ def _validate_config(cfg: dict) -> dict:
         cfg["frame_multiplier"] = min(4, max(2, int(cfg.get("frame_multiplier", 2))))
     except (ValueError, TypeError, OverflowError):
         cfg["frame_multiplier"] = 2
+    mode = str(cfg.get("frame_limit_mode", "unlimited"))
+    cfg["frame_limit_mode"] = mode if mode in FRAME_LIMIT_MODES else "unlimited"
+    try:
+        custom = int(cfg.get("frame_limit_custom", 90))
+    except (ValueError, TypeError, OverflowError):
+        custom = 90
+    cfg["frame_limit_custom"] = min(
+        FRAME_LIMIT_CUSTOM_MAX, max(FRAME_LIMIT_CUSTOM_MIN, custom))
     return cfg
 
 
@@ -596,6 +624,12 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "skip_static": bool(cfg.get("skip_static", False)),
         "frame_generation": bool(cfg.get("frame_generation", False)),
         "frame_multiplier": min(4, max(2, int(cfg.get("frame_multiplier", 2)))),
+        "frame_limit_mode": (str(cfg.get("frame_limit_mode", "unlimited"))
+                             if str(cfg.get("frame_limit_mode", "unlimited"))
+                             in FRAME_LIMIT_MODES else "unlimited"),
+        "frame_limit_custom": min(
+            FRAME_LIMIT_CUSTOM_MAX,
+            max(FRAME_LIMIT_CUSTOM_MIN, int(cfg.get("frame_limit_custom", 90)))),
         # The user's saved presets. Without this key "Save preset" wrote
         # everything EXCEPT the preset: the menu said "Preset saved", the
         # save really did succeed, and the preset was gone on the next
@@ -916,6 +950,11 @@ def menu_payload(st) -> dict:
         "skip_static": bool(st.cfg.get("skip_static", False)),
         "frame_generation": bool(st.cfg.get("frame_generation", False)),
         "frame_multiplier": min(4, max(2, int(st.cfg.get("frame_multiplier", 2)))),
+        "frame_limit_mode": (str(st.cfg.get("frame_limit_mode", "unlimited"))
+                             if str(st.cfg.get("frame_limit_mode", "unlimited"))
+                             in FRAME_LIMIT_MODES else "unlimited"),
+        "frame_limit_custom": frame_limit_fps(
+            dict(st.cfg, frame_limit_mode="custom")),
         # Is the network idling on an unchanged screen right now? The
         # worker says so in its log; without this the menu shows a
         # healthy FPS while nothing is being processed, and the skip

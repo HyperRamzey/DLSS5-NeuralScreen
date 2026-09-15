@@ -55,7 +55,8 @@ except Exception:
 
 from main import (FRAME_FLAG_NO_COLOR, FRAME_FLAG_SKIP_STATIC,  # noqa: E402
                   FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC, HEADER_FMT,
-                  OUT_FMT, OUT_MAGIC, PROFILES, VIDEO_MAGIC, WORKER_EXE)
+                  OUT_FMT, OUT_MAGIC, OUT_STATUS_SKIPPED, PROFILES,
+                  VIDEO_MAGIC, WORKER_EXE)
 
 W, H = 960, 540
 WARMUP = 8
@@ -104,13 +105,17 @@ def send_capture_frame(worker, index: int, motion: np.ndarray,
 
 
 def recv_result(worker):
-    """('full', pixels) | ('empty', None) - the worker's answer to one frame."""
+    """Return full/skipped/empty, keeping the OUT1 status observable."""
     head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
     magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
     if magic != OUT_MAGIC:
         raise AssertionError(f"foreign reply 0x{magic:08X}")
     if not ok:
         raise AssertionError(f"the worker answered ok=0, ngx=0x{ngx:08X}")
+    if ok & OUT_STATUS_SKIPPED:
+        if nbytes != 0:
+            raise AssertionError("a skipped reply unexpectedly carried pixels")
+        return "skipped", None
     if nbytes == 0:
         return "empty", None
     data = read_exact(worker.stdout, nbytes)
@@ -195,7 +200,7 @@ def main() -> int:
         tail = answers[-8:]
         if any(s == "full" for s in tail):
             failures.append(f"a static source produced processed frames: {answers}")
-        if "empty" not in answers:
+        if "skipped" not in answers:
             failures.append("not one frame was skipped on a static source")
 
         # 2. The source redraws: the frame is processed again.

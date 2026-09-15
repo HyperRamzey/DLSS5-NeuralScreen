@@ -241,6 +241,23 @@ def apply_menu_action(st, action: tuple) -> None:
         if st.cfg.get("frame_generation"):
             st.fg_alerted = False
         settings_io.save_menu_layout(st)
+    elif kind == "frame_limit_mode":
+        mode = str(action[1])
+        if mode in settings_io.FRAME_LIMIT_MODES:
+            st.cfg["frame_limit_mode"] = mode
+            settings_io.save_menu_layout(st)
+            print(f"[main] frame limit: "
+                  f"{settings_io.frame_limit_fps(st.cfg) or 'unlimited'}")
+    elif kind == "frame_limit_custom":
+        try:
+            value = int(action[1])
+        except (TypeError, ValueError, OverflowError):
+            return
+        st.cfg["frame_limit_custom"] = min(
+            settings_io.FRAME_LIMIT_CUSTOM_MAX,
+            max(settings_io.FRAME_LIMIT_CUSTOM_MIN, value))
+        settings_io.save_menu_layout(st)
+        print(f"[main] custom frame limit: {st.cfg['frame_limit_custom']} fps")
     elif kind == "toggle" and action[1] == "skip_static":
         # A per-frame flag in the header, not a worker setting: no restart,
         # the next frame already carries the new state.

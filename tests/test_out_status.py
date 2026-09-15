@@ -7,9 +7,9 @@ network skips evaluations (0x00000000) - the exact pattern from issue #11
 (kortul, 4060 Laptop). Only the 0xBAD00000 family (NVSDK_NGX_FAILED) is
 a real error.
 
-Checked: a skipped frame (0x00000000, no pixels) lands in the queue as
-(None) without raising; a real failure (0xBAD00001) raises; ok=0 raises;
-a normal frame (result 1) passes through.
+Checked: the explicit SKIPPED status is visible to the caller; ngx_result=0
+alone does not pretend that work was skipped; a real failure (0xBAD00001)
+raises; a missing OK bit raises; a normal frame passes through.
 """
 import os
 import queue
@@ -22,7 +22,8 @@ import numpy as np
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
-from main import OUT_FMT, OUT_MAGIC, WorkerReader  # noqa: E402
+from main import (OUT_FMT, OUT_MAGIC, OUT_STATUS_OK, OUT_STATUS_SKIPPED,
+                  WorkerReader)  # noqa: E402
 
 
 class FakeWorker:
@@ -55,24 +56,27 @@ def main() -> int:
     try:
         # 1. A normal frame: result 1, pixels inline.
         fake.send_out(1, 1, 4, 1, payload=b"\xAB" * 4)
-        got = reader._queue.get(timeout=5.0)
-        if got[0] != 1 or not isinstance(got[1], np.ndarray) or \
-                got[1].tobytes() != b"\xAB" * 4:
-            failures.append(f"normal frame: expected (1, 4 bytes), got {got!r}")
+        got = reader.recv(1, 5.0)
+        if not isinstance(got, np.ndarray) or got.tobytes() != b"\xAB" * 4 \
+                or reader.last_skipped:
+            failures.append(f"normal frame: expected 4 bytes and skipped=False, got {got!r}")
 
-        # 2. A skipped frame: 0x00000000, no pixels - must NOT raise.
-        fake.send_out(2, 1, 0, 0x00000000)
-        got = reader._queue.get(timeout=5.0)
-        if got != (2, None):
-            failures.append(f"skipped frame: expected (2, None), got {got!r}")
+        # 2. A skipped frame is explicit in the status; no pixels is not
+        #    enough because WNDO replies are empty too.
+        fake.send_out(2, OUT_STATUS_OK | OUT_STATUS_SKIPPED, 0, 1)
+        got = reader.recv(2, 5.0)
+        if got is not None or not reader.last_skipped:
+            failures.append(
+                f"skipped frame: expected None and skipped=True, got {got!r}")
 
-        # 3. A skipped frame WITH pixels (result 0 but bytes present) must
-        #    pass through - the pixels are what matters.
-        fake.send_out(3, 1, 4, 0x00000000, payload=b"\xCD" * 4)
-        got = reader._queue.get(timeout=5.0)
-        if got[0] != 3 or not isinstance(got[1], np.ndarray) or \
-                got[1].tobytes() != b"\xCD" * 4:
-            failures.append(f"skipped-with-pixels: expected (3, 4 bytes), got {got!r}")
+        # 3. ngx_result=0 is not a skip marker. If pixels exist, pass them
+        #    through and report real work.
+        fake.send_out(3, OUT_STATUS_OK, 4, 0x00000000, payload=b"\xCD" * 4)
+        got = reader.recv(3, 5.0)
+        if not isinstance(got, np.ndarray) or got.tobytes() != b"\xCD" * 4 \
+                or reader.last_skipped or reader.last_ngx_result != 0:
+            failures.append(
+                f"zero-result with pixels: expected bytes and skipped=False, got {got!r}")
 
         # 4. ok=0 - the worker itself failed - must surface as an error.
         #    (The reader thread dies on the first error, so each error
@@ -80,8 +84,8 @@ def main() -> int:
         fake.send_out(4, 0, 0, 1)
         got = reader._queue.get(timeout=5.0)
         if got[0] is not None or not isinstance(got[1], RuntimeError) or \
-                "ok=0" not in str(got[1]):
-            failures.append(f"ok=0: expected a RuntimeError, got {got!r}")
+                "status=0" not in str(got[1]):
+            failures.append(f"status=0: expected a RuntimeError, got {got!r}")
 
         # 5. A real NGX failure: 0xBAD00001 - must surface as an error.
         reader2 = WorkerReader(fake, 1, 1, shm=None)
@@ -99,7 +103,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} - {failures}")
         return 1
-    print("OK: 0x00000000 is a skipped frame, only 0xBAD00000 raises")
+    print("OK: OUT1 distinguishes OK, SKIPPED and NGX failure")
     return 0
 
 

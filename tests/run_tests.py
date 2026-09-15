@@ -47,6 +47,7 @@ SETTLES: list = []
 # What each test is for, in one line - a failing name should not send anyone
 # digging through the file to find out what broke.
 ABOUT = {
+    "test_compatibility_preflight.py": "CompatibilityKey cache, fail-closed N/N verdicts and quarantine policy",
     "test_diagnostic_bundle.py": "support bundle is complete, atomic, bounded and privacy-scrubbed",
     "test_low_cost_off.py": "NR OFF closes capture/presentation and produces no background frames",
     "test_nvofa_controls.py": "motion backend selection, CPU fallback and scene tracking without NVIDIA hardware",

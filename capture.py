@@ -5,11 +5,12 @@ Frames come back as np.ndarray shape (H, W, 4) dtype uint8 in RGBA (dxcam
 does the BGRA conversion itself, into a reusable buffer).
 
 Monitor identity: monitors are matched by their DXGI DeviceName
-('\\\\.\\DISPLAY1'), not by a positional index. list_monitors() pairs each
-EnumDisplayMonitors entry with the dxcam output whose devicename matches, so
-the returned index is the dxcam output_idx for THAT monitor. A saved
-devicename therefore keeps pointing at the same physical monitor when the
-arrangement changes (cable unplug, display reorder, laptop dock).
+('\\\\.\\DISPLAY1'), not by a positional index. dxcam numbers outputs *inside*
+each adapter, so the application exposes one flat index only as a local menu
+label and resolves it back to the real (adapter, output) pair before opening
+the capture. A saved devicename therefore keeps pointing at the same physical
+monitor when the arrangement changes (cable unplug, display reorder, laptop
+dock).
 
 Example:
     cap = ScreenCapture(monitor_idx=0)
@@ -38,34 +39,52 @@ class _MONITORINFOEXW(ctypes.Structure):
     ]
 
 
-def _dxcam_output_index_by_devicename() -> dict[str, int]:
-    """Map each DXGI devicename to its dxcam output_idx.
+def _dxcam_capture_targets() -> list[tuple[int, int, str]]:
+    """Enumerate dxcam targets as ``(device_idx, output_idx, devicename)``.
 
-    dxcam.create(output_idx=N) indexes the outputs of the primary adapter
-    (device_idx=0); the factory's outputs list is [adapter][output], and the
-    index of an Output inside its adapter's list IS the output_idx. Reading
-    the factory's Output objects is cheap (GetDesc only) - no DDA session is
-    opened, unlike dxcam.create().
+    ``output_idx`` is local to one adapter. Treating it as a desktop-wide
+    number made a secondary adapter's output 1 open output 1 of adapter 0
+    (or fall back to its output 0) in a multi-GPU setup (#88). The ordering
+    here is deliberately flat only for the menu/config's transient integer;
+    opening a capture always uses the complete pair.
     """
     import dxcam
 
-    mapping: dict[str, int] = {}
-    for outputs in dxcam.__factory.outputs:
-        for idx, output in enumerate(outputs):
-            mapping.setdefault(output.devicename, idx)
-    return mapping
+    targets: list[tuple[int, int, str]] = []
+    for device_idx, outputs in enumerate(dxcam.__factory.outputs):
+        for output_idx, output in enumerate(outputs):
+            devicename = getattr(output, "devicename", "")
+            if isinstance(devicename, str) and devicename:
+                targets.append((device_idx, output_idx, devicename))
+    return targets
+
+
+def _dxcam_output_index_by_devicename() -> dict[str, int]:
+    """Map each DXGI devicename to one flat, process-local menu index."""
+    return {
+        devicename: flat_idx
+        for flat_idx, (_device_idx, _output_idx, devicename)
+        in enumerate(_dxcam_capture_targets())
+    }
+
+
+def _dxcam_capture_target(output_idx: int) -> tuple[int, int] | None:
+    """Resolve one flat menu index to dxcam's real adapter/output pair."""
+    try:
+        device_idx, local_idx, _name = _dxcam_capture_targets()[int(output_idx)]
+    except (IndexError, TypeError, ValueError):
+        return None
+    return device_idx, local_idx
 
 
 def _output_count() -> int:
-    """The number of outputs dxcam currently knows on the primary adapter.
+    """The number of outputs dxcam currently knows across all adapters.
 
     0 means dxcam is unavailable or its factory failed - callers treat it
     as "no valid index", never as output 0.
     """
     try:
-        import dxcam
-
-        return len(dxcam.__factory.outputs[0])
+        return len(_dxcam_capture_targets())
     except Exception:
         return 0
 
@@ -75,8 +94,8 @@ def _refresh_dxcam_factory() -> None:
 
     The factory is a process-wide Singleton built at the first import; a
     monitor unplugged or a dock changed after that leaves a stale outputs
-    list, and dxcam.create(output_idx=N) then raises IndexError for an
-    index that was valid a minute ago (issue #24/#26: 'list index out of
+    list, and opening a previously valid target then raises IndexError
+    (issue #24/#26: 'list index out of
     range' on a monitor switch). Dropping the cached instance makes the
     next access re-enumerate.
     """
@@ -90,7 +109,7 @@ def _refresh_dxcam_factory() -> None:
 
 
 def resolve_output_idx(devicename: str) -> int | None:
-    """The dxcam output_idx for a DXGI devicename ('\\\\.\\DISPLAY1'), or None.
+    """The flat menu index for a DXGI devicename ('\\\\.\\DISPLAY1'), or None.
 
     None means the monitor is not present in the current DXGI output list
     (unplugged, dock changed, driver reset).
@@ -99,7 +118,7 @@ def resolve_output_idx(devicename: str) -> int | None:
 
 
 def devicename_for_output_idx(output_idx: int) -> str | None:
-    """The DXGI devicename of the dxcam output at output_idx, or None.
+    """The DXGI devicename of one flat menu output index, or None.
 
     The inverse of resolve_output_idx - used when saving the config so the
     monitor is remembered by identity instead of by a positional index.
@@ -296,7 +315,7 @@ class ScreenCapture:
         self._mss = None  # the GDI fallback session, when dxcam is unusable
         if devicename is not None:
             # Resolve by identity: the devicename is the stable handle, the
-            # output index is whatever dxcam assigns today.
+            # flat menu index is whatever dxcam assigns today.
             resolved = resolve_output_idx(devicename)
             if resolved is None:
                 raise ValueError(
@@ -306,44 +325,51 @@ class ScreenCapture:
         # monitor unplugged or a dock changed since then leaves stale
         # indices, and dxcam.create() raises IndexError for them (issue
         # #24/#26). Validate, refresh the factory once, then fall back to
-        # output 0 - the capture must never take the app down.
-        if monitor_idx >= _output_count():
+        # the first flat output - the capture must never take the app down.
+        if monitor_idx < 0 or monitor_idx >= _output_count():
             print(f"[capture] output {monitor_idx} is gone - "
                   "re-enumerating the dxcam factory", file=sys.stderr)
             _refresh_dxcam_factory()
-            if monitor_idx >= _output_count():
+            if monitor_idx < 0 or monitor_idx >= _output_count():
                 print(f"[capture] output {monitor_idx} still missing - "
                       "falling back to output 0", file=sys.stderr)
                 monitor_idx = 0
         self.monitor_idx = monitor_idx
+        requested_name = devicename_for_output_idx(monitor_idx) or devicename or ""
+
+        def open_target() -> object:
+            """Open the selected output on the adapter that owns it."""
+            target = _dxcam_capture_target(monitor_idx)
+            if target is None:
+                raise IndexError(f"dxcam output {monitor_idx} is unavailable")
+            device_idx, local_idx = target
+            return dxcam.create(
+                device_idx=device_idx,
+                output_idx=local_idx,
+                output_color="RGBA",
+            )
+
         # output_color="RGBA": dxcam converts BGRA->RGBA into its own reusable
         # buffer. This used to be a cv2.cvtColor right here — an extra 33 MB
         # allocated for every 4K frame.
         try:
-            self._camera = dxcam.create(
-                output_idx=monitor_idx,
-                output_color="RGBA",
-            )
+            self._camera = open_target()
         except IndexError:
             # The factory was fresh a moment ago but the topology changed
             # between the check and the create - one more refresh, then the
-            # primary output as the last resort.
+            # first flat output as the last resort.
             print(f"[capture] dxcam.create({monitor_idx}) raised IndexError - "
                   "re-enumerating and retrying", file=sys.stderr)
             _refresh_dxcam_factory()
             try:
-                self._camera = dxcam.create(
-                    output_idx=monitor_idx,
-                    output_color="RGBA",
-                )
+                self._camera = open_target()
             except IndexError:
                 print("[capture] the chosen output is gone - "
                       "falling back to output 0", file=sys.stderr)
                 self.monitor_idx = 0
-                self._camera = dxcam.create(
-                    output_idx=0,
-                    output_color="RGBA",
-                )
+                monitor_idx = 0
+                requested_name = devicename_for_output_idx(monitor_idx) or ""
+                self._camera = open_target()
         except Exception as exc:
             # DXGI_ERROR_UNSUPPORTED on hybrid graphics (issue #26): the
             # display is wired to the iGPU and DDA refuses a cross-adapter
@@ -354,11 +380,11 @@ class ScreenCapture:
                   "falling back to mss (GDI)", file=sys.stderr)
             self._camera = None
         if self._camera is None:
-            self._open_mss(monitor_idx)
+            self._open_mss(monitor_idx, requested_name)
             return
         # The monitor identity of the output that was actually opened.
         output = getattr(self._camera, "_output", None)
-        self.devicename = getattr(output, "devicename", None) or devicename or ""
+        self.devicename = getattr(output, "devicename", None) or requested_name
         # Monitor resolution (W, H) from the output description
         res = getattr(output, "resolution", None)
         if res is not None:
@@ -371,8 +397,8 @@ class ScreenCapture:
                     "could not grab a first frame to determine the resolution")
             self.resolution = (probe.shape[1], probe.shape[0])
 
-    def _open_mss(self, monitor_idx: int) -> None:
-        """Open the GDI fallback (mss) for the given monitor index."""
+    def _open_mss(self, monitor_idx: int, wanted_name: str = "") -> None:
+        """Open the GDI fallback for a flat index, preserving its identity."""
         import mss
 
         # mss 10 deprecated the lowercase factory ("will be removed in a
@@ -381,11 +407,29 @@ class ScreenCapture:
         # fallback down with it.
         self._mss = (mss.MSS if hasattr(mss, "MSS") else mss.mss)()
         # mss.monitors[0] is the virtual all-in-one screen; the physical
-        # monitors start at index 1 (the stas2192 pattern, issue #26).
-        real_idx = monitor_idx + 1
-        if real_idx >= len(self._mss.monitors):
-            real_idx = 1 if len(self._mss.monitors) > 1 else 0
-        self._monitor = self._mss.monitors[real_idx]
+        # monitors start at index 1. Its list is independent from DXGI's
+        # adapter/output ordering, so match by DeviceName instead of applying
+        # the flat dxcam index here too (#88).
+        selected = None
+        if wanted_name:
+            for candidate in self._mss.monitors[1:]:
+                name = _devicename_at(int(candidate.get("left", 0)),
+                                      int(candidate.get("top", 0)))
+                if name == wanted_name:
+                    selected = candidate
+                    break
+        if selected is None:
+            # There is no trustworthy identity (or the topology changed while
+            # opening). Preserve the former positional best effort only for
+            # this last-resort GDI path, then record the monitor actually used.
+            real_idx = monitor_idx + 1
+            if real_idx >= len(self._mss.monitors):
+                real_idx = 1 if len(self._mss.monitors) > 1 else 0
+            selected = self._mss.monitors[real_idx]
+            if wanted_name:
+                print(f"[capture] mss could not find {wanted_name} - "
+                      "using the available fallback", file=sys.stderr)
+        self._monitor = selected
         self.resolution = (int(self._monitor["width"]),
                            int(self._monitor["height"]))
         # The identity of the monitor that was ACTUALLY opened, asked of
@@ -403,6 +447,9 @@ class ScreenCapture:
         # that looks like knowledge.
         self.devicename = _devicename_at(int(self._monitor.get("left", 0)),
                                          int(self._monitor.get("top", 0))) or ""
+        actual_idx = resolve_output_idx(self.devicename) if self.devicename else None
+        if actual_idx is not None:
+            self.monitor_idx = actual_idx
         print(f"[capture] mss (GDI) capture active: {self.resolution} "
               f"on {self.devicename or 'an unknown monitor'}", file=sys.stderr)
 

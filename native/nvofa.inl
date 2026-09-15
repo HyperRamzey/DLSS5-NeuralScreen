@@ -26,10 +26,19 @@ static struct NvofaState {
 static void CloseNvofa()
 {
     auto &f = g_nvofa;
+    if (g_submission_failed)
+    {
+        Log("[nvofa] release skipped after a fatal GPU failure");
+        return;
+    }
     // Both engines must have relinquished resources before unregister/release.
     if (f.session) {
-        if (h.fence) WaitFenceValue(h.fence, h.fence_value, 30000);
-        if (f.fence) WaitFenceValue(f.fence.get(), f.value, 30000);
+        if (h.fence && h.fence_value != 0 &&
+            !WaitFenceValue(h.fence, h.fence_value, 30000,
+                            "nvofa-close-input")) return;
+        if (f.fence && f.value != 0 &&
+            !WaitFenceValue(f.fence.get(), f.value, 30000,
+                            "nvofa-close-output")) return;
         for (auto &buffer : f.registered) if (buffer) {
             NV_OF_UNREGISTER_RESOURCE_PARAMS_D3D12 p{}; p.hOFGpuBuffer = buffer;
             f.api.nvOFUnregisterResourceD3D12(&p); buffer = nullptr;
@@ -52,9 +61,10 @@ static bool NvofaError(const char *operation, NV_OF_STATUS status)
     char detail[512] = {}; uint32_t size = sizeof(detail);
     if (g_nvofa.session && g_nvofa.api.nvOFGetLastError)
         g_nvofa.api.nvOFGetLastError(g_nvofa.session, detail, &size);
-    Log("[nvofa] unavailable: %s (%u) %s; using CPU DIS", operation, unsigned(status), detail);
     g_nvofa.failed = true;
-    CloseNvofa();
+    if (!g_submission_failed) CloseNvofa();
+    Log("[nvofa] unavailable: %s (%u) %s; %s", operation, unsigned(status), detail,
+        g_submission_failed ? "worker stopping" : "using CPU DIS");
     return false;
 }
 
@@ -165,7 +175,9 @@ static bool EnsureNvofa(UINT width, UINT height)
         p.outputFencePoint = {f.fence.get(), ++f.value};
         status = f.api.nvOFRegisterResourceD3D12(f.session, &p);
         if (status != NV_OF_SUCCESS) { --f.value; return NvofaError("register buffer", status); }
-        if (!WaitFenceValue(f.fence.get(), f.value, 30000)) return NvofaError("register fence", NV_OF_ERR_GENERIC);
+        if (!WaitFenceValue(f.fence.get(), f.value, 30000,
+                            "nvofa-register"))
+            return NvofaError("register fence", NV_OF_ERR_GENERIC);
     }
     D3D12_DESCRIPTOR_RANGE ranges[2] = {{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,1,0,0,0}, {D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,1}};
     D3D12_ROOT_PARAMETER roots[2] = {};
@@ -225,7 +237,13 @@ static bool RunNvofa(VideoState &v, bool reset, UINT64 *submitted)
     out.fencePoint = &complete;
     auto status = f.api.nvOFExecuteD3D12(f.session, &in, &out);
     if (status != NV_OF_SUCCESS) { --f.value; return NvofaError("execute", status); }
-    if (FAILED(h.queue->Wait(f.fence.get(),f.value)) || !BeginCommands())
+    const HRESULT queue_wait = h.queue->Wait(f.fence.get(), f.value);
+    if (FAILED(queue_wait))
+    {
+        FailGpuWork("nvofa-queue-wait", "queue-wait-error", queue_wait);
+        return NvofaError("wait for optical flow", NV_OF_ERR_GENERIC);
+    }
+    if (!BeginCommands())
         return NvofaError("wait for optical flow", NV_OF_ERR_GENERIC);
     barrier(f.flow.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     barrier(v.mv.tex, v.inputs_ready ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -244,7 +262,8 @@ static bool RunNvofa(VideoState &v, bool reset, UINT64 *submitted)
     const UINT64 done=EndCommands();if(!done)return NvofaError("submit expansion", NV_OF_ERR_GENERIC);
     v.inputs_ready=true;f.valid=true;f.current=1-f.current;
     if (submitted) *submitted=done;
-    else if (!WaitFenceValue(h.fence,done,30000)) return NvofaError("expansion fence", NV_OF_ERR_GENERIC);
+    else if (!WaitFenceValue(h.fence, done, 30000, "nvofa-expansion"))
+        return NvofaError("expansion fence", NV_OF_ERR_GENERIC);
     DumpNvofa(v); ++f.sequence;
     return true;
 }
@@ -267,7 +286,11 @@ static void DumpNvofa(VideoState &v)
         D3D12_TEXTURE_COPY_LOCATION a{},b{};a.pResource=pair.first;a.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;b.pResource=rb.get();b.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;b.PlacedFootprint=fp;
         h.list->CopyTextureRegion(&b,0,0,0,&a,nullptr);
         auto post=Transition(pair.first,D3D12_RESOURCE_STATE_COPY_SOURCE,state);h.list->ResourceBarrier(1,&post);
-        if(!WaitFenceValue(h.fence,EndCommands(),30000))return;
+        if(!WaitFenceValue(h.fence, EndCommands(), 30000, "nvofa-dump"))
+        {
+            if (g_submission_failed) rb.detach();
+            return;
+        }
         BYTE *data=nullptr;D3D12_RANGE read={0,SIZE_T(bytes)},written={0,0};if(FAILED(rb->Map(0,&read,reinterpret_cast<void**>(&data))))return;
         char path[MAX_PATH];sprintf_s(path,"%s/%s-%04u.bin",folder,pair.second,f.sequence);FILE *file=nullptr;
         if(!fopen_s(&file,path,"wb") && file) {for(UINT y=0;y<rows;++y)fwrite(data+SIZE_T(y)*fp.Footprint.RowPitch,1,SIZE_T(rowbytes),file);fclose(file);}

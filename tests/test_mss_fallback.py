@@ -48,7 +48,9 @@ def _install_fake_dxcam(create_impl):
     """Replace sys.modules['dxcam'] with a fake whose create() is scripted."""
     fake = types.ModuleType("dxcam")
     fake.create = create_impl
-    fake.__factory = types.SimpleNamespace(outputs=[[None]])
+    fake.__factory = types.SimpleNamespace(outputs=[[
+        types.SimpleNamespace(devicename="\\\\.\\DISPLAY1")
+    ]])
     old = sys.modules.get("dxcam")
     sys.modules["dxcam"] = fake
     return old

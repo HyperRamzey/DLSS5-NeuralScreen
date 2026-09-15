@@ -212,6 +212,7 @@ static PFN_NR_Evaluate g_nr_evaluate;
 static PFN_NR_Release g_nr_release;
 static uint32_t g_create_result;
 static uint32_t g_eval_count;
+static uint32_t g_feature_eval_attempts;
 
 
 // ---------------------------------------------------------------------------
@@ -602,13 +603,66 @@ static bool InitDirectNr(const wchar_t *data_path)
 // Command submission (allocator ring), same shape as the add-on
 // ---------------------------------------------------------------------------
 
-static void LogDeviceRemoved(const char *where);   // defined below BeginCommands
-static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms);  // defined below
+static void LogDeviceRemoved(const char *where, HRESULT known_reason = S_OK); // defined below BeginCommands
+static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms,
+                           const char *where = "gpu-fence", bool fatal = true); // defined below
 static bool PhaseEnabled();
 static double PhaseNow();
 static LARGE_INTEGER g_qpf;
 static void AbortCommands();
-static bool g_submission_failed;
+// Once a submitted GPU operation can no longer be proven complete, no code is
+// allowed to submit more work, write a success reply, or release resources that
+// may still be referenced by the queue. The process exits and lets Windows tear
+// the device down as one unit. Atomic because the FG presenter can discover the
+// same failure on its own thread.
+static std::atomic<bool> g_submission_failed{false};
+static std::atomic<bool> g_failure_reported{false};
+static std::atomic<bool> g_device_removed_logged{false};
+
+// Deterministic, one-shot failure injection for the release tests. Ordinary
+// launches never set NS_TEST_FAIL_STAGE. Supported values are deliberately the
+// same words emitted by the structured failure line below.
+static bool TestFailureOnce(const char *stage)
+{
+    static std::once_flag read_once;
+    static char requested[48] = {};
+    static std::atomic<bool> consumed{false};
+    std::call_once(read_once, [] {
+        GetEnvironmentVariableA("NS_TEST_FAIL_STAGE", requested,
+                                static_cast<DWORD>(sizeof(requested)));
+    });
+    if (requested[0] == '\0' || _stricmp(requested, stage) != 0) return false;
+    bool expected = false;
+    if (!consumed.compare_exchange_strong(expected, true)) return false;
+    Log("[test] injecting failure at stage=%s", stage);
+    return true;
+}
+
+static void ReportFailure(const char *stage, const char *kind, HRESULT code)
+{
+    Log("[failure] stage=%s kind=%s code=0x%08X", stage, kind,
+        static_cast<unsigned>(code));
+}
+
+static bool IsDeviceRemovedResult(HRESULT hr)
+{
+    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG ||
+           hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+}
+
+static bool FailGpuWork(const char *stage, const char *kind, HRESULT code)
+{
+    HRESULT reason = h.dev != nullptr ? h.dev->GetDeviceRemovedReason() : S_OK;
+    const bool removed = IsDeviceRemovedResult(code) || FAILED(reason);
+    if (removed && !FAILED(reason)) reason = code;
+    bool expected = false;
+    if (g_failure_reported.compare_exchange_strong(expected, true))
+        ReportFailure(stage, removed ? "device-removed" : kind,
+                      removed ? reason : code);
+    g_submission_failed = true;
+    if (removed) LogDeviceRemoved(stage, reason);
+    return false;
+}
 
 struct ProfileFrameStamp {
     double acquire_start, acquired, present_call, source_time;
@@ -661,21 +715,26 @@ static void CollectProfileGpuTimes();
 
 static bool ProfileGpuBegin(ProfileStage stage);
 static void ProfileGpuEnd(ProfileStage stage, unsigned query_count = 2);
-static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms);
+static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms,
+                        const char *where = nullptr);
 
 static bool BeginCommands()
 {
     if (g_submission_failed || h.list == nullptr) return false;
     const int slot = h.frame_slot;
     const UINT64 retire = h.alloc_fence[slot];
-    if (retire != 0 && h.fence->GetCompletedValue() < retire)
+    const UINT64 completed = h.fence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+        return FailGpuWork("allocator-retire", "fence-error",
+                           DXGI_ERROR_DEVICE_REMOVED);
+    if (retire != 0 && completed < retire)
     {
         // Through the same helper as every other wait: this one carried a
         // second copy of the shared-event bug, and it also left a
         // registration behind on a timeout for the next wait to trip over.
         const bool phase = PhaseEnabled();
         const double t_wait = phase ? PhaseNow() : 0.0;
-        if (!WaitFenceValue(h.fence, retire, 2000))
+        if (!WaitFenceValue(h.fence, retire, 2000, "allocator-retire"))
         { Log("[host] GPU did not retire allocator slot %d", slot); return false; }
         if (phase)
         {
@@ -686,23 +745,32 @@ static bool BeginCommands()
         }
     }
     if (PhaseEnabled()) CollectProfileGpuTimes();
-    if (FAILED(h.alloc[slot]->Reset()))
+    const HRESULT alloc_reset = h.alloc[slot]->Reset();
+    if (FAILED(alloc_reset))
     {
         // The allocator Reset() is where a removed device surfaces first
         // (issue #1: Win10 TDR, "BeginCommands err=0"). Log the reason and
         // the DRED breadcrumbs - without them the log says only "code 6".
-        LogDeviceRemoved("allocator reset");
-        return false;
+        return FailGpuWork("allocator-reset", "command-error", alloc_reset);
     }
-    return SUCCEEDED(h.list->Reset(h.alloc[slot], nullptr));
+    const HRESULT list_reset = h.list->Reset(h.alloc[slot], nullptr);
+    if (FAILED(list_reset))
+        return FailGpuWork("command-list-reset", "command-error", list_reset);
+    return true;
 }
 
 // Log the device-removed reason plus DRED breadcrumbs, once per removal.
-static void LogDeviceRemoved(const char *where)
+static void LogDeviceRemoved(const char *where, HRESULT known_reason)
 {
     if (h.dev == nullptr) return;
-    const HRESULT reason = h.dev->GetDeviceRemovedReason();
-    Log("[host] device removed at %s: reason 0x%08X", where, (unsigned)reason);
+    const HRESULT actual = h.dev->GetDeviceRemovedReason();
+    const bool injected = !FAILED(actual) && FAILED(known_reason);
+    const HRESULT reason = FAILED(actual) ? actual : known_reason;
+    bool expected = false;
+    if (!g_device_removed_logged.compare_exchange_strong(expected, true)) return;
+    Log("[host] device removed at %s: reason 0x%08X%s", where,
+        static_cast<unsigned>(reason), injected ? " (injected)" : "");
+    if (injected) return;
     ID3D12DeviceRemovedExtendedData1 *dred = nullptr;
     if (FAILED(h.dev->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedData1),
                                      reinterpret_cast<void **>(&dred))))
@@ -730,8 +798,8 @@ static UINT64 EndCommands()
     if (FAILED(closed))
     {
         Log("[host] command list Close failed 0x%08X; nothing submitted", closed);
-        g_submission_failed = true;
         g_ps_active = PS_NONE;
+        FailGpuWork("command-close", "submission-error", closed);
         AbortCommands();
         return 0;
     }
@@ -746,8 +814,8 @@ static UINT64 EndCommands()
     if (FAILED(sig))
     {
         Log("[host] queue Signal failed 0x%08X", sig);
-        g_submission_failed = true;
         g_ps_active = PS_NONE;
+        FailGpuWork("queue-signal", "submission-error", sig);
         return 0;
     }
     h.alloc_fence[h.frame_slot] = v;
@@ -773,17 +841,25 @@ static UINT64 EndCommands()
     return v;
 }
 
-static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms)
+static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms,
+                           const char *where, bool fatal)
 {
     // 0 means EndCommands could not submit (queue Signal failed) - there
     // is nothing to wait for, and waiting on 0 would be a false success
     // (the fence is already at 0 or beyond).
-    if (v == 0) return false;
+    if (v == 0 || f == nullptr || h.fence_event == nullptr) return false;
+    if (fatal && TestFailureOnce("device-removed"))
+        return FailGpuWork(where, "device-removed", DXGI_ERROR_DEVICE_REMOVED);
+    if (fatal && TestFailureOnce("fence-timeout"))
+        return FailGpuWork(where, "fence-timeout", HRESULT_FROM_WIN32(WAIT_TIMEOUT));
     // UINT64_MAX is the device-removed marker: GetCompletedValue returns
     // it when the device is gone, and "completed >= v" would then be a
     // false success (code review finding). Check it first.
-    if (f->GetCompletedValue() == UINT64_MAX) return false;
-    if (f->GetCompletedValue() >= v) return true;
+    UINT64 completed = f->GetCompletedValue();
+    if (completed == UINT64_MAX)
+        return fatal ? FailGpuWork(where, "fence-error", DXGI_ERROR_DEVICE_REMOVED)
+                     : false;
+    if (completed >= v) return true;
     // One auto-reset event serves every wait in this process - several
     // fences among them - and SetEventOnCompletion is NOT cancelled when a
     // wait returns. So the event can arrive already signalled by a
@@ -800,16 +876,34 @@ static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms)
     // it is - not this wait's completion. Keep waiting until the value is
     // really reached or the deadline passes.
     ResetEvent(h.fence_event);
-    if (f->GetCompletedValue() >= v) return true;
-    if (FAILED(f->SetEventOnCompletion(v, h.fence_event))) return false;
+    completed = f->GetCompletedValue();
+    if (completed == UINT64_MAX)
+        return fatal ? FailGpuWork(where, "fence-error", DXGI_ERROR_DEVICE_REMOVED)
+                     : false;
+    if (completed >= v) return true;
+    const HRESULT armed = f->SetEventOnCompletion(v, h.fence_event);
+    if (FAILED(armed))
+        return fatal ? FailGpuWork(where, "fence-error", armed) : false;
     const ULONGLONG deadline = GetTickCount64() + ms;
     for (;;)
     {
         const ULONGLONG now_ms = GetTickCount64();
         const DWORD left = now_ms >= deadline ? 0 : (DWORD)(deadline - now_ms);
-        if (WaitForSingleObject(h.fence_event, left) != WAIT_OBJECT_0) return false;
+        const DWORD waited = WaitForSingleObject(h.fence_event, left);
+        if (waited != WAIT_OBJECT_0)
+        {
+            if (!fatal) return false;
+            const HRESULT code = waited == WAIT_TIMEOUT
+                ? HRESULT_FROM_WIN32(WAIT_TIMEOUT)
+                : HRESULT_FROM_WIN32(GetLastError());
+            return FailGpuWork(where,
+                               waited == WAIT_TIMEOUT ? "fence-timeout" : "fence-error",
+                               code);
+        }
         const UINT64 now = f->GetCompletedValue();
-        if (now == UINT64_MAX) return false;
+        if (now == UINT64_MAX)
+            return fatal ? FailGpuWork(where, "fence-error", DXGI_ERROR_DEVICE_REMOVED)
+                         : false;
         if (now >= v) return true;
     }
 }
@@ -825,7 +919,7 @@ static void AbortCommands()   // never execute a list NGX crashed in
     UINT64 retire = 0;
     for (int i = 0; i < Host::kFrames; ++i)
         if (h.alloc_fence[i] > retire) retire = h.alloc_fence[i];
-    if (retire && !WaitFenceValue(h.fence, retire, 60000))
+    if (retire && !WaitFenceValue(h.fence, retire, 60000, "command-abort"))
     { g_submission_failed = true; Log("[host] cannot retire commands before list replacement"); return; }
     CloseListGuarded();
     h.list->Release();
@@ -859,6 +953,11 @@ static NVSDK_NGX_Result SafeEvaluateDLSS(NVSDK_NGX_D3D12_DLSS_Eval_Params *ep, D
 static void SafeReleaseFeature(NVSDK_NGX_Handle *f)
 {
     if (f == nullptr) return;
+    if (g_submission_failed)
+    {
+        Log("[host] ReleaseFeature skipped after a fatal GPU failure");
+        return;
+    }
     // Give the handle back to whoever issued it. The feature is created
     // through nvngx_dlssnr.dll (g_nr_create), and this released it through
     // the NGX CORE instead - a different implementation, which knows nothing
@@ -901,7 +1000,8 @@ static HANDLE                      g_pump_ev;
 
 static bool BeginCommands();
 static UINT64 EndCommands();
-static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms);
+static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms,
+                           const char *where, bool fatal);
 
 static void InitBanner()
 {
@@ -1017,7 +1117,11 @@ static void InitBanner()
         // The upload buffer goes back either way: the early return added here
         // to stop using a banner the GPU never finished copying would
         // otherwise walk out holding it.
-        if (!WaitFenceValue(h.fence, v, 2000)) { staging->Release(); return; }
+        if (!WaitFenceValue(h.fence, v, 2000, "banner-upload"))
+        {
+            if (!g_submission_failed) staging->Release();
+            return;
+        }
     }
     staging->Release();
 
@@ -1430,7 +1534,11 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
         di.ApplicationDataPath = data_path;
         di.FeatureInfo = &g_ngx_common;
         NVSDK_NGX_FeatureRequirement req = {};
-        const NVSDK_NGX_Result qrr = NVSDK_NGX_D3D12_GetFeatureRequirements(g_adapter3, &di, &req);
+        NVSDK_NGX_Result qrr = NVSDK_NGX_Result_Success;
+        if (TestFailureOnce("requirements"))
+            req.FeatureSupported = NVSDK_NGX_FeatureSupportResult_AdapterUnsupported;
+        else
+            qrr = NVSDK_NGX_D3D12_GetFeatureRequirements(g_adapter3, &di, &req);
         if (!NVSDK_NGX_FAILED(qrr))
         {
             if (req.FeatureSupported == NVSDK_NGX_FeatureSupportResult_Supported)
@@ -1448,12 +1556,25 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
                                            off ? "+" : "", bits[b]);
                 Log("[host] feature requirements: REFUSED (%s), min arch 0x%X, min OS %s",
                     why, req.MinHWArchitecture, req.MinOSVersion);
+                ReportFailure("requirements", "unsupported",
+                              static_cast<HRESULT>(req.FeatureSupported));
             }
         }
         else
             Log("[host] feature requirements query failed 0x%08X - continuing with the create", qrr);
     }
 
+    if (TestFailureOnce("create"))
+    {
+        const auto injected = NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+        g_create_result = static_cast<uint32_t>(injected);
+        if (out_r != nullptr) *out_r = injected;
+        h.feature = nullptr;
+        ReportFailure("create", "ngx-result", static_cast<HRESULT>(injected));
+        Log("[pure] direct feature 18 create failed 0x%08X (%s)", injected,
+            NgxResultName(injected));
+        return false;
+    }
     if (!BeginCommands()) return false;
     DWORD ccode = 0;
     NVSDK_NGX_Result rf = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
@@ -1466,13 +1587,21 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
         AbortCommands();
         // NGX may have partially written *OutHandle before the fault; never trust it.
         h.feature = nullptr;
+        ReportFailure("create", "seh", static_cast<HRESULT>(ccode));
         Log("[host] CreateFeature raised 0x%08X (caught; nothing submitted)", ccode);
         return false;
     }
     const UINT64 v = EndCommands();
-    if (!WaitFenceValue(h.fence, v, 30000)) { Log("[pure] feature create did not complete"); return false; }
+    if (!WaitFenceValue(h.fence, v, 30000, "create"))
+    { Log("[pure] feature create did not complete"); return false; }
     if (NVSDK_NGX_FAILED(rf) || h.feature == nullptr)
-    { Log("[pure] direct feature 18 create failed 0x%08X (%s)", rf, NgxResultName(rf)); h.feature = nullptr; return false; }
+    {
+        ReportFailure("create", "ngx-result", static_cast<HRESULT>(rf));
+        Log("[pure] direct feature 18 create failed 0x%08X (%s)", rf, NgxResultName(rf));
+        h.feature = nullptr;
+        return false;
+    }
+    g_feature_eval_attempts = 0;
     Log("[pure] direct feature 18 ready: %ux%u%s preset=%u result=0x%08X", w, h_,
         upscale ? " (upscaling full->work->full)" : "", NrPresetHint(), rf);
     LogVideoMemory("feature create");
@@ -2415,6 +2544,7 @@ static void RevealOnFirstPresent()
 // dropped on purpose, the chain is fine, and presenting again is right.
 static bool PresentStatus(HRESULT hr, const char *where)
 {
+    if (TestFailureOnce("present")) hr = DXGI_ERROR_INVALID_CALL;
     if (hr == DXGI_STATUS_MODE_CHANGED || hr == DXGI_STATUS_MODE_CHANGE_IN_PROGRESS)
     {
         Log("[present] %s: the display mode changed under the swap chain "
@@ -2425,7 +2555,7 @@ static bool PresentStatus(HRESULT hr, const char *where)
     if (FAILED(hr))
     {
         Log("[present] %s failed 0x%08X", where, (unsigned)hr);
-        return false;
+        return FailGpuWork("present", "present-error", hr);
     }
     return true;
 }
@@ -2470,10 +2600,15 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
     }
     StopFgPresentation();
     ID3D12Resource *bb = nullptr;
-    if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
-                                         __uuidof(ID3D12Resource),
-                                         reinterpret_cast<void **>(&bb))) || bb == nullptr)
-    { Log("[present] GetBuffer failed"); return false; }
+    const HRESULT get_buffer = g_present_swap->GetBuffer(
+        g_present_swap->GetCurrentBackBufferIndex(), __uuidof(ID3D12Resource),
+        reinterpret_cast<void **>(&bb));
+    if (FAILED(get_buffer) || bb == nullptr)
+    {
+        Log("[present] GetBuffer failed 0x%08X", static_cast<unsigned>(get_buffer));
+        return FailGpuWork("present", "get-buffer-error",
+                           FAILED(get_buffer) ? get_buffer : E_POINTER);
+    }
 
     bool ok = false;
     if (BeginCommands())
@@ -2499,7 +2634,11 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
             ok = PresentStatus(g_present_swap->Present(0, 0), "present");
-            if (!ok) g_frame_stamp.present_call = 0.0;
+            if (!ok)
+            {
+                g_frame_stamp.present_call = 0.0;
+                return false; // Retain the backbuffer until failing-process teardown.
+            }
             SpoutBridgeSend();
         }
         else
@@ -2508,6 +2647,8 @@ static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
             return false; // Retain the backbuffer until failing-process teardown.
         }
     }
+    else if (g_submission_failed)
+        return false; // Retain the backbuffer until failing-process teardown.
     bb->Release();
     if (ok) RevealOnFirstPresent();
     return ok;
@@ -2524,10 +2665,16 @@ static bool PresentBypass(VideoState &v)
     // Same as PresentFrame: nothing to restore unless HDR has been on (#58).
     if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
     ID3D12Resource *bb = nullptr;
-    if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
-                                         __uuidof(ID3D12Resource),
-                                         reinterpret_cast<void **>(&bb))) || bb == nullptr)
-    { Log("[present] bypass GetBuffer failed"); return false; }
+    const HRESULT get_buffer = g_present_swap->GetBuffer(
+        g_present_swap->GetCurrentBackBufferIndex(), __uuidof(ID3D12Resource),
+        reinterpret_cast<void **>(&bb));
+    if (FAILED(get_buffer) || bb == nullptr)
+    {
+        Log("[present] bypass GetBuffer failed 0x%08X",
+            static_cast<unsigned>(get_buffer));
+        return FailGpuWork("present", "get-buffer-error",
+                           FAILED(get_buffer) ? get_buffer : E_POINTER);
+    }
 
     bool ok = false;
     if (BeginCommands())
@@ -2554,12 +2701,21 @@ static bool PresentBypass(VideoState &v)
         {
             if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
             ok = PresentStatus(g_present_swap->Present(0, 0), "present");
-            if (!ok) g_frame_stamp.present_call = 0.0;
+            if (!ok)
+            {
+                g_frame_stamp.present_call = 0.0;
+                return false; // Retain the backbuffer until failing-process teardown.
+            }
             SpoutBridgeSend();
         }
         else
+        {
             Log("[present] bypass fence wait timed out");
+            return false; // Retain the backbuffer until failing-process teardown.
+        }
     }
+    else if (g_submission_failed)
+        return false; // Retain the backbuffer until failing-process teardown.
     bb->Release();
     if (ok) RevealOnFirstPresent();
     return ok;
@@ -3960,14 +4116,21 @@ static void CloseWgc();
 // multi-monitor machine that is the primary one, while the client was built
 // for the chosen monitor and showed an empty picture on it (#28, #33). The
 // name is the identity: it survives a reorder, an unplug or a dock change.
-// A name that is not on this adapter falls back to output 0 with a line in
-// the log - the capture is never taken down over it.
+// An explicit name that is not on this adapter is a GPU/monitor mismatch, not
+// permission to substitute output 0.  The client can still relay its Python
+// capture through CPU memory to the selected network GPU; silently enhancing
+// another desktop is worse than taking that safe fallback (#88).
 static IDXGIOutput *EnumCaptureOutput(IDXGIAdapter1 *adapter)
 {
     wchar_t want[64] = {};
     const DWORD got = GetEnvironmentVariableW(L"NS_OUTPUT", want, 64);
     UINT index = 0;
-    if (got > 0 && got < _countof(want))
+    if (got >= _countof(want))
+    {
+        Log("[dda] NS_OUTPUT is too long to resolve - refusing DDA (Python will relay frames)");
+        return nullptr;
+    }
+    if (got > 0)
     {
         bool found = false;
         for (UINT i = 0; ; ++i)
@@ -3986,7 +4149,11 @@ static IDXGIOutput *EnumCaptureOutput(IDXGIAdapter1 *adapter)
         if (found)
             Log("[dda] output %u selected by NS_OUTPUT (%ls)", index, want);
         else
-            Log("[dda] NS_OUTPUT=%ls is not an output of this adapter - using output 0", want);
+        {
+            Log("[dda] NS_OUTPUT=%ls is not an output of this adapter - "
+                "refusing DDA (Python will relay frames)", want);
+            return nullptr;
+        }
     }
     IDXGIOutput *output = nullptr;
     if (FAILED(adapter->EnumOutputs(index, &output))) return nullptr;
@@ -4059,16 +4226,35 @@ static bool OpenDda(UINT w, UINT hgt)
     g_dda_hdr_mode = HdrEnabled() && g_capture_display.enabled;
     IDXGIOutput5 *output5 = nullptr;
     hr = E_FAIL;
-    if (g_dda_hdr_mode && SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5), (void **)&output5)))
+    if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5), (void **)&output5)))
     {
-        const DXGI_FORMAT formats[] = {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
-        hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(formats), formats, &g_dda_dup);
+        // DuplicateOutput() has no format contract. On a 10-bit SDR desktop
+        // it can alternate FP16 and BGRA8 from one frame to the next (#86),
+        // which makes the shared bridge churn and the displayed picture blink.
+        // DuplicateOutput1 converts a format that is not listed here before
+        // AcquireNextFrame returns it. Keep SDR deliberately to one stable
+        // BGRA8 format; HDR compatibility retains the existing FP16-first
+        // path so it can preserve scRGB when the user explicitly asked for it.
+        const DXGI_FORMAT hdr_formats[] = {
+            DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
+        const DXGI_FORMAT sdr_formats[] = {DXGI_FORMAT_B8G8R8A8_UNORM};
+        const DXGI_FORMAT *formats = g_dda_hdr_mode ? hdr_formats : sdr_formats;
+        const UINT format_count = g_dda_hdr_mode ? _countof(hdr_formats)
+                                                  : _countof(sdr_formats);
+        hr = output5->DuplicateOutput1(g_dda_d11, 0, format_count, formats, &g_dda_dup);
         output5->Release();
         if (FAILED(hr))
-            Log("[hdr] FP16 duplication refused 0x%08X - capturing in SDR instead", hr);
+            Log(g_dda_hdr_mode
+                    ? "[hdr] FP16 duplication refused 0x%08X - capturing in SDR instead"
+                    : "[dda] BGRA8-pinned duplication refused 0x%08X - using legacy capture",
+                hr);
+        else if (!g_dda_hdr_mode)
+            Log("[dda] SDR capture pinned to BGRA8 (stable across 10-bit scan-out)");
     }
     else if (g_dda_hdr_mode)
         Log("[hdr] this Windows has no IDXGIOutput5 - capturing in SDR instead");
+    else
+        Log("[dda] this Windows has no IDXGIOutput5 - legacy capture may change format");
     if (FAILED(hr))
     {
         // SDR, and never silently: the first staged frame logs "capture=SDR"
@@ -4129,13 +4315,12 @@ static double PhaseNow();
 static void PhaseAdd(int idx, double t0);
 static bool PhaseEnabled();
 
-// FormatChanged is NOT SizeChanged, and telling them apart is the whole of
-// issue #62. A desktop set to 10 bits per colour can alternate between
-// B8G8R8A8 and FP16 frame after frame - one reporter's log has 781 changes
-// one way and 667 the other in thirteen minutes, two of them 78 ms apart.
-// The staging bridge really does have to be rebuilt for a new format, but
-// the DUPLICATION does not: reopening it cost a full CloseDda/OpenDda per
-// change, 1453 of them in that log, which is what the flicker is.
+// FormatChanged is NOT SizeChanged. SDR DDA normally pins its output to
+// BGRA8 through DuplicateOutput1 (#86), so a 10-bit scan-out cannot alternate
+// FP16/BGRA8 and churn this bridge. The distinction remains load-bearing for
+// older Windows or a driver that refuses Output5: their legacy duplication can
+// still change format, and reopening the whole duplication for it costs far
+// more than rebuilding this bridge.
 enum class StageResult { Ok, SizeChanged, FormatChanged, Failed };
 
 // Everything between "a captured D3D11 texture" and "the bytes are in the
@@ -4958,10 +5143,12 @@ static void CollectProfileGpuTimes()
     }
 }
 
-static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms)
+static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms,
+                        const char *where)
 {
     const double t_wait = PhaseEnabled() ? PhaseNow() : 0.0;
-    const bool ok = WaitFenceValue(h.fence, fence, ms);
+    const bool ok = WaitFenceValue(h.fence, fence, ms,
+                                   where != nullptr ? where : kProfileStageNames[stage]);
     if (!PhaseEnabled()) return ok;
     const double elapsed = PhaseNow() - t_wait;
     g_ps_wait_sum[stage] += elapsed;
@@ -4994,6 +5181,17 @@ static bool SetVerifiedU(NVSDK_NGX_Parameter *p, const char *name, unsigned int 
 static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
 {
     if (submitted) *submitted = 0;
+    const char *failure_stage = g_feature_eval_attempts++ == 0
+        ? "first-evaluate" : "steady-evaluate";
+    if (TestFailureOnce(failure_stage))
+    {
+        const auto injected = NVSDK_NGX_Result_FAIL_PlatformError;
+        g_last_eval_result = static_cast<uint32_t>(injected);
+        ReportFailure(failure_stage, "ngx-result", static_cast<HRESULT>(injected));
+        Log("[pure] direct evaluate failed 0x%08X (%s)", injected,
+            NgxResultName(injected));
+        return false;
+    }
     if (!BeginCommands()) return false;
     const bool ts = ProfileGpuBegin(PS_EVAL);
     const UINT cw = v.upscale ? v.full_w : v.w;
@@ -5050,7 +5248,13 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     __try { result = g_nr_evaluate(h.list, h.feature, h.params, nullptr); }
     __except (EXCEPTION_EXECUTE_HANDLER) { code = GetExceptionCode(); }
     g_last_eval_result = static_cast<uint32_t>(result);
-    if (code != 0) { AbortCommands(); Log("[pure] direct evaluate exception 0x%08X", code); return false; }
+    if (code != 0)
+    {
+        AbortCommands();
+        ReportFailure(failure_stage, "seh", static_cast<HRESULT>(code));
+        Log("[pure] direct evaluate exception 0x%08X", code);
+        return false;
+    }
     if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 3);
     if (v.nr_small)
     {
@@ -5078,9 +5282,14 @@ static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
     const UINT64 fence = EndCommands();
     if (submitted) *submitted = fence;
     if (fence == 0) return false;
-    if (NVSDK_NGX_FAILED(result)) { Log("[pure] direct evaluate failed 0x%08X (%s)", result, NgxResultName(result)); return false; }
+    if (NVSDK_NGX_FAILED(result))
+    {
+        ReportFailure(failure_stage, "ngx-result", static_cast<HRESULT>(result));
+        Log("[pure] direct evaluate failed 0x%08X (%s)", result, NgxResultName(result));
+        return false;
+    }
     if (submitted) return true;
-    if (!ProfileWait(PS_EVAL, fence, 60000)) return false;
+    if (!ProfileWait(PS_EVAL, fence, 60000, failure_stage)) return false;
     ++g_eval_count;
     return true;
 }
@@ -5763,7 +5972,14 @@ static int RunVideo()
             Log("[video] RNSZ: work %ux%u -> %ux%u (full %ux%u), warmup=%u",
                 v.w, v.hgt, rc.width, rc.height, rc.full_w, rc.full_h, rc.warmup);
             // 1. Drain the GPU: the old feature must be idle before release.
-            WaitFenceValue(h.fence, h.fence_value, 2000);
+            // Continuing after this wait failed used to release the feature
+            // and textures while the queue could still reference them.
+            if (h.fence_value != 0 &&
+                !WaitFenceValue(h.fence, h.fence_value, 2000, "resize-drain"))
+            {
+                Log("[video] RNSZ aborted: the old GPU work did not retire");
+                return 6;
+            }
             // 2. Release the old feature and textures.
             SafeReleaseFeature(h.feature);
             h.feature = nullptr;
@@ -6295,6 +6511,12 @@ static int RunVideo()
 // ---------------------------------------------------------------------------
 static void CleanupVideoNgx()
 {
+    if (g_submission_failed)
+    {
+        Log("[video] explicit GPU cleanup skipped after a fatal failure; "
+            "process teardown owns the device");
+        return;
+    }
     CloseNvofa();
     CloseFgResources();
     if (h.feature != nullptr)
@@ -6472,7 +6694,8 @@ static int Serve(DWORD game_pid)
             if (!ReadFull(pipe, &fm, sizeof(fm))) break;
             if (h.feature == nullptr && !transport_only) { h.fence_out->Signal(fm.n); continue; }
 
-            if (!WaitFenceValue(h.fence_in, fm.n, 2000))
+            if (!WaitFenceValue(h.fence_in, fm.n, 2000,
+                                "input-fence", false))
             { Log("[host] frame %llu: in-fence never arrived", (unsigned long long)fm.n); h.fence_out->Signal(fm.n); continue; }
             h.queue->Wait(h.fence_in, fm.n);   // belt and braces on the GPU timeline
 
@@ -6507,7 +6730,9 @@ static int Serve(DWORD game_pid)
                 {
                     warm_done = true;
                     Log("[host] warm-up: re-creating the feature once");
-                    WaitFenceValue(h.fence, h.fence_value, 2000);
+                    if (!WaitFenceValue(h.fence, h.fence_value, 2000,
+                                        "serve-recreate"))
+                        return 1;
                     NVSDK_NGX_Handle *old = h.feature;
                     h.feature = nullptr;
                     NVSDK_NGX_Result rr = NVSDK_NGX_Result_Fail;

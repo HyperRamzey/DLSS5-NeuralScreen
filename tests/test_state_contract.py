@@ -49,7 +49,7 @@ def main() -> int:
     must_exist_at_boot = {
         "mon_resize",      # the audited gap - follow_monitor reads it
         "follow_pos", "follow_resize",
-        "pending_shot", "recorder",
+        "pending_shot", "shot_rgba", "recorder",
         "dda_mode", "present_mode", "gray_active", "out_shm",
     }
     missing = sorted(must_exist_at_boot - init_sets)

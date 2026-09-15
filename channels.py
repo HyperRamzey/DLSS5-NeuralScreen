@@ -155,11 +155,11 @@ def enable_dda(st) -> None:
         st.dda_mode = False
         print(f"[main] capture inside the worker unavailable ({exc}) - frames through Python",
               file=sys.stderr)
-        # The chosen card could not open a capture session - it drives no
-        # display. The pipeline is SPLIT now: the network runs on the chosen
-        # card while the capture stays on the display card and every frame
-        # crosses through shared memory. In issue #29 exactly this happened
-        # after a GPU switch and nothing on the screen said so.
+        # The chosen card could not open a capture session for THIS monitor.
+        # It may drive another display, which is exactly the multi-GPU #88
+        # case. The pipeline is SPLIT now: the network runs on the chosen
+        # card while Python captures the selected display and relays frames.
+        # A deliberate GPU switch deserves one visible explanation.
         if st.gpu_switch_pending:
             st.gpu_switch_pending = False
             st.display.alert(UI_STRINGS[st.lang].get(

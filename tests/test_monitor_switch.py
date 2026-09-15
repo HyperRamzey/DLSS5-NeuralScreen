@@ -55,7 +55,14 @@ def _install_fake_dxcam(create_impl):
     """
     fake = types.ModuleType("dxcam")
     fake.create = create_impl
-    fake.__factory = types.SimpleNamespace(outputs=[[None]])
+    # The application resolves a flat menu index back to dxcam's actual
+    # (device_idx, output_idx) pair before calling create(). Keep enough
+    # named outputs here for the stale-index paths below to exercise that
+    # lookup instead of accidentally relying on adapter 0.
+    fake.__factory = types.SimpleNamespace(outputs=[[
+        types.SimpleNamespace(devicename=f"\\\\.\\DISPLAY{i + 1}")
+        for i in range(8)
+    ]])
     old = sys.modules.get("dxcam")
     sys.modules["dxcam"] = fake
     return old

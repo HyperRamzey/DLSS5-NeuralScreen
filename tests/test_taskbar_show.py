@@ -1,0 +1,116 @@
+"""Taskbar activation may show the menu, but must never close it.
+
+Windows can emit more than one activation notification around one taskbar
+click. If each notification is treated as a toggle, a currently visible menu
+closes without a user action and reads as the whole application disappearing
+(issue #87). Tray/hotkey ``settings`` remains a toggle; taskbar
+``show_settings`` is deliberately idempotent and re-applies layered attrs.
+
+Run: runtime\\python.exe tests\\test_taskbar_show.py
+"""
+from __future__ import annotations
+
+import os
+import queue
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE))
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+
+import commands  # noqa: E402
+
+
+class _Menu:
+    def __init__(self, visible: bool):
+        self.visible = visible
+        self.toggle_calls = 0
+        self.state_calls = 0
+
+    def set_state(self, _payload) -> None:
+        self.state_calls += 1
+
+    def toggle(self) -> bool:
+        self.toggle_calls += 1
+        self.visible = not self.visible
+        return self.visible
+
+
+class _Display:
+    def __init__(self, visible: bool):
+        self.menu = _Menu(visible)
+        self.opaque = []
+        self.input = []
+        self.refreshes = 0
+
+    def refresh_colorkey(self) -> None:
+        self.refreshes += 1
+
+    def set_menu_opaque(self, enabled: bool) -> None:
+        self.opaque.append(enabled)
+
+    def set_menu_input(self, enabled: bool) -> None:
+        self.input.append(enabled)
+
+
+def _state(visible: bool):
+    return SimpleNamespace(
+        tray_commands=queue.Queue(), display=_Display(visible),
+        window_hwnd=None, running=True, frame_index=0,
+    )
+
+
+def main() -> int:
+    failures = []
+    original_payload = commands.settings_io.menu_payload
+    original_save = commands.settings_io.save_menu_layout
+    commands.settings_io.menu_payload = lambda _st: {"probe": True}
+    commands.settings_io.save_menu_layout = lambda _st: True
+    try:
+        # A duplicate taskbar activation must leave an open menu open, while
+        # forcing the visual attrs back onto the native window.
+        st = _state(True)
+        st.tray_commands.put("show_settings")
+        commands.drain_commands(st)
+        if not st.display.menu.visible:
+            failures.append("show_settings closed an already visible menu")
+        if st.display.menu.toggle_calls:
+            failures.append("show_settings used toggle() for an open menu")
+        if st.display.refreshes != 1:
+            failures.append("show_settings did not reapply the layered attributes")
+        if st.display.opaque != [True] or st.display.input != [True]:
+            failures.append("show_settings did not retain menu opacity/input")
+
+        # It must also open a genuinely closed menu.
+        st = _state(False)
+        st.tray_commands.put("show_settings")
+        commands.drain_commands(st)
+        if not st.display.menu.visible:
+            failures.append("show_settings did not open a closed menu")
+        if st.display.menu.toggle_calls:
+            failures.append("show_settings used toggle() while opening")
+
+        # The existing hotkey/tray command retains its explicit toggle contract.
+        st = _state(True)
+        st.tray_commands.put("settings")
+        commands.drain_commands(st)
+        if st.display.menu.visible or st.display.menu.toggle_calls != 1:
+            failures.append("settings no longer toggles the menu")
+        if st.display.refreshes:
+            failures.append("ordinary settings toggle unexpectedly used taskbar recovery")
+    finally:
+        commands.settings_io.menu_payload = original_payload
+        commands.settings_io.save_menu_layout = original_save
+
+    for failure in failures:
+        print("FAIL:", failure)
+    if failures:
+        return 1
+    print("OK: taskbar show is idempotent; tray/hotkey settings still toggles")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

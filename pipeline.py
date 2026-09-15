@@ -256,6 +256,7 @@ def teardown_pipeline(st) -> None:
             print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
         st.recorder = None
     st.pending_shot = None
+    st.shot_rgba = None
     shutdown_worker(st.worker, st.worker_stop)
     try:
         st.shm.close()

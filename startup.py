@@ -557,7 +557,8 @@ def bring_up(st) -> None:
     st.hdr_alerted = False       # the HDR notice is shown once per session
     st.mon_w, st.mon_h = st.width, st.height  # the full monitor size (for the menu layer)
     st.gray_active = False       # guides take luminance from the worker's gray channel
-    st.pending_shot: Path | None = None  # a screenshot waiting for a frame with pixels
+    st.pending_shot = None  # frame request before Save As, then cleared
+    st.shot_rgba = None  # frozen before Save As, never a dialog-contaminated worker slot
     st.recorder: VideoRecorder | None = None  # recording (Num0), MP4 AV1 NVENC
     st.work_frame = None  # the current work frame; None -> grab at the top of the loop
 

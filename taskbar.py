@@ -8,9 +8,10 @@ in the tray. A taskbar button is what users expect from a desktop app
 
 The button is a real top-level window with WS_EX_APPWINDOW: a 1x1 visible
 window parked at the corner of the screen. Clicking its taskbar button
-activates it; the window procedure turns that into the same "settings"
-command the tray's left click sends, so both entry points open the same
-overlay menu. The window itself never shows anything.
+activates it; the window procedure turns that into an idempotent menu-show
+command. The tray/hotkey retain their useful toggle semantics, but duplicate
+taskbar activation must never close a visible menu. The window itself never
+shows anything.
 
 The icon comes from native/neuralscreen.ico (the same one the launcher
 uses), so the taskbar button looks like the program.
@@ -71,11 +72,12 @@ class WNDCLASSW(ctypes.Structure):
 
 
 class TaskbarWindow:
-    """The taskbar button: a 1x1 APPWINDOW window that reports clicks.
+    """The taskbar button: a 1x1 APPWINDOW window that asks to show the menu.
 
-    Commands go into the same queue.Queue the tray uses - the main loop
-    already drains it, so a click here opens the overlay menu exactly
-    like a left click on the tray icon.
+    It has a command separate from the tray/hotkey toggle: Windows can deliver
+    more than one activation message for a click, and turning a visible menu
+    into a hidden one was indistinguishable from the overlay disappearing by
+    itself (issue #87).
     """
 
     def __init__(self, commands: queue.Queue, title: str = "NeuralScreen"):
@@ -98,7 +100,7 @@ class TaskbarWindow:
             # was minimized).
             if wparam == WA_CLICKACTIVE or (
                     wparam == WA_ACTIVE and self._cursor_over_taskbar()):
-                self._emit("settings")
+                self._emit("show_settings")
             return 0
         if msg == WM_NCACTIVATE:
             # The click on an ALREADY-active taskbar button arrives as
@@ -108,18 +110,17 @@ class TaskbarWindow:
             # second click was dead (user: "залипает"). wparam=0 is a
             # deactivation - never a user click, ignore it.
             if wparam == 1 and self._cursor_over_taskbar():
-                self._emit("settings")
+                self._emit("show_settings")
             return 0
         if msg == WM_SYSCOMMAND and (wparam & 0xFFF0) in (SC_MINIMIZE, SC_RESTORE):
             # The taskbar button sends these when the window is already
             # minimized (restore) or when the user asks to minimize it. The
             # 1x1 window must NEVER actually minimize: the taskbar button
-            # disappears with it, and the button becomes a toggle for the
-            # overlay menu - clicking it must always reach the menu command.
-            # So SC_MINIMIZE/SC_RESTORE are turned into the same menu
-            # toggle instead of letting the system minimize the window
-            # (user: the button stopped responding on the second click).
-            self._emit("settings")
+            # disappears with it. So SC_MINIMIZE/SC_RESTORE are turned into
+            # the same idempotent menu show instead of letting the system
+            # minimize the window (user: the button stopped responding on the
+            # second click).
+            self._emit("show_settings")
             return 0
         if msg == WM_SYSCOMMAND and (wparam & 0xFFF0) == SC_CLOSE:
             # 'Close window' in the thumbnail's right-click menu destroys

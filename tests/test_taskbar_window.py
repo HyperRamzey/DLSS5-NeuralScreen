@@ -1,13 +1,13 @@
-"""The taskbar window: a real taskbar button that opens the menu.
+"""The taskbar window: a real taskbar button that shows the menu.
 
 The overlay is a borderless click-through window and the worker window
 is a tool window, so neither shows in the taskbar - the program lived
 only in the tray. The taskbar window is a 1x1 WS_EX_APPWINDOW window:
 it gives the program a taskbar button, and clicking it (WM_ACTIVATE)
-sends the same "settings" command as a left click on the tray.
+sends an idempotent "show_settings" command rather than a toggle.
 
 Checked: the window is created with APPWINDOW, it is visible to the
-system, activating it emits the settings command, and stop() closes it.
+system, activating it emits the show command, and stop() closes it.
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -59,8 +59,8 @@ def main() -> int:
         while not commands.empty():
             got.append(commands.get_nowait())
         print(f"commands after activate: {got}")
-        if "settings" not in got:
-            failures.append("activating the window should emit the settings command")
+        if "show_settings" not in got:
+            failures.append("activating the window should emit show_settings")
 
         # 2. System activations must NOT open the menu: WA_ACTIVE without the
         #    cursor over the taskbar is the system (another window
@@ -87,9 +87,9 @@ def main() -> int:
         while not commands.empty():
             got.append(commands.get_nowait())
         print(f"commands after taskbar activate (cursor over it): {got}")
-        if "settings" not in got:
+        if "show_settings" not in got:
             failures.append("a taskbar click (WA_ACTIVE with the cursor over "
-                            "the taskbar) should emit the settings command")
+                            "the taskbar) should emit show_settings")
 
         # 3. SC_MINIMIZE / SC_RESTORE: the taskbar button sends these on a
         #    minimize/restore request. The 1x1 window must not actually
@@ -108,10 +108,10 @@ def main() -> int:
         while not commands.empty():
             got.append(commands.get_nowait())
         print(f"commands after syscommand: {got}")
-        if got.count("settings") < 2:
+        if got.count("show_settings") < 2:
             failures.append("SC_MINIMIZE and SC_RESTORE should each emit a "
-                            "settings toggle, got "
-                            f"{got.count('settings')} settings command(s)")
+                            "show command, got "
+                            f"{got.count('show_settings')} show command(s)")
 
         # 4. SC_CLOSE ('Close window' in the right-click menu) must be
         #    ignored: destroying the 1x1 window kills the taskbar button for

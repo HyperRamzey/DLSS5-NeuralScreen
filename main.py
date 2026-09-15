@@ -317,6 +317,7 @@ class _Pipeline:
         "paused",
         "pending_apply",
         "pending_shot",
+        "shot_rgba",
         "perf",
         "present_attempted",
         "present_mode",
@@ -905,6 +906,14 @@ def main() -> int:
             status = "NR OFF" if st.paused else "NR ON"
             st.pts += 1
 
+            # A native Save As dialog is an ordinary desktop window, so DDA
+            # can still return a buffered frame containing it after the user
+            # closes it. Freeze the requested processed frame FIRST; only
+            # then does commands open the dialog (#89). The copy is isolated
+            # from the shared output slot the worker will reuse next.
+            if st.output_rgba is not None:
+                commands.freeze_screenshot_frame(st, st.output_rgba)
+
             t0 = time.perf_counter()
             try:
                 if st.recorder is not None and st.output_rgba is not None:
@@ -945,9 +954,6 @@ def main() -> int:
                     # throttling (not every frame).
                     st.display.exit_switch_mode()  # the new worker is presenting
                     st.display.reveal()  # a real frame exchange happened
-                    if st.pending_shot is not None and st.output_rgba is not None:
-                        commands.save_screenshot(st, st.pending_shot, st.output_rgba)
-                        st.pending_shot = None
                     st.display.draw_overlay()
                 elif st.output_rgba is None:
                     # The frame is already on screen - the worker showed it, only the HUD here
@@ -981,9 +987,6 @@ def main() -> int:
                     # here as well is how the key used to flip once per
                     # returned frame - the blink.
                     st.display.show(st.output_rgba)
-                    if st.pending_shot is not None:
-                        commands.save_screenshot(st, st.pending_shot, st.output_rgba)
-                        st.pending_shot = None
             except Exception as exc:
                 # A display mode change (entering/leaving a fullscreen game)
                 # can kill the pygame/SDL context - recreate the window.

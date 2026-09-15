@@ -86,6 +86,11 @@ class VideoRecorder:
     #: Audio bitrate. 192 kbit/s of AAC is transparent enough for game sound and
     #: speech, and next to a 120 Mbit/s video track its size does not matter.
     AUDIO_BIT_RATE = 192_000
+    #: AAC cannot encode every rate that a Windows playback device accepts:
+    #: 192 kHz loopback, for example, makes avcodec_open2 fail after the MP4
+    #: already has its audio stream. Keep the file format predictable and
+    #: resample every endpoint to the broadly supported AAC rate instead.
+    AAC_SAMPLE_RATE = 48_000
     #: How far the audio track may fall behind the clock before we pad it with
     #: silence, and how much lag we leave after padding. WASAPI loopback hands
     #: back nothing at all while the device is idle, so without padding a quiet
@@ -161,6 +166,8 @@ class VideoRecorder:
         self._audio: LoopbackCapture | None = None
         self._astream = None
         self._fifo: av.AudioFifo | None = None
+        self._resampler: av.AudioResampler | None = None
+        self._audio_input_samples = 0  # source-rate clock for the resampler
         self._audio_samples = 0      # frames handed to the fifo, our audio clock
         self.audio_padded = 0        # frames of silence inserted into gaps
         if audio:
@@ -208,8 +215,30 @@ class VideoRecorder:
             "no NVENC encoder available (tried "
             + ", ".join(self.CODEC_CHAIN) + ")")
 
+    def _probe_aac_encoder(self) -> bool:
+        """Open the exact AAC configuration before it can poison an MP4.
+
+        PyAV opens streams lazily when the first packet starts the container.
+        At that point a bad audio rate does not merely lose audio: the whole
+        muxer rejects the video too. The null muxer is the same eager probe
+        used for NVENC above, and lets recording fall back to video-only.
+        """
+        try:
+            with av.open("null", mode="w", format="null") as probe:
+                stream = probe.add_stream("aac", rate=self.AAC_SAMPLE_RATE)
+                stream.bit_rate = self.AUDIO_BIT_RATE
+                stream.layout = "stereo"
+                stream.format = "fltp"
+                stream.time_base = Fraction(1, self.AAC_SAMPLE_RATE)
+                stream.codec_context.open()
+        except Exception as exc:                      # noqa: BLE001
+            print(f"[record] AAC unavailable ({exc}) - recording video without audio",
+                  file=sys.stderr)
+            return False
+        return True
+
     def _open_audio(self) -> None:
-        """Start the loopback and add the AAC track. Failure is not fatal."""
+        """Start loopback and a resampled AAC track; audio stays optional."""
         cap = LoopbackCapture()
         try:
             if not cap.start():
@@ -217,28 +246,38 @@ class VideoRecorder:
                       file=sys.stderr)
                 cap.close()
                 return
+            if not self._probe_aac_encoder():
+                cap.close()
+                return
             # The endpoint may have captured a few samples while spinning up
             # (client.Start() -> the recorder's clock). They are earlier than
             # the video PTS=0 - drop them so the audio does not lead the
             # picture (audit #3, D2).
             cap.discard()
-            self._astream = self._container.add_stream("aac", rate=cap.sample_rate)
+            self._astream = self._container.add_stream("aac",
+                                                        rate=self.AAC_SAMPLE_RATE)
             self._astream.bit_rate = self.AUDIO_BIT_RATE
+            self._astream.layout = "stereo"
+            self._astream.format = "fltp"
             # The stream time base is one sample, so a pts is simply the index
             # of the sample - no rounding anywhere between the clock and the
             # container.
-            self._astream.time_base = Fraction(1, cap.sample_rate)
+            self._astream.time_base = Fraction(1, self.AAC_SAMPLE_RATE)
             # AAC encodes fixed 1024-sample frames while the loopback hands out
             # whatever the device period gives. The fifo does the regrouping.
             self._fifo = av.AudioFifo()
+            self._resampler = av.AudioResampler(format="fltp", layout="stereo",
+                                                 rate=self.AAC_SAMPLE_RATE)
             self._audio = cap
-            print(f"[record] audio: WASAPI loopback {cap.sample_rate} Hz stereo")
+            print(f"[record] audio: WASAPI loopback {cap.sample_rate} Hz -> "
+                  f"AAC {self.AAC_SAMPLE_RATE} Hz stereo")
         except Exception as exc:                      # noqa: BLE001
             print(f"[record] audio track not created: {exc}", file=sys.stderr)
             cap.close()
             self._audio = None
             self._astream = None
             self._fifo = None
+            self._resampler = None
 
     def _encode_loop(self) -> None:
         """The sole owner of the container while recording is running.
@@ -309,16 +348,35 @@ class VideoRecorder:
             self._audio = None
 
     def _push_audio(self, chunk: np.ndarray) -> None:
-        """Append float32 (n, 2) to the fifo with a pts of its sample index."""
+        """Resample float32 loopback audio and append it to the AAC fifo."""
         # 'fltp' is planar: PyAV wants (channels, samples), and contiguous -
         # a transposed view is neither.
         planar = np.ascontiguousarray(chunk.T)
         frame = av.AudioFrame.from_ndarray(planar, format="fltp", layout="stereo")
         frame.sample_rate = self._audio.sample_rate
+        frame.time_base = Fraction(1, self._audio.sample_rate)
+        frame.pts = self._audio_input_samples
+        self._audio_input_samples += planar.shape[1]
+        for converted in self._resampler.resample(frame):
+            self._append_audio_frame(converted)
+
+    def _append_audio_frame(self, frame: av.AudioFrame) -> None:
+        """Append a target-rate frame on one contiguous output clock."""
+        if frame is None or frame.samples <= 0:
+            return
+        frame.sample_rate = self.AAC_SAMPLE_RATE
         frame.time_base = self._astream.time_base
         frame.pts = self._audio_samples
-        self._audio_samples += planar.shape[1]
+        self._audio_samples += frame.samples
         self._fifo.write(frame)
+
+    def _push_silence(self, samples: int) -> None:
+        """Pad the AAC clock directly, without resampling source-rate zeros."""
+        if samples <= 0:
+            return
+        planar = np.zeros((2, samples), dtype=np.float32)
+        frame = av.AudioFrame.from_ndarray(planar, format="fltp", layout="stereo")
+        self._append_audio_frame(frame)
 
     def _pad_audio(self) -> None:
         """Insert silence when the track has fallen behind the wall clock.
@@ -328,7 +386,7 @@ class VideoRecorder:
         them, otherwise they would be written after silence covering their own
         slot and the track would drift forward.
         """
-        rate = self._audio.sample_rate
+        rate = self.AAC_SAMPLE_RATE
         elapsed = time.perf_counter() - self._started
         deficit = int(elapsed * rate) - self._audio_samples
         if deficit < int(self.AUDIO_GAP_S * rate):
@@ -336,7 +394,7 @@ class VideoRecorder:
         need = deficit - int(self.AUDIO_LAG_S * rate)
         if need <= 0:
             return
-        self._push_audio(np.zeros((need, 2), dtype=np.float32))
+        self._push_silence(need)
         self.audio_padded += need
 
     def _drain_fifo(self, flush: bool = False) -> None:
@@ -526,6 +584,10 @@ class VideoRecorder:
                 self._pump_audio()      # whatever arrived after the last frame
                 self._audio.close()
                 self._audio = None
+            if self._resampler is not None:
+                for frame in self._resampler.resample(None):
+                    self._append_audio_frame(frame)
+                self._resampler = None
             self._drain_fifo(flush=True)
             for packet in self._astream.encode(None):
                 self._container.mux(packet)
@@ -537,6 +599,7 @@ class VideoRecorder:
             print(f"[record] audio flush failed: {exc}", file=sys.stderr)
         finally:
             self._audio = None
+            self._resampler = None
 
     @property
     def duration_ms(self) -> float:

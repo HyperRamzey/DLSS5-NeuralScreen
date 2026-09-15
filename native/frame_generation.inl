@@ -58,6 +58,10 @@ static void StopFgPresentation()
     g_fg.stop = true;
     g_fg.wake.notify_all();
     if (g_fg.thread.joinable()) g_fg.thread.join();
+    // A failed fence means the queue may still own every resource below.
+    // Keep them alive until process teardown instead of releasing them from
+    // the recovery path.
+    if (g_submission_failed) { g_fg.history = false; return; }
     // Hand the swapchain back to the ordinary present path: default latency,
     // the waitable handle dies with the swapchain, not with us.
     if (g_present_swap != nullptr)
@@ -79,6 +83,7 @@ static void StopFgPresentation()
 static void CloseFgResources()
 {
     StopFgPresentation();
+    if (g_submission_failed) return;
     if (g_fg.feature) { g_fg.release(g_fg.feature); g_fg.feature = nullptr; }
     if (g_fg.depth.tex) { g_fg.depth.tex->Release(); g_fg.depth.tex = nullptr; }
     if (g_fg.depth.upload) { g_fg.depth.upload->Release(); g_fg.depth.upload = nullptr; }
@@ -115,20 +120,56 @@ static void FgPresenter()
         WaitForSingleObject(g_fg_waitable, 2000);
     auto present = [&](ID3D12Resource *source) {
         winrt::com_ptr<ID3D12Resource> bb;
-        if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(bb.put()))) ||
-            FAILED(alloc->Reset()) || FAILED(list->Reset(alloc.get(), nullptr))) return false;
+        HRESULT hr = g_present_swap->GetBuffer(
+            g_present_swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(bb.put()));
+        if (FAILED(hr) || bb.get() == nullptr)
+            return FailGpuWork("fg-present", "get-buffer-error",
+                               FAILED(hr) ? hr : E_POINTER);
+        hr = alloc->Reset();
+        if (FAILED(hr)) return FailGpuWork("fg-present", "allocator-error", hr);
+        hr = list->Reset(alloc.get(), nullptr);
+        if (FAILED(hr)) return FailGpuWork("fg-present", "command-error", hr);
         auto pre = Transition(bb.get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
         list->ResourceBarrier(1, &pre);
         list->CopyResource(bb.get(), source);
         auto post = Transition(bb.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
         list->ResourceBarrier(1, &post);
-        if (FAILED(list->Close())) return false;
+        hr = list->Close();
+        if (FAILED(hr)) return FailGpuWork("fg-present", "command-error", hr);
         ID3D12CommandList *commands[] = {list.get()};
         h.queue->ExecuteCommandLists(1, commands);
-        if (FAILED(h.queue->Signal(fence.get(), ++value)) ||
-            FAILED(fence->SetEventOnCompletion(value, event)) ||
-            WaitForSingleObject(event, 2000) != WAIT_OBJECT_0 ||
-            fence->GetCompletedValue() < value) return false;
+        hr = h.queue->Signal(fence.get(), ++value);
+        if (FAILED(hr))
+        {
+            bb.detach();
+            return FailGpuWork("fg-present-fence", "fence-error", hr);
+        }
+        hr = fence->SetEventOnCompletion(value, event);
+        if (FAILED(hr))
+        {
+            bb.detach();
+            return FailGpuWork("fg-present-fence", "fence-error", hr);
+        }
+        const DWORD waited = WaitForSingleObject(event, 2000);
+        if (waited != WAIT_OBJECT_0)
+        {
+            bb.detach();
+            return FailGpuWork("fg-present-fence",
+                               waited == WAIT_TIMEOUT ? "fence-timeout" : "fence-error",
+                               waited == WAIT_TIMEOUT ? HRESULT_FROM_WIN32(WAIT_TIMEOUT)
+                                                      : HRESULT_FROM_WIN32(GetLastError()));
+        }
+        if (fence->GetCompletedValue() == UINT64_MAX)
+        {
+            bb.detach();
+            return FailGpuWork("fg-present-fence", "fence-error",
+                               DXGI_ERROR_DEVICE_REMOVED);
+        }
+        if (fence->GetCompletedValue() < value)
+        {
+            bb.detach();
+            return FailGpuWork("fg-present-fence", "fence-error", E_FAIL);
+        }
         const HRESULT pr = g_present_swap->Present(0, 0);
         if (pr == DXGI_STATUS_MODE_CHANGED)
         {
@@ -145,7 +186,7 @@ static void FgPresenter()
             // The window is hidden (minimised target): benign.
             return true;
         }
-        if (FAILED(pr)) return false;
+        if (FAILED(pr)) return FailGpuWork("present", "present-error", pr);
         RevealOnFirstPresent();
         ++shown;
         return true;
@@ -380,7 +421,11 @@ static void FgDump(ID3D12Resource *source, D3D12_RESOURCE_STATES state, unsigned
     h.list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
     auto post = Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
     if (state != D3D12_RESOURCE_STATE_COPY_SOURCE) h.list->ResourceBarrier(1, &post);
-    if (!WaitFenceValue(h.fence, EndCommands(), 30000)) return;
+    if (!WaitFenceValue(h.fence, EndCommands(), 30000, "fg-dump"))
+    {
+        if (g_submission_failed) rb.detach();
+        return;
+    }
     BYTE *data = nullptr; D3D12_RANGE read = {0, static_cast<SIZE_T>(bytes)}, written = {0, 0};
     if (FAILED(rb->Map(0, &read, reinterpret_cast<void **>(&data)))) return;
     char path[MAX_PATH]; sprintf_s(path, "%s/fg-%llu-%u.raw", dir, g_fg.sequence, index);
@@ -443,7 +488,9 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
         if (state != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) h.list->ResourceBarrier(1, &post);
         if (NVSDK_NGX_FAILED(result))
         {
-            WaitFenceValue(h.fence, EndCommands(), 30000);
+            if (!WaitFenceValue(h.fence, EndCommands(), 30000,
+                                "fg-evaluate"))
+            { g_fg.failed = true; return false; }
             Log("[fg] Evaluate failed 0x%08X; falling back", result);
             g_fg.failed = true; CloseFgResources(); return false;
         }
@@ -460,7 +507,8 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
             // contract a STALE g_fg_present_fence from an earlier frame and
             // the token-order guard kills the worker (the blink-out class).
             const UINT64 fence = EndCommands();
-            WaitFenceValue(h.fence, fence, 30000);
+            if (!WaitFenceValue(h.fence, fence, 30000, "fg-starvation"))
+            { g_fg.failed = true; return false; }
             g_fg_present_fence = fence;
             return true;
         }
@@ -491,7 +539,7 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
     auto spout_post = Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     h.list->ResourceBarrier(1, &spout_post);
     const UINT64 fg_fence = EndCommands();
-    if (!WaitFenceValue(h.fence, fg_fence, 30000))
+    if (!WaitFenceValue(h.fence, fg_fence, 30000, "fg-evaluate"))
     { g_fg.failed = true; CloseFgResources(); return false; }
     g_fg_present_fence = fg_fence;
     BYTE *disabled = nullptr;

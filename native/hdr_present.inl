@@ -168,7 +168,11 @@ static bool PresentHdr(VideoState &v, bool bypass)
     auto export_post = Transition(export_src, D3D12_RESOURCE_STATE_COPY_SOURCE, rest);
     h.list->ResourceBarrier(1, &export_post);
     const auto fence = EndCommands();
-    if (!WaitFenceValue(h.fence, fence, 2000)) return false;
+    if (!WaitFenceValue(h.fence, fence, 2000, "hdr-present"))
+    {
+        if (g_submission_failed) bb.detach();
+        return false;
+    }
     // The same status reading as the SDR path: a mode change is a SUCCESS
     // code, and a chain the desktop has moved out from under shows nothing
     // while every present on it reports success (#58).

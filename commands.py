@@ -2,17 +2,19 @@
 
 Three ways in, one subject. The overlay menu reports an action and says
 nothing about what it means; the tray, the taskbar button and the hotkeys all
-push a word into one queue; and the screenshot flow starts with a click and
-finishes several frames later with a file on disk. The decision in every case
-is taken here, where the config, the params and the pipeline are all reachable.
+push a word into one queue; and the screenshot flow freezes a processed frame
+before it opens a system dialog, then finishes with a file on disk. The
+decision in every case is taken here, where the config, the params and the
+pipeline are all reachable.
 
 The screenshot is the part worth explaining. GetSaveFileNameW is modal: run
 from the main loop it freezes the overlay on the last frame, and with a
 recording running that pause lands in the MP4 as a still, because the PTS
 comes from the clock rather than from the frame count. So the dialog runs in
-its own thread and the answer comes back through a queue the loop drains -
-which is why opening the dialog and handling its answer are two functions and
-not one.
+its own thread and the answer comes back through a queue the loop drains. The
+frame is copied before the dialog starts: Desktop Duplication sees ordinary
+Win32 dialogs, and a frame requested after Save As closes can still be the
+dialog's buffered frame (#89).
 """
 from __future__ import annotations
 
@@ -42,6 +44,12 @@ from settings_io import (CHANNEL_URL, PROFILES, REPO_URL,
 from winapi import window_frame_rect, window_under_cursor
 
 
+#: ``pending_shot`` has requested one worker frame but has no destination yet.
+#: Identity comparison ensures this sentinel cannot be confused with a future
+#: path-like pending-shot state.
+SHOT_FRAME_PENDING = object()
+
+
 def save_screenshot(st, path: Path, rgba) -> None:
     """Save the frame as a maximum-quality JPEG.
 
@@ -67,6 +75,42 @@ def save_screenshot(st, path: Path, rgba) -> None:
         st.display.alert(UI_STRINGS[st.lang]["shot_fail"])
 
 
+def request_screenshot(st) -> None:
+    """Request pixels before showing Save As, so the dialog cannot be captured.
+
+    In presentation/DDA mode Python normally receives no pixels.  The next
+    frame is explicitly requested through ``pending_shot``; main freezes that
+    processed frame and only then starts the native dialog.  The copy matters:
+    the shared-memory output slot is reused on the next worker response.
+    """
+    if st.shot_dialog_open or st.pending_shot is not None:
+        return
+    st.pending_shot = SHOT_FRAME_PENDING
+    print("[main] screenshot requested - capturing before Save As")
+
+
+def freeze_screenshot_frame(st, rgba) -> bool:
+    """Copy the requested result frame, then start the Save As dialog.
+
+    Returns true only for the one frame requested by ``request_screenshot``.
+    Keeping the sequencing in this module makes it testable without a worker:
+    opening the dialog is structurally after the immutable frame copy (#89).
+    """
+    if st.pending_shot is not SHOT_FRAME_PENDING:
+        return False
+    st.pending_shot = None
+    try:
+        st.shot_rgba = rgba.copy()
+    except Exception as exc:
+        print(f"[main] could not freeze the screenshot frame: {exc}",
+              file=sys.stderr)
+        st.shot_rgba = None
+        st.display.alert("No frame yet")
+        return False
+    open_save_dialog(st)
+    return True
+
+
 def open_save_dialog(st) -> None:
     """Show "Save as" without stalling the pipeline.
 
@@ -78,7 +122,8 @@ def open_save_dialog(st) -> None:
     window is already up.
 
     A configured screenshot_dir is the folder the dialog opens in,
-    not a replacement for it (issue #20).
+    not a replacement for it (issue #20). ``freeze_screenshot_frame`` has
+    already copied the selected image before this function is called.
     """
     if st.shot_dialog_open:
         return
@@ -107,6 +152,7 @@ def drain_save_dialog(st) -> None:
             shot_path = st.shot_paths.get_nowait()
             st.shot_dialog_open = False
             if shot_path is None:
+                st.shot_rgba = None
                 print("[main] screenshot cancelled by the user")
                 continue
             if shot_path.is_dir():
@@ -119,13 +165,12 @@ def drain_save_dialog(st) -> None:
                 print(f"[main] screenshot folder -> {shot_path}")
                 st.display.alert(f"Screenshot folder: {shot_path}")
                 continue
-            if st.present_mode:
-                st.pending_shot = shot_path
-                print(f"[main] screenshot from the next frame: {shot_path}")
-            elif st.output_rgba is not None:
-                save_screenshot(st, shot_path, st.output_rgba)
-            else:
+            rgba = st.shot_rgba
+            st.shot_rgba = None
+            if rgba is None:
                 st.display.alert("No frame yet")
+                continue
+            save_screenshot(st, shot_path, rgba)
     except queue.Empty:
         pass
 
@@ -462,14 +507,27 @@ def drain_commands(st) -> bool:
                 print(f"[main] exit: tray or the quit hotkey "
                       f"(frames processed {st.frame_index})")
                 st.running = False
-            elif cmd == "settings":
-                # Num2 and a left click on the tray open the overlay
-                # menu - the only place the settings live.
+            elif cmd in ("settings", "show_settings"):
+                # Num2 and the tray keep their useful toggle semantics. The
+                # taskbar is different: Windows may deliver several activation
+                # messages for one click, so it asks only to SHOW the menu.
+                # Otherwise a duplicate activation can close a visible menu
+                # and make NeuralScreen appear to hide itself (#87).
                 st.display.menu.set_state(settings_io.menu_payload(st))
-                opened = st.display.menu.toggle()
+                was_open = st.display.menu.visible
+                if cmd == "show_settings":
+                    st.display.menu.visible = True
+                    opened = True
+                    # This is also the explicit recovery path for a layered
+                    # overlay whose visual attributes were disturbed by the
+                    # shell: retain its input state, but reapply the actual
+                    # key/alpha attributes before claiming it is shown.
+                    st.display.refresh_colorkey()
+                else:
+                    opened = st.display.menu.toggle()
                 st.display.set_menu_opaque(opened)
                 st.display.set_menu_input(opened)
-                if opened:
+                if opened and not was_open:
                     # In one-window mode the HUD layer is the size of
                     # the captured window - a menu near the edge would
                     # be clipped by it. Expand the layer to the whole
@@ -540,7 +598,7 @@ def drain_commands(st) -> bool:
                 st.display.alert(UI_STRINGS[st.lang]["nr_off" if st.paused else "nr_on"])
                 st.tray._set_state(nr=not st.paused)
             elif cmd == "screenshot_menu":
-                open_save_dialog(st)
+                request_screenshot(st)
             elif cmd == "framegen":
                 # A plain on/off for Frame Generation (user request 15.09).
                 # The same path the menu switch takes, so the config write,

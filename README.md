@@ -186,10 +186,9 @@ settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR
 - **Windows 10 and two NVIDIA cards are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
-- **Window mode, active-state bug (in progress):** when another window takes
-  focus, the NR window can stop responding to dragging. Three of the found
-  sources are fixed (z-order churn, the WGC reopen loop, the FG fence token);
-  the rest is under active work.
+- **Window mode:** the hard blink of the panel over the picture and the drag
+  stutter are fixed in 1.11.0; focus/taskbar polish (the overlay dropping
+  behind on the first focus change) is still in progress.
 
 ## License
 

@@ -84,11 +84,10 @@ only moves the windows.
   is initialised once per worker process (`NS_SPOUT`), so toggling it
   restarts the worker.
 - **System audio is recorded as a second track**: WASAPI loopback ("what you
-  hear") from the default playback device, AAC 192 kbit/s stereo at the
-  endpoint's own rate. No virtual cable, no microphone. Turn it off with
-  `"record_audio": false` in `config.json`. A machine without a playback
-  endpoint still records video — the sound is best-effort and never stops the
-  recording.
+  hear") from the default playback device, resampled to AAC 48 kHz / 192
+  kbit/s stereo. No virtual cable or microphone. Turn it off with
+  `"record_audio": false` in `config.json`. A missing endpoint or AAC encoder
+  falls back to video-only instead of aborting the MP4.
 
   While nothing is playing at all, WASAPI loopback hands back no data rather
   than silence, so quiet stretches are padded from the same clock the video
@@ -145,7 +144,7 @@ not.
 
 | Field | Meaning |
 |---|---|
-| `monitor` | monitor index for capture |
+| `monitor` | stable display name saved from the menu; its flat UI index resolves to the owning adapter/output pair |
 | `width`, `height` | output resolution (**actual monitor resolution is used automatically when config is stale**) |
 | `fullscreen` | borderless fullscreen window |
 | `warmup` | NGX warmup frames at start |
@@ -253,7 +252,8 @@ hidden only on real exit.
 **Recording path.** Frames are requested from the worker with
 `FRAME_FLAG_WANT_PIXELS` (the same mechanism as screenshots), the open menu
 is drawn onto the frame with `draw_capture_overlay()`, then PyAV encodes
-AV1 NVENC.
+AV1 NVENC. A screenshot copies this processed frame before opening Save As,
+so the dialog can never become the next captured frame.
 
 Two constraints that look like quirks but are mandatory:
 

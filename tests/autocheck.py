@@ -197,9 +197,9 @@ def shipped_config_defaults():
 
 
 def zip_integrity():
-    zpath = ROOT / "neuralscreen-v1.11.1-full.zip"
+    zpath = ROOT / "neuralscreen-v1.12.0-full.zip"
     if not zpath.is_file():
-        return False, "no neuralscreen-v1.11.1-full.zip"
+        return False, "no neuralscreen-v1.12.0-full.zip"
     required = [
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",

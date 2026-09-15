@@ -150,16 +150,16 @@ bundled copy; `nr_dll` / `NS_NR_DLL` remain the NR override.
 open, on purpose. A red dot with a timer sits in the corner while recording
 (it can be turned off in the settings).
 
-Screenshots open a **Save As** dialog; set **Screenshot folder...** in the
-settings once and it will start there every time.
+Screenshots freeze the processed frame before **Save As** opens, so the dialog
+cannot appear in the image. Set **Screenshot folder...** once to start there.
 
 **Recording externally:**
 
 - **OBS (recommended):** turn on **Spout2 output (OBS)** in the settings, then
   add a **Spout2 Capture** source in OBS. Works in any mode.
-- **NVIDIA App:** it has no Spout input, so use one-window mode — pick the
-  window, record, then switch back to **Fullscreen**. In that mode the overlay
-  is visible to screen capture; in full-screen mode it hides itself.
+- **NVIDIA App:** it has no Spout input, so use one-window mode. In full-screen
+  mode the overlay intentionally hides from Windows/OBS capture to prevent a
+  feedback loop; use Spout or the built-in screenshot for the processed frame.
 
 ## If something is not working
 
@@ -183,12 +183,12 @@ settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR
 
 - **True fullscreen games** cannot have an overlay drawn over them — borderless or windowed only.
 - **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
-- **Windows 10 and two NVIDIA cards are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
+- **Windows 10 and multi-GPU systems are experimental** — v1.12 fixes adapter/output selection from user logs, not local hardware. Reports welcome.
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
-- **Window mode:** the hard blink of the panel over the picture and the drag
-  stutter are fixed in 1.11.0; focus/taskbar polish (the overlay dropping
-  behind on the first focus change) is still in progress.
+- **Window mode:** panel blink and drag stutter were fixed in 1.11.0, taskbar
+  reactivation in 1.12; the overlay can still drop behind on the first focus
+  change.
 
 ## License
 

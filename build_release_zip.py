@@ -1,4 +1,4 @@
-"""Build the NeuralScreen v1.5.1 release archive: git files + artifacts + runtime.
+"""Build the NeuralScreen release archive: git files + artifacts + runtime.
 
 The archive carries a VERSION.txt manifest (git commit, runtime SHA-256,
 target architectures) so a user can tell exactly which build they have.
@@ -17,7 +17,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 os.chdir(BASE)
 
-VERSION = "1.11.1"
+VERSION = "1.12.0"
 # The bundle is architecture-agnostic by design: the dcc0dc24 runtime and
 # the 0x1B0 spoof work on RTX 30/40/50 (v1.3.0 behaviour). The manifest
 # still records what is inside so a mismatch is catchable.

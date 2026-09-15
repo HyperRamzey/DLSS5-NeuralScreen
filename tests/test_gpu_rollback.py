@@ -20,6 +20,7 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 import pipeline  # noqa: E402
+import compatibility_runtime  # noqa: E402
 
 
 class _Worker:
@@ -41,10 +42,11 @@ def _state(gpu=0, logs=None, worker=None):
         display=types.SimpleNamespace(alert=alerts.append))
 
 
-def _drive(st, index, logs_after_rebuild):
+def _drive(st, index, logs_after_rebuild, *, preflight_pass=True):
     """apply_gpu with the rebuild stubbed out; the stub feeds the verdict."""
     saved = (pipeline.teardown_pipeline, pipeline.rebuild_pipeline,
-             pipeline.settings_io.save_menu_layout)
+             pipeline.settings_io.save_menu_layout,
+             compatibility_runtime.run_preflight)
     rebuilds = []
     writes = []
 
@@ -59,11 +61,14 @@ def _drive(st, index, logs_after_rebuild):
     pipeline.rebuild_pipeline = rebuild
     pipeline.settings_io.save_menu_layout = lambda state: writes.append(
         int(state.cfg.get("gpu", -1))) or True
+    compatibility_runtime.run_preflight = lambda state: types.SimpleNamespace(
+        is_pass=preflight_pass)
     try:
         pipeline.apply_gpu(st, index)
     finally:
         (pipeline.teardown_pipeline, pipeline.rebuild_pipeline,
-         pipeline.settings_io.save_menu_layout) = saved
+         pipeline.settings_io.save_menu_layout,
+         compatibility_runtime.run_preflight) = saved
     return rebuilds, writes
 
 
@@ -85,14 +90,15 @@ def main() -> int:
         #    config is NOT written, and the user is told.
         st = _state(gpu=0)
         rebuilds, writes = _drive(
-            st, 2, ["[pure] direct feature 18 create failed 0xBAD00001"])
+            st, 2, ["[pure] direct feature 18 create failed 0xBAD00001"],
+            preflight_pass=False)
         if st.cfg["gpu"] != 0 or os.environ.get("NS_GPU") != "0":
             failures.append(f"a dead card stuck: cfg={st.cfg['gpu']}, "
                             f"env={os.environ.get('NS_GPU')}")
         if writes:
             failures.append(f"a dead card was written to the config: {writes}")
-        if rebuilds != [2, 0]:
-            failures.append(f"expected a rebuild on 2 then back on 0: {rebuilds}")
+        if rebuilds != [0]:
+            failures.append(f"preflight failure should rebuild only card 0: {rebuilds}")
         # The refusal is remembered, so the picker can say which of two
         # identical-looking entries is the one that does not work - DXGI
         # lists some cards twice (issue #33).
@@ -115,7 +121,7 @@ def main() -> int:
         # 3. NGX never initialised at all - same outcome.
         st = _state(gpu=0)
         _drive(st, 3, ["[host] NVSDK_NGX_D3D12_Init -> 0xBAD00001",
-                       "[host] NGX unavailable"])
+                       "[host] NGX unavailable"], preflight_pass=False)
         if st.cfg["gpu"] != 0:
             failures.append("an adapter without NGX stuck")
 

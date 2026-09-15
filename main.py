@@ -88,6 +88,7 @@ from taskbar import TaskbarWindow
 import dialogs
 import channels
 import commands
+import compatibility_runtime
 import startup
 import settings_io
 import pipeline
@@ -131,6 +132,8 @@ from winapi import (DWMWA_EXTENDED_FRAME_BOUNDS, _RECT,  # noqa: F401
 # Named one by one rather than with a star: a star import would drag
 # protocol's own imports into this namespace too.
 from protocol import (  # noqa: F401
+    CREATE_ACK_FMT, CREATE_ACK_MAGIC, CREATE_CATEGORY_FAILED,
+    CREATE_CATEGORY_NONE, CREATE_CATEGORY_UNSUPPORTED,
     DDA_ACK_FMT, DDA_ACK_MAGIC, DDA_FMT, DDA_MAGIC, FRAME_FLAG_BYPASS,
     FRAME_FLAG_MOTION_SMALL, FRAME_FLAG_NO_COLOR, FRAME_FLAG_SHM,
     FRAME_FLAG_SKIP_STATIC, FRAME_FLAG_SPLIT, FRAME_FLAG_WANT_PIXELS,
@@ -307,6 +310,7 @@ class _Pipeline:
         "mon_h",
         "mon_w",
         "monitor",
+        "monitor_devicename",
         "motion_attempted",
         "motion_small",
         "next_auto_revive",
@@ -361,6 +365,8 @@ class _Pipeline:
         "warmup",
         "effective_warmup",
         "hdr_alerted",
+        "compatibility_key",
+        "compatibility_result",
     )
 
 
@@ -388,7 +394,14 @@ def main() -> int:
     # back into it and has no business knowing what argparse is.
     st.cfg_path = args.config
     startup.configure(st)
+    # The compatibility worker receives synthetic RGBA frames only.  Desktop
+    # capture and the presentation window are deliberately created after an
+    # exact N/N PASS (or a cached PASS for the same key).
+    if not compatibility_runtime.startup_gate(st):
+        print("[main] compatibility preflight cancelled - capture was not opened")
+        return 2
     try:
+        startup.open_capture(st)
         startup.bring_up(st)
 
         capture_failures = 0
@@ -542,6 +555,7 @@ def main() -> int:
                     st.worker_failed = False
                     print("[main] auto-reviving the worker after the transient failure")
                     try:
+                        pipeline.require_compatibility(st)
                         st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                             st.worker, st.params, st.work_w, st.work_h,
                             st.effective_warmup,
@@ -822,6 +836,7 @@ def main() -> int:
                     print("[main] worker stderr (tail):")
                     for line in st.worker_logs[-15:]:
                         print(f"  {line}")
+                pipeline.require_compatibility(st)
                 st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                     st.worker, st.params, st.work_w, st.work_h, st.effective_warmup,
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
@@ -926,6 +941,7 @@ def main() -> int:
                     continue
                 print(f"[main] worker silent/dead on frame {st.frame_index} ({exc}) - restarting "
                       f"({st.consecutive_restarts}/{MAX_CONSECUTIVE_RESTARTS})")
+                pipeline.require_compatibility(st)
                 st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                     st.worker, st.params, st.work_w, st.work_h, st.effective_warmup,
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,

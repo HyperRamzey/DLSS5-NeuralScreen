@@ -527,7 +527,6 @@ class CompatibilityPreflight:
             key.digest, verdict, stage, passed, attempted, len(self.frames),
             status.value, False, until,
         )
-        self.cache.put(key, result)
         return result
 
     def run(self, key: CompatibilityKey, *, force: bool = False) -> CompatibilityResult:
@@ -546,17 +545,19 @@ class CompatibilityPreflight:
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
-            return self._failure(
+            result = self._failure(
                 key, _exception_status(exc), "create", passed, attempted,
             )
-        try:
-            created = _call(lambda: runner.create(CreateRequest(
-                key, first.width, first.height, first.pixel_format,
-            )))
-            create_status = _normalise_status(created.status)
-            if create_status is not StageStatus.SUCCESS:
-                return self._failure(key, create_status, "create", passed, attempted)
-
+            self.cache.put(key, result)
+            return result
+        result: CompatibilityResult | None = None
+        created = _call(lambda: runner.create(CreateRequest(
+            key, first.width, first.height, first.pixel_format,
+        )))
+        create_status = _normalise_status(created.status)
+        if create_status is not StageStatus.SUCCESS:
+            result = self._failure(key, create_status, "create", passed, attempted)
+        else:
             for frame in self.frames:
                 attempted += 1
                 outcome = _call(lambda frame=frame: runner.evaluate(
@@ -568,10 +569,12 @@ class CompatibilityPreflight:
                     continue
                 if status is StageStatus.SUCCESS:
                     status = StageStatus.ERROR
-                return self._failure(
+                result = self._failure(
                     key, status, f"evaluate[{frame.index}]", passed, attempted,
                 )
+                break
 
+        if result is None:
             result = CompatibilityResult(
                 key.digest, CompatibilityStatus.PASS, "complete",
                 passed, attempted, len(self.frames), StageStatus.SUCCESS.value,
@@ -580,16 +583,23 @@ class CompatibilityPreflight:
             # loop above already enforces it: future changes cannot turn a
             # partial/empty test into PASS accidentally.
             if not result.is_pass:
-                return self._failure(
+                result = self._failure(
                     key, StageStatus.ERROR, "complete", passed, attempted,
                 )
-            self.cache.put(key, result)
-            return result
-        finally:
-            try:
-                runner.close()
-            except Exception:
-                pass
+
+        # Never publish PASS/UNSUPPORTED while the isolated process may still
+        # be alive.  A close failure is itself a crash at the cleanup stage.
+        try:
+            runner.close()
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            result = self._failure(
+                key, _exception_status(exc), "close", passed, attempted,
+            )
+
+        self.cache.put(key, result)
+        return result
 
     def manual_retry(self, key: CompatibilityKey) -> CompatibilityResult:
         """Clear this key's PASS/unsupported/quarantine record and rerun it."""

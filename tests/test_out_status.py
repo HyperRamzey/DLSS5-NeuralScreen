@@ -22,8 +22,9 @@ import numpy as np
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
-from main import (OUT_FMT, OUT_MAGIC, OUT_STATUS_OK, OUT_STATUS_SKIPPED,
-                  WorkerReader)  # noqa: E402
+from main import (CREATE_ACK_FMT, CREATE_ACK_MAGIC,
+                  CREATE_CATEGORY_UNSUPPORTED, OUT_FMT, OUT_MAGIC,
+                  OUT_STATUS_OK, OUT_STATUS_SKIPPED, WorkerReader)  # noqa: E402
 
 
 class FakeWorker:
@@ -40,6 +41,10 @@ class FakeWorker:
         if payload:
             os.write(self._w, payload)
 
+    def send_create_ack(self, ok: int, ngx_result: int, category: int) -> None:
+        os.write(self._w, struct.pack(
+            CREATE_ACK_FMT, CREATE_ACK_MAGIC, ok, ngx_result, category, 0))
+
     def close(self) -> None:
         try:
             os.close(self._w)
@@ -54,6 +59,13 @@ def main() -> int:
     # frame keeps the test fast.
     reader = WorkerReader(fake, 1, 1, shm=None)
     try:
+        # 0. The create verdict is an explicit packet, independent of the
+        #    first output frame (SAFE PASSTHROUGH also returns RGBA).
+        fake.send_create_ack(0, 0xBAD00001, CREATE_CATEGORY_UNSUPPORTED)
+        if reader.wait_create_ack(5.0) != (
+                0, 0xBAD00001, CREATE_CATEGORY_UNSUPPORTED):
+            failures.append("CACK: explicit create verdict was not preserved")
+
         # 1. A normal frame: result 1, pixels inline.
         fake.send_out(1, 1, 4, 1, payload=b"\xAB" * 4)
         got = reader.recv(1, 5.0)

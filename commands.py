@@ -191,11 +191,25 @@ def drain_save_dialog(st) -> None:
             answer = st.shot_paths.get_nowait()
             st.shot_dialog_open = False
             if (isinstance(answer, tuple) and len(answer) == 2
-                    and answer[0] in ("save", "screenshot_dir", "recording_dir")):
+                    and answer[0] in (
+                        "save", "screenshot_dir", "recording_dir", "diagnostics")):
                 kind, shot_path = answer
             else:
                 # Backward compatibility for tests and older producers.
                 kind, shot_path = "save", answer
+            if kind == "diagnostics":
+                ok, detail = shot_path
+                if ok:
+                    print(f"[main] diagnostic package: {detail}")
+                    st.display.alert(UI_STRINGS[st.lang].get(
+                        "diagnostics_saved",
+                        "Diagnostic package: {path}").format(path=detail),
+                        duration=8.0)
+                else:
+                    st.display.alert(UI_STRINGS[st.lang].get(
+                        "diagnostics_failed",
+                        "Could not create diagnostic package"), duration=6.0)
+                continue
             if kind in ("screenshot_dir", "recording_dir"):
                 if shot_path is None:
                     continue
@@ -321,6 +335,26 @@ def open_folder_picker(st, kind: str) -> None:
         st.shot_paths.put((kind, selected))
 
     threading.Thread(target=_pick_dir, name="folder-picker", daemon=True).start()
+
+
+def create_diagnostics(st) -> None:
+    """Build a sanitized support ZIP off the UI thread and report its path."""
+    if st.shot_dialog_open:
+        return
+    st.shot_dialog_open = True
+    st.display.alert(UI_STRINGS[st.lang].get(
+        "diagnostics_working", "Creating diagnostic package..."))
+
+    def _run() -> None:
+        try:
+            from compatibility_runtime import create_support_bundle
+            result = (True, str(create_support_bundle(st, stage="manual")))
+        except Exception as exc:
+            print(f"[main] diagnostic package failed: {exc}", file=sys.stderr)
+            result = (False, f"{type(exc).__name__}: {exc}")
+        st.shot_paths.put(("diagnostics", result))
+
+    threading.Thread(target=_run, name="diagnostic-bundle", daemon=True).start()
 
 
 def apply_menu_action(st, action: tuple) -> None:
@@ -596,6 +630,8 @@ def apply_menu_action(st, action: tuple) -> None:
             open_folder_picker(st, "screenshot_dir")
         elif name == "record_dir":
             open_folder_picker(st, "recording_dir")
+        elif name == "diagnostics":
+            create_diagnostics(st)
         elif name == "github":
             # The hotkeys, profiles and requirements are described
             # only in the README - there was no way to learn about
@@ -736,6 +772,7 @@ def drain_commands(st) -> bool:
                         st.next_auto_revive = 0.0
                         print("[main] reviving the worker after the failure")
                         try:
+                            pipeline.require_compatibility(st)
                             st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                                 st.worker, st.params, st.work_w, st.work_h,
                                 st.effective_warmup,

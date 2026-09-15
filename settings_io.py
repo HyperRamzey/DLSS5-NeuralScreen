@@ -942,6 +942,19 @@ def menu_payload(st) -> dict:
                       f"{last_recording.get('codec', 'unknown')} · "
                       f"{float(last_recording.get('fps', 0)):g} fps · "
                       f"{'AAC' if last_recording.get('audio') else 'no audio'}")
+    compatibility = getattr(st, "compatibility_result", None)
+    compatibility_status = (
+        str(getattr(getattr(compatibility, "status", None), "value", "not_run"))
+        if compatibility is not None else "not_run"
+    )
+    compatibility_score = ""
+    if compatibility is not None:
+        compatibility_score = (
+            f"{int(compatibility.passed)}/{int(compatibility.expected)}"
+            if compatibility.is_pass
+            else f"{int(compatibility.passed)}/{int(compatibility.attempted)} "
+                 f"(expected {int(compatibility.expected)})"
+        )
     return {
         "nr": not st.paused,
         "work_scale": st.work_scale,
@@ -1034,6 +1047,8 @@ def menu_payload(st) -> dict:
         # every issue.
         "about": dict(getattr(st, "environment", None) or {},
                       gpu=st.gpu_text or ""),
+        "compatibility_status": compatibility_status,
+        "compatibility_score": compatibility_score,
         "gpu_ok": st.gpu_ok,
         "window_mode": st.window_hwnd is not None,
         "monitor_devicename": st.capture.devicename,

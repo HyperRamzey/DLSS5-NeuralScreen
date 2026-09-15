@@ -1725,6 +1725,7 @@ static constexpr uint32_t OUT_STATUS_OK = 0x1u;
 static constexpr uint32_t OUT_STATUS_SKIPPED = 0x2u;
 static constexpr uint32_t RESIZE_MAGIC    = 0x5A534E52u; // "RNSZ" -- reconfigure on the fly (work size + params)
 static constexpr uint32_t RESIZE_ACK_MAGIC = 0x4B434152u; // "RACK" -- worker -> client reply to RNSZ
+static constexpr uint32_t CREATE_ACK_MAGIC = 0x4B434143u; // "CACK" -- initial CreateFeature verdict
 static constexpr uint32_t SHM_MAGIC     = 0x494D4853u; // "SHMI" -- client -> worker: frame payload lives in shared memory
 static constexpr uint32_t SHM_ACK_MAGIC = 0x4B434153u; // "SACK" -- worker -> client reply to SHMI
 static constexpr uint32_t WINDOW_MAGIC     = 0x4F444E57u; // "WNDO" -- client -> worker: present results yourself
@@ -1829,6 +1830,15 @@ static constexpr uint32_t RESIZE_FLAG_NR_DIRECT = 0x2u;
 struct VideoResizeAck
 {
     uint32_t magic, ok, ngx_result, reserved;
+    int64_t pts;
+};
+
+struct VideoCreateAck
+{
+    uint32_t magic;
+    uint32_t ok;
+    uint32_t ngx_result;
+    uint32_t category; // 0 success, 1 exact unsupported, 2 other create failure
     int64_t pts;
 };
 // SHMI: client -> worker, once per worker lifetime (right after the stream
@@ -1953,6 +1963,7 @@ static_assert(sizeof(VideoFrameHeader) == 24, "VideoFrameHeader != FRAME_FMT");
 static_assert(sizeof(VideoResultHeader) == 28, "VideoResultHeader != OUT_FMT");
 static_assert(sizeof(VideoResizeCmd) == 64, "VideoResizeCmd != RESIZE_FMT");
 static_assert(sizeof(VideoResizeAck) == 24, "VideoResizeAck != RACK_FMT");
+static_assert(sizeof(VideoCreateAck) == 24, "VideoCreateAck != CREATE_ACK_FMT");
 static_assert(sizeof(VideoShmCmd) == 88, "VideoShmCmd != SHM_FMT");
 static_assert(sizeof(VideoShmAck) == 24, "VideoShmAck != SHM_ACK_FMT");
 static_assert(sizeof(VideoWindowCmd) == 24, "VideoWindowCmd != WINDOW_FMT");
@@ -5848,9 +5859,22 @@ static int RunVideo()
     // In nr_small mode the feature is created at the work resolution and told
     // nothing about the screen: it is handed a work-sized frame and returns a
     // work-sized one, and the scaling on both sides is ours.
-    if (!CreateFeature(vh.width, vh.height, flags, &create_result,
-                       (v.nr_small || !upscale) ? 0 : vh.full_w,
-                       (v.nr_small || !upscale) ? 0 : vh.full_h))
+    const bool feature_created = CreateFeature(
+        vh.width, vh.height, flags, &create_result,
+        (v.nr_small || !upscale) ? 0 : vh.full_w,
+        (v.nr_small || !upscale) ? 0 : vh.full_h);
+    const uint32_t create_category = feature_created ? 0u :
+        (static_cast<uint32_t>(create_result) == 0xBAD00001u ? 1u : 2u);
+    const VideoCreateAck create_ack = {
+        CREATE_ACK_MAGIC, feature_created ? 1u : 0u,
+        static_cast<uint32_t>(create_result), create_category, 0
+    };
+    if (!WriteExact(g_wire, &create_ack, sizeof(create_ack)))
+    {
+        Log("[video] could not write the initial CreateFeature acknowledgement");
+        return 10;
+    }
+    if (!feature_created)
     {
         if (g_submission_failed) return 3;
         // A feature-create refusal is not a reason to kill the desktop

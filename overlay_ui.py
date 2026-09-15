@@ -203,6 +203,8 @@ class OverlayMenu:
             "param_ranges": {},
             # version / windows / driver / gpu, from the log header.
             "about": {},
+            "compatibility_status": "not_run",
+            "compatibility_score": "",
             "style": 1,
             "param_defaults": {},
             "preset_active": False,
@@ -897,6 +899,27 @@ class OverlayMenu:
                                                   self._u(LABEL_H)),
                                       extra={"label": label, "value": value}))
                     cy += self._u(LABEL_H) + self._u(4)
+                compat_status = str(
+                    self.state.get("compatibility_status") or "not_run")
+                compat_score = str(self.state.get("compatibility_score") or "")
+                if show:
+                    status_label = s.get(
+                        f"compatibility_{compat_status}", compat_status)
+                    value = status_label + (f" · {compat_score}" if compat_score else "")
+                    items.append(Item("info", "compatibility",
+                                      pygame.Rect(pad, cy, inner_w,
+                                                  self._u(LABEL_H)),
+                                      extra={"label": s.get(
+                                          "compatibility", "Compatibility"),
+                                             "value": value}))
+                    cy += self._u(LABEL_H) + self._u(8)
+                    items.append(Item("button", "diagnostics",
+                                      pygame.Rect(pad, cy, inner_w, act_h),
+                                      extra={"label": s.get(
+                                          "diagnostics_create",
+                                          "Create diagnostic package"),
+                                             "filled": False}))
+                    cy += act_h + self._u(6)
                 if show and about:
                     cy += self._u(6)
             if channel:

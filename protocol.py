@@ -301,6 +301,15 @@ OUT_MAGIC = 0x3154554F    # 'OUT1'
 OUT_STATUS_OK = 0x1
 OUT_STATUS_SKIPPED = 0x2
 
+# CACK: the worker's explicit verdict for the CreateFeature performed from
+# the initial VIDEO header.  A full RGBA frame is not enough evidence: on an
+# unsupported GPU the worker deliberately stays alive in SAFE PASSTHROUGH.
+CREATE_ACK_MAGIC = 0x4B434143
+CREATE_ACK_FMT = "<4Iq"  # magic, ok, ngx_result, category, pts
+CREATE_CATEGORY_NONE = 0
+CREATE_CATEGORY_UNSUPPORTED = 1
+CREATE_CATEGORY_FAILED = 2
+
 HEADER_FMT = "<10I4f2I"   # magic, w, h, warmup, frame_count, profile, preset,
                           # style, auto_mask, ui_correction, intensity,
                           # local_tone, local_structure, skin_structure,
@@ -626,6 +635,12 @@ class WorkerReader:
                     rest = _read_exact(self._worker.stdout, struct.calcsize(MOTION_ACK_FMT) - 4)
                     _magic, ok, _r0, _r1, _pts = struct.unpack(MOTION_ACK_FMT, magic_raw + rest)
                     self._queue.put(("mack", ok))
+                elif magic == CREATE_ACK_MAGIC:
+                    rest = _read_exact(
+                        self._worker.stdout, struct.calcsize(CREATE_ACK_FMT) - 4)
+                    _magic, ok, ngx_result, category, _pts = struct.unpack(
+                        CREATE_ACK_FMT, magic_raw + rest)
+                    self._queue.put(("cack", (ok, ngx_result, category)))
                 elif magic == WINDOW_ACK_MAGIC:
                     # WACK: acknowledgement of WNDO - the window is up or closed
                     rest = _read_exact(self._worker.stdout, struct.calcsize(WINDOW_ACK_FMT) - 4)
@@ -745,6 +760,25 @@ class WorkerReader:
                 if not payload:
                     raise RuntimeError("the worker could not enable GPU motion upscaling")
                 return
+
+    def wait_create_ack(self, timeout: float) -> tuple[int, int, int]:
+        """Wait for the initial CreateFeature verdict from the VIDEO header."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"the worker did not acknowledge feature creation within {timeout:.0f}s")
+            try:
+                got, payload = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if got is None:
+                raise payload if isinstance(payload, Exception) else EOFError(
+                    "the worker stopped")
+            if got == "cack":
+                ok, ngx_result, category = payload
+                return int(ok), int(ngx_result), int(category)
 
     def wait_wack(self, timeout: float) -> None:
         """Wait for WACK - the acknowledgement of the WNDO command."""

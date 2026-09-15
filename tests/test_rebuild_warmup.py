@@ -69,7 +69,8 @@ def main() -> int:
     failures = []
     seen = []
 
-    saved = (pipeline.start_worker, pipeline.SharedFrameBuffer)
+    saved = (pipeline.start_worker, pipeline.SharedFrameBuffer,
+             pipeline.require_compatibility)
     pipeline.SharedFrameBuffer = lambda w, h: types.SimpleNamespace(
         name="x", close=lambda: None, width=w, height=h)
 
@@ -78,6 +79,7 @@ def main() -> int:
         return (types.SimpleNamespace(poll=lambda: None), [], None, None)
 
     pipeline.start_worker = fake_start_worker
+    pipeline.require_compatibility = lambda st: None
     try:
         for effective, want, why in (
                 (120, pipeline.RESTART_WARMUP,
@@ -101,7 +103,8 @@ def main() -> int:
             if got != want:
                 failures.append(f"{why}: expected {want}, got {got}")
     finally:
-        pipeline.start_worker, pipeline.SharedFrameBuffer = saved
+        (pipeline.start_worker, pipeline.SharedFrameBuffer,
+         pipeline.require_compatibility) = saved
 
     if pipeline.RESTART_WARMUP >= 120:
         failures.append("RESTART_WARMUP grew to the cold-start value - the "

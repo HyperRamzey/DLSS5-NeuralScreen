@@ -22,6 +22,7 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 import capture  # noqa: E402
+import compatibility_runtime  # noqa: E402
 import commands  # noqa: E402
 import pipeline  # noqa: E402
 import settings_io  # noqa: E402
@@ -48,10 +49,12 @@ def main() -> int:
     failures = []
     calls = {"teardown": 0, "rebuild": 0, "saved": 0}
     real = (pipeline.teardown_pipeline, pipeline.rebuild_pipeline,
-            settings_io.save_menu_layout, pipeline.settings_io.save_menu_layout)
+            settings_io.save_menu_layout, pipeline.settings_io.save_menu_layout,
+            compatibility_runtime.run_preflight)
     pipeline.teardown_pipeline = lambda st: calls.__setitem__("teardown", calls["teardown"] + 1)
     pipeline.rebuild_pipeline = lambda st, note: calls.__setitem__("rebuild", calls["rebuild"] + 1)
     pipeline.settings_io.save_menu_layout = lambda st: calls.__setitem__("saved", calls["saved"] + 1) or True
+    compatibility_runtime.run_preflight = lambda st: types.SimpleNamespace(is_pass=True)
     before = os.environ.get("NS_GPU")
     try:
         # 1. A menu pick of another card: config, environment, one restart.
@@ -88,7 +91,8 @@ def main() -> int:
             failures.append("no choice should leave NS_GPU unset")
     finally:
         (pipeline.teardown_pipeline, pipeline.rebuild_pipeline,
-         settings_io.save_menu_layout, pipeline.settings_io.save_menu_layout) = real
+         settings_io.save_menu_layout, pipeline.settings_io.save_menu_layout,
+         compatibility_runtime.run_preflight) = real
         if before is None:
             os.environ.pop("NS_GPU", None)
         else:

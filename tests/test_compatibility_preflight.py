@@ -59,12 +59,13 @@ class Clock:
 
 
 class FakeRunner:
-    def __init__(self, create=None, evaluations=None):
+    def __init__(self, create=None, evaluations=None, close_error=None):
         self.create_outcome = create or StageOutcome.success()
         self.evaluations = list(evaluations or [])
         self.create_requests = []
         self.evaluate_requests = []
         self.closed = False
+        self.close_error = close_error
 
     def create(self, request):
         self.create_requests.append(request)
@@ -83,6 +84,8 @@ class FakeRunner:
 
     def close(self):
         self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
 
 
 class RunnerFactory:
@@ -174,6 +177,21 @@ class CompatibilityPreflightTests(unittest.TestCase):
         self.assertTrue(cached.cached)
         self.assertTrue(cached.is_pass)
         self.assertEqual(len(factory.instances), 1)
+
+    def test_pass_is_not_published_when_probe_cannot_be_reaped(self):
+        runner = FakeRunner(
+            evaluations=["frame", "frame", "frame"],
+            close_error=RuntimeError("worker still alive"),
+        )
+        preflight, _ = self.preflight([runner])
+        result = preflight.run(self.key)
+        self.assertTrue(runner.closed)
+        self.assertFalse(result.is_pass)
+        self.assertEqual(result.status, CompatibilityStatus.QUARANTINED)
+        self.assertEqual(result.stage, "close")
+        cached = self.cache.get(self.key)
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached.status, CompatibilityStatus.QUARANTINED)
 
     def test_changed_key_runs_a_fresh_test(self):
         first = FakeRunner(evaluations=["frame"] * 3)

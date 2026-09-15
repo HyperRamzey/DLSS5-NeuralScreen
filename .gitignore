@@ -25,6 +25,10 @@ runtime/
 # Program log (pythonw launch without a console)
 NeuralScreen.log
 
+# Per-machine compatibility verdict and user-created support bundles
+compatibility-cache.json
+support-bundles/
+
 # Per-user settings. The tracked product defaults live in config.default.json.
 config.json
 

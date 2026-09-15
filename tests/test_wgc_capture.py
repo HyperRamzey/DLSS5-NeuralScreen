@@ -144,6 +144,9 @@ def check_source_contract() -> None:
         "static bool WgcGrab", 1)[0]
     assert "g_wgc->pool.Recreate(" in recreate and "CloseCaptureBridge();" in recreate, \
         "a WGC resize must recreate the frame pool and size-dependent bridge"
+    assert ("const bool wgc_resize_pending" in source and
+            "if (!got && !g_no_colour_retried && !wgc_resize_pending)" in source), \
+        "dry-spell recovery must not replace a pending WGC pool resize"
     print("OK: WGC initializes WinRT first and recreates its pool from ContentSize")
 
 

@@ -6211,7 +6211,15 @@ static int RunVideo()
                 Sleep(8);
                 got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
                 if (g_submission_failed) return 6;
-                if (!got && !g_no_colour_retried)
+                // A WGC ContentSize change already has its own debounced
+                // recovery: RecreateWgcPool keeps the capture item/session
+                // alive and replaces only the size-dependent resources.
+                // Reopening the whole session here races that path and can
+                // make a resize appear to work without ever exercising the
+                // pool recreation covered by the WGC resize regression test.
+                const bool wgc_resize_pending =
+                    g_wgc_active && g_wgc != nullptr && g_wgc->pending_since != 0;
+                if (!got && !g_no_colour_retried && !wgc_resize_pending)
                 {
                     // Still nothing, and on a screen that is not changing
                     // there never will be: duplication answers WAIT_TIMEOUT

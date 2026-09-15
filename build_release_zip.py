@@ -25,6 +25,9 @@ TARGET_ARCHS = "RTX 30/40/50 (sm_86/89/120 kernels, spoof 0x1B0; RTX 20 cannot r
 
 files = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 extra = [
+    # The tracked product defaults ship; config.json is created beside them
+    # on first launch and is never a release input.
+    "config.default.json",
     # The BYO folder doc ships so user installs have the drop location ready.
     "native/libraries/README.md",
     "native/nvngx_dlssg.dll",
@@ -123,6 +126,11 @@ def _drop_sitepackage(norm: str) -> bool:
 
 def _skip(path: str) -> bool:
     norm = path.replace("\\", "/")
+    # config.json is a local user file.  It can still be tracked in an older
+    # checkout while the schema transition is being committed, so exclude it
+    # explicitly rather than relying on git ls-files or the working tree.
+    if norm == "config.json":
+        return True
     if any(norm == p or norm.startswith(p) for p in TK_SKIP):
         return True
     # Dev-only files: the tests, the test runner and the release builder are
@@ -315,19 +323,6 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
     for f in uniq:
         if not os.path.isfile(f):
             print("MISSING:", f)
-            continue
-        # config.json comes ONLY from git HEAD, never from disk: the working
-        # copy holds the developer's personal menu_offset/menu_scale/theme and
-        # those must not ship. Comparing against the worktree is NOT enough —
-        # a staged personal config (git add) would make the diff clean and the
-        # personal values would leak into the zip (audit #2, R1).
-        if f == "config.json":
-            try:
-                data = subprocess.check_output(["git", "show", "HEAD:config.json"])
-                z.writestr(f, data)
-            except subprocess.CalledProcessError:
-                # config.json has never been committed — take it from disk.
-                z.write(f, f)
             continue
         z.write(f, f)
 print("entries:", len(uniq))

@@ -4,7 +4,7 @@ Pure unit test - no worker, no window, no program launch. It feeds
 load_config() and resolve_params() from settings_io.py with crafted configs and
 checks the contract:
 
-* missing required fields raise;
+* missing known fields are filled from config.default.json;
 * a stale profile falls back to Natural;
 * work_scale is clamped to 0.1..1.0 (the slider can never ask for less);
 * an unknown lang falls back to the default;
@@ -19,9 +19,13 @@ BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (settings_io.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
-from settings_io import DEFAULT_LANG, PROFILES, WORK_SCALE_MAX, WORK_SCALE_MIN, load_config, resolve_params  # noqa: E402
+from settings_io import (  # noqa: E402
+    CONFIG_SCHEMA_VERSION, DEFAULT_LANG, PROFILES, WORK_SCALE_MAX,
+    WORK_SCALE_MIN, load_config, resolve_params,
+)
 
 GOOD = {
+    "schema_version": CONFIG_SCHEMA_VERSION,
     "monitor": 0, "width": 3840, "height": 2160, "fullscreen": True,
     "warmup": 120, "work_scale": 0.65, "lang": "en",
     "profile": "Strong / Cinematic",
@@ -51,17 +55,20 @@ def main() -> int:
     finally:
         p.unlink()
 
-    # 2. Missing required fields raise.
+    # 2. Missing known fields come from the shipped defaults.  This is what
+    #    lets a config survive a schema addition without discarding its own
+    #    values or forcing the user to recreate the file.
+    defaults = json.loads((BASE / "config.default.json").read_text(encoding="utf-8"))
     for missing in ("monitor", "width", "profile"):
         bad = dict(GOOD)
         del bad[missing]
         p = write_cfg(bad)
         try:
-            try:
-                load_config(p)
-                failures.append(f"missing {missing} did not raise")
-            except ValueError:
-                pass
+            loaded = load_config(p)
+            if loaded[missing] != defaults[missing]:
+                failures.append(
+                    f"missing {missing} -> {loaded[missing]!r}, "
+                    f"want default {defaults[missing]!r}")
         finally:
             p.unlink()
 

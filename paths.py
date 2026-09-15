@@ -12,6 +12,9 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 
 
+DEFAULT_CONFIG_PATH = BASE_DIR / "config.default.json"
+
+
 NATIVE_DIR = BASE_DIR / "native"
 
 

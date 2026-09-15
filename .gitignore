@@ -25,6 +25,9 @@ runtime/
 # Program log (pythonw launch without a console)
 NeuralScreen.log
 
+# Per-user settings. The tracked product defaults live in config.default.json.
+config.json
+
 # Recordings made with Num0
 recordings/
 

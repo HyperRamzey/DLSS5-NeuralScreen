@@ -6,18 +6,22 @@ whether neural rendering is really running on it. In: the two things a user
 changes through the menu that have to survive a restart - the menu's own
 position and size, and the hotkey assignments.
 
-Both go into config.json through the atomic writer rather than over the live
-file: a crash mid-write used to truncate the config and lose every setting.
+Product defaults live in config.default.json.  The neighbouring config.json is
+the user's copy: it is created from those defaults on first launch and migrated
+in place when the schema advances.  Both menu save paths keep using the atomic
+writer rather than writing over the live file; a crash mid-write used to
+truncate the config and lose every setting.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 import sys
 import winreg
 from pathlib import Path
 
-from paths import BASE_DIR
+from paths import BASE_DIR, DEFAULT_CONFIG_PATH
 from capture import devicename_for_output_idx, list_adapters, list_monitors
 from i18n import STRINGS as UI_STRINGS
 # The work caps are the worker's contract, not a setting: the same two
@@ -231,6 +235,12 @@ PRESET_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
 DEFAULT_LANG = "en"
 
 
+# Version 0 is every config written before config.default.json existed.  Keep
+# migrations incremental so a future schema adds one small step instead of
+# turning load_config() into a pile of unrelated compatibility checks.
+CONFIG_SCHEMA_VERSION = 1
+
+
 # The NGX plumbing a preset carries along with the four sliders: the range
 # it must be in, and what to use when it is not there at all. Presets saved
 # by builds up to 1.8.2 also carry profile/preset/ui_correction; those are
@@ -295,10 +305,77 @@ def load_presets(cfg: dict) -> dict:
     return presets
 
 
-def load_config(path: Path) -> dict:
-    """Load and validate config.json."""
+def _read_config_object(path: Path, label: str) -> dict:
+    """Read one JSON object without changing it."""
     with open(path, "r", encoding="utf-8") as fh:
-        cfg = json.load(fh)
+        value = json.load(fh)
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}: root must be an object")
+    return value
+
+
+def _schema_version(cfg: dict, label: str) -> int:
+    """Return a strict non-negative schema version (missing means legacy 0)."""
+    version = cfg.get("schema_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise ValueError(f"{label}: schema_version must be a non-negative integer")
+    return version
+
+
+def _load_default_config() -> dict:
+    """Load the shipped defaults and require them to match this executable."""
+    defaults = _read_config_object(DEFAULT_CONFIG_PATH, "config.default.json")
+    version = _schema_version(defaults, "config.default.json")
+    if version != CONFIG_SCHEMA_VERSION:
+        raise ValueError(
+            "config.default.json: schema_version "
+            f"{version} does not match application schema {CONFIG_SCHEMA_VERSION}"
+        )
+    return defaults
+
+
+def _migrate_config(cfg: dict, defaults: dict) -> tuple[dict, bool]:
+    """Migrate a user config without discarding keys unknown to this build.
+
+    The v0 -> v1 migration overlays the complete old user object on the shipped
+    defaults.  This fills fields introduced since the user's install while
+    preserving user values, presets, hotkeys, and third-party/experimental
+    keys.  Configs written by a newer application are rejected rather than
+    silently downgraded.
+    """
+    version = _schema_version(cfg, "config.json")
+    if version > CONFIG_SCHEMA_VERSION:
+        raise ValueError(
+            f"config.json: schema_version {version} is newer than supported "
+            f"{CONFIG_SCHEMA_VERSION}"
+        )
+
+    migrated = deepcopy(cfg)
+    changed = False
+    while version < CONFIG_SCHEMA_VERSION:
+        if version == 0:
+            merged = deepcopy(defaults)
+            merged.update(migrated)
+            merged["schema_version"] = 1
+            migrated = merged
+            version = 1
+            changed = True
+            continue
+        raise ValueError(f"config.json: no migration from schema_version {version}")
+
+    # Defaults remain the authoritative list of known settings.  Filling a
+    # missing field is safe even when the version marker is already current;
+    # the user's complete object is overlaid last, so no value or unknown key
+    # is replaced.
+    merged = deepcopy(defaults)
+    merged.update(migrated)
+    if merged != migrated:
+        changed = True
+    return merged, changed
+
+
+def _validate_config(cfg: dict) -> dict:
+    """Validate and normalise an already migrated config object."""
     if not isinstance(cfg, dict):
         raise ValueError("config.json: root must be an object")
     required = {"monitor", "width", "height", "fullscreen", "warmup", "profile",
@@ -359,6 +436,29 @@ def load_config(path: Path) -> dict:
     except (ValueError, TypeError, OverflowError):
         cfg["frame_multiplier"] = 2
     return cfg
+
+
+def load_config(path: Path) -> dict:
+    """Load, safely migrate, validate, and if needed create config.json.
+
+    Migration is persisted only after the complete candidate validates.  The
+    atomic writer therefore leaves an invalid, future-version, or interrupted
+    user config byte-for-byte intact.
+    """
+    path = Path(path)
+    defaults = _load_default_config()
+    normalized_defaults = _validate_config(deepcopy(defaults))
+    if normalized_defaults != defaults:
+        raise ValueError(
+            "config.default.json: values must already be in canonical form")
+
+    existed = path.is_file()
+    raw = (_read_config_object(path, "config.json") if existed else {})
+    migrated, changed = _migrate_config(raw, defaults)
+    validated = _validate_config(deepcopy(migrated))
+    if not existed or changed:
+        _atomic_write_json(path, migrated)
+    return validated
 
 
 def resolve_params(cfg: dict) -> dict:

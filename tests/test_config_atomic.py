@@ -7,6 +7,7 @@ the contract:
 * the helper writes a valid JSON file and replaces the target;
 * a crash mid-write (os.replace or os.fsync raising) leaves the ORIGINAL
   config intact and no temp file behind;
+* save operations preserve keys they do not own;
 * the save sites persist profile, params (intensity/local_tone/
   local_structure/skin_structure) and monitor - the menu changes them in
   memory only, so without this save they would be lost on the next launch.
@@ -198,7 +199,10 @@ def main() -> int:
     import settings_io
 
     target = Path(tempfile.mkdtemp()) / "config.json"
-    target.write_text(json.dumps(GOOD), encoding="utf-8")
+    unknown_value = {"nested": [1, 2, {"future": True}]}
+    initial = dict(GOOD, schema_version=1,
+                   third_party_extension=unknown_value)
+    target.write_text(json.dumps(initial), encoding="utf-8")
     seen = {"atomic": 0, "payload": 0}
     real_atomic = settings_io._atomic_write_json
     real_payload = settings_io._menu_layout_payload
@@ -235,6 +239,8 @@ def main() -> int:
     if written.get("hotkeys") != {"toggle": "Num1"}:
         failures.append(f"the hotkeys did not reach the file: "
                         f"{written.get('hotkeys')!r}")
+    if written.get("third_party_extension") != unknown_value:
+        failures.append("a save operation discarded an unknown config key")
 
     for f in failures:
         print("FAIL:", f)

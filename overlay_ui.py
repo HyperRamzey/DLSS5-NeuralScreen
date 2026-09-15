@@ -361,10 +361,20 @@ class OverlayMenu:
 
     @property
     def dragging(self) -> bool:
-        """Whether a slider is being dragged right now - while dragging the
-        state must not be updated, otherwise the value jumps between what the
-        mouse shows and what main has already applied."""
-        return getattr(self, "_drag_item", None) is not None
+        """Whether the panel is being manipulated right now.
+
+        Sliders, the title-bar drag, the edge scale and the grip resize all
+        count. While one is active the state must not be rebuilt (a slider
+        would jump between what the mouse shows and what main has already
+        applied), and the per-frame payload rebuild - EnumWindows + the
+        monitor scan + the worker log scan - is exactly what made the
+        title-bar drag stutter (flicker audit M3: the property used to
+        cover sliders only; user, 15.09: "двигается с рывками").
+        """
+        return (getattr(self, "_drag_item", None) is not None
+                or getattr(self, "_move_from", None) is not None
+                or getattr(self, "_resize_from", None) is not None
+                or getattr(self, "_resize_h_from", None) is not None)
 
     def set_hotkeys(self, mapping: dict) -> None:
         """Hotkey captions: command -> "Num1". Sourced from the real bindings."""

@@ -52,6 +52,17 @@ user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF,
 user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
 user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
 user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+# The z-order walkers used by raise_topmost's guard (flicker audit 15.09).
+user32.GetTopWindow.argtypes = [wintypes.HWND]
+user32.GetTopWindow.restype = wintypes.HWND
+user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetWindow.restype = wintypes.HWND
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetWindowRect.restype = wintypes.BOOL
+user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+user32.GetSystemMetrics.restype = ctypes.c_int
 
 
 class CURSORINFO(ctypes.Structure):
@@ -925,52 +936,93 @@ class Display:
         # another window).
         # Picture first, HUD last. Keep the two raises independent: a missing
         # or not-yet-created present window must never hide the HUD raise.
+        hud = None
+        try:
+            hud = pygame.display.get_wm_info()["window"]
+        except Exception:
+            hud = None
         present = None
         top = None
-        top_class = None
+        top_is_foreign = False
         try:
             present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
-            top = user32.GetTopWindow(None)
-            if top:
-                buf = ctypes.create_unicode_buffer(64)
-                if user32.GetClassNameW(top, buf, 64) > 0:
-                    top_class = buf.value
-            # The HUD raise OWNS the HUD-over-picture invariant (v1.10-review
-            # P3): the worker's follow inserts the picture above the HUD on
-            # every rect change, and this raise - running on the pipeline
-            # clock, which is at least as frequent - puts it back. The stale
-            # assumption that the client raises the HUD "much more often"
-            # died with the unconditional-raise removal (bcabce7): the guards
-            # below used to skip when top was the picture, and the pair sat
-            # picture-over-HUD with nobody re-asserting - the picture read as
-            # flicker over the menu.
-            hud_above_picture = top == present
+            top = self._top_real_window()
+            # "Foreign" is decided by HWND, not by the window class: a game
+            # or test helper built on SDL/pygame IS class "pygame" too, and
+            # the old class check read it as our own HUD and skipped the
+            # raise - the NR output stayed under a topmost foreign window
+            # (the focus z-order test caught exactly this).
+            top_is_foreign = top is not None and top != hud and top != present
             # The picture goes first, and only when something ELSE took the
             # top slot: an unconditional insert every 30 frames churns the
             # pair's z-order (flicker audit, finding 1).
-            if present and top != present and top_class not in (
-                    "pygame", "NeuralScreenPresent"):
+            if present and top_is_foreign:
                 user32.SetWindowPos(present, -1, 0, 0, 0, 0,
                                     0x0001 | 0x0002 | 0x0010)
         except Exception:
             present = None
             top = None
         try:
-            hwnd = pygame.display.get_wm_info()["window"]
-            if top == hwnd:
+            if hud is None:
+                return
+            if top == hud:
                 pass  # the HUD is on top; nothing to do
             elif top == present:
                 # The picture took the band: insert the HUD above it (one
                 # placement, after the picture) - the invariant is owned.
-                user32.SetWindowPos(hwnd, present, 0, 0, 0, 0,
+                user32.SetWindowPos(hud, present, 0, 0, 0, 0,
                                     0x0001 | 0x0002 | 0x0010 | 0x0004)
-            elif top is not None and top_class is not None and top_class not in (
-                    "pygame", "NeuralScreenPresent"):
+            elif top_is_foreign:
                 # A foreign window took the topmost slot: re-assert the pair.
-                user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
+                user32.SetWindowPos(hud, -1, 0, 0, 0, 0,
                                     0x0001 | 0x0002 | 0x0010)
         except Exception:
             pass
+
+    def _top_real_window(self) -> int | None:
+        """The first VISIBLE window in the z-order walk that can COVER us.
+
+        The old guard took GetTopWindow() at face value - and on this
+        machine the top of the z-order is a stack of helper windows:
+        invisible 0x0 IME/MSCTFIME/ForegroundStaging entries, a VISIBLE
+        1x1 ThumbnailDeviceHelperWnd (dwm) and an off-screen 20x20
+        NarratorHelperWindow. Every 30-frame check read the first of those
+        that passed a naive size test as "a foreign window took the top
+        slot" and re-asserted the pair with two SetWindowPos calls - a DWM
+        recompose ~10 times a second, the hard blinking of the panel over
+        the picture window (user, 15.09; the worker's own
+        ReassertPresentTopmost skips zero-sized windows, the client guard
+        never did).
+
+        A window counts only if it can actually be covering our layer:
+        visible, at least HELPER_MIN_PX in both dimensions, and its rect
+        intersecting the virtual screen (the Narrator helper lives at
+        -40000,-40000).
+        """
+        HELPER_MIN_PX = 16
+        try:
+            screen_w = user32.GetSystemMetrics(0)    # SM_CXSCREEN
+            screen_h = user32.GetSystemMetrics(1)    # SM_CYSCREEN
+            if screen_w <= 0:
+                screen_w = 3840
+            if screen_h <= 0:
+                screen_h = 2160
+            hwnd = user32.GetTopWindow(None)
+            for _ in range(16):        # bounded walk - the stack is shallow
+                if not hwnd:
+                    return None
+                if user32.IsWindowVisible(hwnd):
+                    rect = wintypes.RECT()
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)) and \
+                            (rect.right - rect.left) >= HELPER_MIN_PX and \
+                            (rect.bottom - rect.top) >= HELPER_MIN_PX and \
+                            rect.right > 0 and rect.bottom > 0 and \
+                            rect.left < screen_w and rect.top < screen_h:
+                        return hwnd
+                hwnd = user32.GetWindow(hwnd, 2)   # GW_HWNDNEXT
+        except Exception:
+            pass
+        return None
 
     def enter_switch_mode(self, last_frame: "np.ndarray | None" = None,
                           full_w: int = 0, full_h: int = 0) -> None:

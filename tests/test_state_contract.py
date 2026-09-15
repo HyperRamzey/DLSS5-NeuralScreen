@@ -50,6 +50,7 @@ def main() -> int:
         "mon_resize",      # the audited gap - follow_monitor reads it
         "follow_pos", "follow_resize",
         "pending_shot", "shot_rgba", "recorder",
+        "off_suspended",
         "dda_mode", "present_mode", "gray_active", "out_shm",
     }
     missing = sorted(must_exist_at_boot - init_sets)

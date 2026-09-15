@@ -221,6 +221,84 @@ def shutdown_worker(worker: subprocess.Popen, stop: threading.Event | None = Non
             worker.kill()
 
 
+def wants_low_cost_off(st) -> bool:
+    """Whether NR OFF may put the frame pipeline fully to sleep.
+
+    Frame Generation still needs a stream of bypass frames.  Recording and a
+    pending screenshot are explicit frame consumers too, so they temporarily
+    wake the bypass path even while the NR toggle itself remains off.
+    """
+    return (bool(st.paused)
+            and not bool(st.cfg.get("frame_generation", False))
+            and st.recorder is None
+            and st.pending_shot is None)
+
+
+def sync_low_cost_off(st) -> bool:
+    """Enter or leave the idle NR OFF state; return its resulting state.
+
+    Normal OFF keeps the worker process warm but closes its capture/present
+    channels and stops sending frames.  If that handshake fails, the only
+    honest low-cost fallback is to stop the worker: a later NR ON command uses
+    the existing worker-failure recovery path to start a clean one.
+    """
+    want_idle = wants_low_cost_off(st)
+    if want_idle == st.off_suspended:
+        return want_idle
+
+    if want_idle:
+        st.work_frame = None
+        st.output_rgba = None
+        try:
+            st.guides.previous_gray = None
+        except Exception:
+            pass
+
+        worker_alive = (st.worker is not None
+                        and getattr(st.worker, "poll", lambda: None)() is None)
+        if worker_alive and not st.worker_failed:
+            try:
+                channels.suspend_for_off(st)
+            except Exception as exc:
+                print(f"[main] low-cost OFF handshake failed ({exc}) - "
+                      f"stopping the worker", file=sys.stderr)
+                shutdown_worker(st.worker, st.worker_stop)
+                st.worker_failed = True
+                st.next_auto_revive = 0.0
+                channels.forget_present(st)
+                channels.forget_dda(st)
+                channels.forget_out(st)
+        elif not worker_alive:
+            st.worker_failed = True
+            st.next_auto_revive = 0.0
+
+        # A transparent HUD layer is enough for the menu while OFF.  The idle
+        # branch in main hides it completely whenever the menu is closed.
+        st.display.set_hud_only(True)
+        st.off_suspended = True
+        print("[main] NR OFF: capture, processing and presentation suspended")
+        return True
+
+    # A consumer appeared (recording/screenshot/FG) or NR was turned on.
+    # Re-arm the channels and insist on a fresh source frame/history.
+    st.off_suspended = False
+    st.present_mode = False
+    st.present_attempted = False
+    st.dda_mode = False
+    st.dda_attempted = False
+    st.gray_active = False
+    st.work_frame = None
+    st.output_rgba = None
+    try:
+        st.guides.previous_gray = None
+    except Exception:
+        pass
+    st.display.set_hud_only(True)
+    st.display.set_visible(True)
+    print("[main] frame pipeline resumed")
+    return False
+
+
 # Applying settings is coalesced: a slider dragged across its range would
 # otherwise restart the pipeline on every step. The intermediate values are
 # dropped and only the last one is applied.

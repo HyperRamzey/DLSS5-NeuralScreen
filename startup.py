@@ -514,6 +514,11 @@ def bring_up(st) -> None:
     st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
 
     st.paused = False
+    # True only after NR OFF has closed the worker's capture/present channels
+    # and the main loop has stopped producing frames.  It is distinct from
+    # paused: recording, screenshots and Frame Generation temporarily keep a
+    # bypass stream alive while the NR toggle remains off.
+    st.off_suspended = False
     # The worker died and exhausted the restart budget: the pipeline is
     # stopped (no send/recv, no more restarts) and the overlay is hidden
     # so the desktop is not covered by a black window (issue #3: black

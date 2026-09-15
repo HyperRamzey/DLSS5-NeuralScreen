@@ -312,6 +312,7 @@ class _Pipeline:
         "nr_small",
         "out_attempted",
         "out_shm",
+        "off_suspended",
         "output_rgba",
         "params",
         "paused",
@@ -480,12 +481,43 @@ def main() -> int:
             """Record the stage duration (ms) into the timings dictionary."""
             st.perf[key].append((time.perf_counter() - t0) * 1000.0)
 
+        def _service_idle_overlay() -> None:
+            """Keep the settings menu usable without waking the frame loop."""
+            if st.display.menu.visible:
+                for ev in pygame.event.get():
+                    for action in st.display.menu.handle_event(ev):
+                        commands.apply_menu_action(st, action)
+                if st.display.menu.visible and not st.display.menu.dragging:
+                    st.display.menu.set_state(settings_io.menu_payload(st))
+
+            if st.display.menu.visible:
+                st.display.set_hud_only(True)
+                # A user may turn NR off before the first processed frame.  In
+                # that case set_visible() intentionally refuses to reveal the
+                # startup window; opening the menu is an explicit reason to
+                # reveal the otherwise transparent HUD layer.
+                if not st.display.is_visible():
+                    st.display.reveal()
+                    st.display.set_visible(True)
+                st.display.raise_topmost()
+                st.display.draw_overlay()
+            else:
+                st.display.set_visible(False)
+
         while st.running:
             loop_start = time.perf_counter()
             now = time.monotonic()
 
             if not commands.drain_commands(st):
                 break
+
+            # The answer from the "Save as" dialog (it runs in its own thread).
+            commands.drain_save_dialog(st)
+
+            # NR OFF is a real idle state unless an explicit consumer still
+            # needs bypass frames.  No code below this branch captures, sends,
+            # receives or presents a frame.
+            low_cost_off = pipeline.sync_low_cost_off(st)
 
             # The worker is gone (restart budget exhausted): the pipeline is
             # stopped. Commands still run (Num1 revives it), but no frame is
@@ -522,7 +554,14 @@ def main() -> int:
                     except Exception as exc:
                         print(f"[main] auto-revive failed ({exc}) - staying NR OFF",
                               file=sys.stderr)
+                        st.paused = True
                         st.worker_failed = True
+                _service_idle_overlay()
+                time.sleep(0.05)
+                continue
+
+            if low_cost_off:
+                _service_idle_overlay()
                 time.sleep(0.05)
                 continue
 
@@ -537,16 +576,11 @@ def main() -> int:
             if not st.running:
                 break
 
-            # NR OFF - bypass: the pipeline keeps spinning (grab -> show the
-            # raw frame in the worker's window) but the NGX effect is skipped.
-            # The overlay (picture + HUD) stays alive and predictable; we hide
-            # everything only on a real exit. A bypass frame is sent like any
-            # other (the flag lives in the header) so send/recv stay paired.
+            # NR OFF reaches this path only while a recording, screenshot or
+            # Frame Generation explicitly needs raw frames.  The neural pass
+            # remains bypassed, but the frame producer stays paired with recv.
             bypass = st.paused
             # (for readability: send_frame is called with bypass=bypass)
-
-            # The answer from the "Save as" dialog (it runs in its own thread).
-            commands.drain_save_dialog(st)
 
             if st.want_present and not st.present_mode and not st.present_attempted:
                 channels.enable_present(st)

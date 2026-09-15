@@ -594,7 +594,7 @@ def drain_commands(st) -> bool:
                             st.paused = True
                             st.worker_failed = True
                     st.display.set_visible(True)
-                print(f"[main] NR {'OFF (bypass NGX)' if st.paused else 'ON'}")
+                print(f"[main] NR {'OFF' if st.paused else 'ON'}")
                 st.display.alert(UI_STRINGS[st.lang]["nr_off" if st.paused else "nr_on"])
                 st.tray._set_state(nr=not st.paused)
             elif cmd == "screenshot_menu":

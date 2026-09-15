@@ -1,9 +1,12 @@
-"""The bypass path (NR OFF): the worker skips NGX and shows the raw capture.
+"""The explicit-consumer bypass path: the worker skips NGX.
 
 Driven directly, like test_split: we send the colour ourselves, so the
 "raw capture" is exactly our input frame. With FRAME_FLAG_BYPASS the
 output must equal the input bit for bit (no NGX ran), and the pipeline
 must stay alive - the next non-bypass frame resumes the network.
+
+Ordinary NR OFF no longer sends frames at all.  This protocol path remains
+for a screenshot, recording, or Frame Generation while NR itself is off.
 
 Checks:
 * bypass frame == input (bit for bit, or within rounding of the swizzle);

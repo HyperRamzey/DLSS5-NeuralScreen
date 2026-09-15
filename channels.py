@@ -26,8 +26,8 @@ import ctypes
 import sys
 
 from i18n import STRINGS as UI_STRINGS
-from protocol import (send_dda, send_gray, send_motion_size, send_out,
-                      send_wgc, send_window)
+from protocol import (WINDOW_FLAG_DISABLE, send_dda, send_gray,
+                      send_motion_size, send_out, send_wgc, send_window)
 
 
 def enable_out_shm(st) -> None:
@@ -97,6 +97,38 @@ def enable_present(st) -> None:
         st.display.set_hud_only(False)
         print(f"[main] worker window unavailable ({exc}) - output through pygame",
               file=sys.stderr)
+
+
+def suspend_for_off(st) -> None:
+    """Stop the worker's continuous capture and presentation channels.
+
+    The worker process stays alive, so turning NR back on does not pay for a
+    fresh NGX initialisation.  With no FRM1 messages and both capture sources
+    closed it is idle: no desktop capture, neural evaluation or Present loop
+    keeps running behind ``NR OFF``.
+
+    Unlike the best-effort ``enable_*`` helpers, failure is deliberately
+    propagated.  A half-suspended worker could leave a stale topmost picture
+    or an active capture session behind; the lifecycle layer responds by
+    shutting that worker down and revives it only when the user turns NR on.
+    """
+    if st.present_mode:
+        send_window(st.worker, 0, 0, WINDOW_FLAG_DISABLE)
+        st.reader.wait_wack(timeout=15.0)
+    st.present_mode = False
+    # Keep negotiation disarmed until the lifecycle layer resumes the loop.
+    st.present_attempted = True
+
+    if st.dda_mode:
+        if st.window_hwnd is not None:
+            send_wgc(st.worker, 0)
+            st.reader.wait_wgak(timeout=15.0)
+        else:
+            send_dda(st.worker, 0, 0)
+            st.reader.wait_dack(timeout=15.0)
+    st.dda_mode = False
+    st.dda_attempted = True
+    st.gray_active = False
 
 
 def forget_present(st) -> None:

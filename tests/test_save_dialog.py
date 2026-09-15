@@ -21,6 +21,7 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 import dialogs  # noqa: E402
+import numpy as np  # noqa: E402
 
 
 def main() -> int:
@@ -87,6 +88,27 @@ def main() -> int:
             failures.append("the fallback returned nothing - a screenshot is lost")
         elif got.parent != Path(tmp) or got.suffix != ".jpg":
             failures.append(f"the fallback path is {got}")
+
+    # 5. The bytes match the chosen extension; PNG must not be JPEG data with
+    #    a misleading suffix (the old writer always used imencode('.jpg')).
+    with tempfile.TemporaryDirectory() as tmp:
+        pixels = np.zeros((3, 4, 4), dtype=np.uint8)
+        pixels[..., 0] = 200
+        pixels[..., 3] = 255
+        png = Path(tmp) / "снимок.png"
+        jpg = Path(tmp) / "снимок.jpg"
+        if not dialogs.save_image(png, pixels) or \
+                png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+            failures.append(".png does not contain PNG bytes")
+        if not dialogs.save_image(jpg, pixels) or \
+                jpg.read_bytes()[:2] != b"\xff\xd8":
+            failures.append(".jpg does not contain JPEG bytes")
+        try:
+            dialogs.save_image(Path(tmp) / "bad.bmp", pixels)
+        except ValueError:
+            pass
+        else:
+            failures.append("an unsupported extension was silently mislabeled")
 
     for f in failures:
         print("FAIL:", f)

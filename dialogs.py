@@ -83,7 +83,9 @@ def _save_dialog_struct(parent_hwnd: int, default_name: str,
                        "*.png\0All files (*.*)\0*.*\0")
     ofn.lpstrFile = ctypes.cast(buf, wintypes.LPWSTR)
     ofn.nMaxFile = 1024
-    ofn.lpstrDefExt = "jpg"
+    png_default = Path(default_name).suffix.lower() == ".png"
+    ofn.nFilterIndex = 2 if png_default else 1
+    ofn.lpstrDefExt = "png" if png_default else "jpg"
     ofn.lpstrInitialDir = initial_dir or None
     # OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST
     ofn.Flags = 0x00000002 | 0x00000008
@@ -108,7 +110,7 @@ def ask_save_path(parent_hwnd: int, default_name: str,
             return None
         path = Path(buf.value.strip())
         if not path.suffix:
-            path = path.with_suffix(".jpg")
+            path = path.with_suffix(Path(default_name).suffix or ".jpg")
         return path
     except Exception as exc:
         print(f"[dialogs] save dialog unavailable ({exc}) - "
@@ -118,7 +120,10 @@ def ask_save_path(parent_hwnd: int, default_name: str,
         fallback_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         stamp = f"{stamp}-{time.time() % 1 * 1000:03.0f}"
-        return fallback_dir / f"neuralscreen-{stamp}.jpg"
+        suffix = Path(default_name).suffix.lower()
+        if suffix not in (".jpg", ".jpeg", ".png"):
+            suffix = ".jpg"
+        return fallback_dir / f"neuralscreen-{stamp}{suffix}"
 
 
 def pick_directory(parent_hwnd: int, title: str) -> Path | None:
@@ -154,8 +159,8 @@ def pick_directory(parent_hwnd: int, title: str) -> Path | None:
         return None
 
 
-def save_jpeg(path: Path, rgba) -> bool:
-    """Write an RGBA frame as a maximum-quality JPEG. True when it landed.
+def save_image(path: Path, rgba) -> bool:
+    """Write PNG/JPEG bytes matching the requested extension.
 
     imencode + write_bytes, NOT cv2.imwrite: OpenCV opens the file through
     the C runtime with the ANSI codepage, so a path with any non-ASCII
@@ -169,10 +174,27 @@ def save_jpeg(path: Path, rgba) -> bool:
     """
     import cv2
 
+    suffix = path.suffix.lower()
+    if suffix in (".jpg", ".jpeg"):
+        extension = ".jpg"
+        pixels = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+        options = [cv2.IMWRITE_JPEG_QUALITY, 100]
+    elif suffix == ".png":
+        extension = ".png"
+        pixels = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+        options = [cv2.IMWRITE_PNG_COMPRESSION, 3]
+    else:
+        raise ValueError(f"unsupported screenshot extension: {path.suffix or '<none>'}")
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA),
-                           [cv2.IMWRITE_JPEG_QUALITY, 100])
+    ok, buf = cv2.imencode(extension, pixels, options)
     if not ok:
         return False
     path.write_bytes(buf.tobytes())
     return path.is_file() and path.stat().st_size > 0
+
+
+def save_jpeg(path: Path, rgba) -> bool:
+    """Compatibility wrapper for callers that explicitly request JPEG."""
+    return save_image(path.with_suffix(".jpg") if not path.suffix else path,
+                      rgba)

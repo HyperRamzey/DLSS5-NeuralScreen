@@ -360,6 +360,9 @@ def configure(st) -> None:
     st.tray: TrayController | None = None
     st.hotkeys: HotkeyController | None = None
     st.recorder: VideoRecorder | None = None
+    st.recording_finalizer: VideoRecorder | None = None
+    st.recording_finalize_deadline = 0.0
+    st.last_recording = {}
 
 
 def bring_up(st) -> None:
@@ -566,6 +569,9 @@ def bring_up(st) -> None:
     st.shot_rgba = None  # frozen before Save As, never a dialog-contaminated worker slot
     st.skipped_static_frames = 0  # explicit OUT1 status, not inferred from empty pixels
     st.recorder: VideoRecorder | None = None  # recording (Num0), MP4 AV1 NVENC
+    st.recording_finalizer: VideoRecorder | None = None
+    st.recording_finalize_deadline = 0.0
+    st.last_recording = {}
     st.work_frame = None  # the current work frame; None -> grab at the top of the loop
 
 

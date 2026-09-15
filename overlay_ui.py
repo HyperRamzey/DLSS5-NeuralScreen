@@ -207,11 +207,18 @@ class OverlayMenu:
             "param_defaults": {},
             "preset_active": False,
             "recording": False,
+            "recording_finalizing": False,
+            "recording_status": "",
+            "recording_details": "",
+            "recording_path": "",
             "work_size": "",
             "theme": "light",
             "rec_seconds": 0.0,
             "rec_indicator": True,
+            "recording_dir": "",
             "screenshot_dir": "",
+            "screenshot_mode": "ask",
+            "screenshot_format": "png",
             # The Spout2 bridge flag (RECORDING section). It was missing here
             # in v1.6.0, so set_state dropped it in silence and the toggle
             # always drew as off while the action behind it fired normally.
@@ -750,6 +757,14 @@ class OverlayMenu:
                    self.state.get("motion_backend", "cpu"), ["cpu", "nvofa"],
                    labels=["CPU DIS", s.get("motion_nvofa", "NVOFA (experimental)")],
                    hint=s.get("motion_hint", "Restarts the worker; CPU fallback if unavailable"))
+            choice("screenshot_mode", s.get("screenshot_mode", "Screenshot saving"),
+                   str(self.state.get("screenshot_mode", "ask")),
+                   ["ask", "auto"],
+                   labels=[s.get("screenshot_ask", "Save As"),
+                           s.get("screenshot_auto", "Save automatically")])
+            choice("screenshot_format", s.get("screenshot_format", "Screenshot format"),
+                   str(self.state.get("screenshot_format", "png")),
+                   ["png", "jpg"], labels=["PNG", "JPEG"])
             # The screenshot folder: a plain button that opens the folder
             # picker (issue #20). The current value is shown as the caption
             # so the user sees what is configured.
@@ -768,11 +783,35 @@ class OverlayMenu:
             # processed picture for external recorders; the recording
             # indicator is a display preference of the same subject.
             section(s["sec_recording"], "rec")
+            record_dir = self.state.get("recording_dir") or ""
+            record_label = s.get("record_dir_btn", "Recording folder...")
+            if record_dir:
+                record_label = f"{record_label}  ·  {record_dir}"
+            if show:
+                items.append(Item("button", "record_dir",
+                                  pygame.Rect(pad, cy, inner_w, ctrl_h),
+                                  extra={"label": record_label}))
+                cy += ctrl_h + gap
             toggle("spout", s.get("spout", "Spout2 output (OBS)"),
                    bool(self.state.get("spout")),
                    hint=s.get("spout_hint", ""))
             toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
                    bool(self.state.get("rec_indicator", True)))
+            rec_status = str(self.state.get("recording_status") or "")
+            rec_details = str(self.state.get("recording_details") or "")
+            rec_path = str(self.state.get("recording_path") or "")
+            for key, info_label, value in (
+                    ("record_status", s.get("record_state", "State"),
+                     s.get(f"record_status_{rec_status}", rec_status)),
+                    ("record_details", s.get("record_format", "Format"), rec_details),
+                    ("record_path", s.get("record_path", "Path"), rec_path)):
+                if show and value:
+                    items.append(Item("info", key,
+                                      pygame.Rect(pad, cy, inner_w,
+                                                  self._u(LABEL_H)),
+                                      extra={"label": info_label,
+                                             "value": value}))
+                    cy += self._u(LABEL_H) + self._u(4)
 
             section(s["sec_behaviour"], "app")
             # The static-frame skip is OFF and its switch is not drawn. The
@@ -1067,8 +1106,11 @@ class OverlayMenu:
             # a setting, and it belongs where the source is named.
             rows = (
                 (("screenshot", s["screenshot"]),
-                 ("record", s["record_stop_short"] if self.state.get("recording")
-                  else s["record"])),
+                 ("record", (s.get("record_finalizing", "Finalizing...")
+                             if self.state.get("recording_finalizing")
+                             else s["record_stop_short"]
+                             if self.state.get("recording")
+                             else s["record"]))),
             )
             for row in rows:
                 for idx, (key, label) in enumerate(row):
@@ -1076,7 +1118,10 @@ class OverlayMenu:
                                       pygame.Rect(pad + idx * (bw + bgap),
                                                   cy, bw, act_h),
                                       extra={"label": label,
-                                             "filled": False}))
+                                             "filled": False,
+                                             "disabled": (key == "record" and
+                                                          bool(self.state.get(
+                                                              "recording_finalizing")))}))
                 cy += act_h + self._u(8)
 
         # The footer: actions with the hotkey printed underneath. "Collapse"
@@ -1584,6 +1629,16 @@ class OverlayMenu:
             return [("gpu", value)]
         if key == "motion_backend":
             return [("motion_backend", value)]
+        if key == "screenshot_mode":
+            if value in ("ask", "auto"):
+                self.state["screenshot_mode"] = value
+                return [("screenshot_mode", value)]
+            return []
+        if key == "screenshot_format":
+            if value in ("png", "jpg"):
+                self.state["screenshot_format"] = value
+                return [("screenshot_format", value)]
+            return []
         if key == "frame_multiplier":
             # Optimistic like style: the segment highlights at once, main
             # applies the new multiplier to the worker.

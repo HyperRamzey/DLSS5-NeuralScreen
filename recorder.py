@@ -728,6 +728,12 @@ class VideoRecorder:
             return self._result.path if self._result is not None else None
 
     @property
+    def audio_enabled(self) -> bool:
+        """Whether this MP4 actually has an AAC stream, not merely a request."""
+        with self._state_lock:
+            return self._astream is not None
+
+    @property
     def done(self) -> bool:
         return self._done.is_set()
 

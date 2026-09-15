@@ -328,11 +328,20 @@ def teardown_pipeline(st) -> None:
     frame size and cannot survive a change of it.
     """
     if st.recorder is not None:
-        try:
-            st.recorder.close()
-        except Exception as exc:
-            print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
+        rec = st.recorder
         st.recorder = None
+        try:
+            if st.recording_finalizer is not None:
+                raise RuntimeError("a previous recording is still finalizing")
+            rec.finish()
+            st.recording_finalizer = rec
+            st.recording_finalize_deadline = (
+                time.monotonic() + float(rec.FINISH_TIMEOUT_S))
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "record_finalizing", "Finalizing recording..."))
+        except Exception as exc:
+            print(f"[main] failed to start recording finalization: {exc}",
+                  file=sys.stderr)
     st.pending_shot = None
     st.shot_rgba = None
     shutdown_worker(st.worker, st.worker_stop)

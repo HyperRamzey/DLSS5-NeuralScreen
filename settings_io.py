@@ -463,6 +463,15 @@ def _validate_config(cfg: dict) -> dict:
         custom = 90
     cfg["frame_limit_custom"] = min(
         FRAME_LIMIT_CUSTOM_MAX, max(FRAME_LIMIT_CUSTOM_MIN, custom))
+    for directory_key in ("recording_dir", "screenshot_dir"):
+        value = cfg.get(directory_key, "")
+        cfg[directory_key] = value if isinstance(value, str) else ""
+    screenshot_mode = str(cfg.get("screenshot_mode", "ask"))
+    cfg["screenshot_mode"] = (screenshot_mode
+                              if screenshot_mode in ("ask", "auto") else "ask")
+    screenshot_format = str(cfg.get("screenshot_format", "png")).lower()
+    cfg["screenshot_format"] = (screenshot_format
+                                if screenshot_format in ("png", "jpg") else "png")
     return cfg
 
 
@@ -602,7 +611,14 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "style": int(params.get("style", 1)),
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
+        "recording_dir": cfg.get("recording_dir") or "",
         "screenshot_dir": cfg.get("screenshot_dir") or "",
+        "screenshot_mode": (str(cfg.get("screenshot_mode", "ask"))
+                            if str(cfg.get("screenshot_mode", "ask"))
+                            in ("ask", "auto") else "ask"),
+        "screenshot_format": (str(cfg.get("screenshot_format", "png"))
+                              if str(cfg.get("screenshot_format", "png"))
+                              in ("png", "jpg") else "png"),
         # The Spout2 bridge choice must survive a restart: the worker
         # reads NS_SPOUT at startup, and main sets it from this flag.
         "spout": bool(cfg.get("spout", False)),
@@ -906,6 +922,26 @@ def menu_payload(st) -> dict:
     # on a switch, so a reorder cannot redirect the capture.
     monitor_entries = [f"{i}: {w}x{h} ({dev})"
                        for i, w, h, dev in list_monitors()]
+    active_recorder = (getattr(st, "recorder", None)
+                       or getattr(st, "recording_finalizer", None))
+    last_recording = dict(getattr(st, "last_recording", None) or {})
+    if active_recorder is not None:
+        rec_status = getattr(active_recorder, "status", "recording")
+        last_recording = {
+            "container": "MP4",
+            "codec": str(getattr(active_recorder, "codec", "unknown")),
+            "fps": float(getattr(active_recorder, "fps", 0.0)),
+            "audio": bool(getattr(active_recorder, "audio_enabled", False)),
+            "path": str(getattr(active_recorder, "result_path", None)
+                        or getattr(active_recorder, "path", "")),
+            "status": str(getattr(rec_status, "value", rec_status)),
+        }
+    rec_detail = ""
+    if last_recording:
+        rec_detail = (f"{last_recording.get('container', 'MP4')} · "
+                      f"{last_recording.get('codec', 'unknown')} · "
+                      f"{float(last_recording.get('fps', 0)):g} fps · "
+                      f"{'AAC' if last_recording.get('audio') else 'no audio'}")
     return {
         "nr": not st.paused,
         "work_scale": st.work_scale,
@@ -940,10 +976,18 @@ def menu_payload(st) -> dict:
                      "skin_structure")},
         "lang": st.lang,
         "recording": st.recorder is not None,
+        "recording_finalizing": getattr(st, "recording_finalizer", None) is not None,
+        "recording_status": str(last_recording.get("status", "")),
+        "recording_details": rec_detail,
+        "recording_path": str(last_recording.get("path", "")),
         "work_size": f"{st.work_w}x{st.work_h}",
-        "rec_seconds": (st.recorder.duration_ms / 1000.0) if st.recorder else 0.0,
+        "rec_seconds": ((active_recorder.duration_ms / 1000.0)
+                        if active_recorder else 0.0),
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
+        "recording_dir": st.cfg.get("recording_dir") or "",
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
+        "screenshot_mode": str(st.cfg.get("screenshot_mode", "ask")),
+        "screenshot_format": str(st.cfg.get("screenshot_format", "png")),
         "spout": bool(st.cfg.get("spout", False)),
         "hdr": bool(st.cfg.get("hdr", False)),
         "motion_backend": st.cfg.get("motion_backend", "cpu"),

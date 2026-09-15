@@ -48,6 +48,7 @@ SETTLES: list = []
 # digging through the file to find out what broke.
 ABOUT = {
     "test_frame_pacing.py": "30/60/custom/unlimited pacing and real-work NR rate accounting",
+    "test_media_output_flow.py": "nonblocking recording publication and dialog-free frozen screenshots",
     "test_compatibility_preflight.py": "CompatibilityKey cache, fail-closed N/N verdicts and quarantine policy",
     "test_diagnostic_bundle.py": "support bundle is complete, atomic, bounded and privacy-scrubbed",
     "test_low_cost_off.py": "NR OFF closes capture/presentation and produces no background frames",

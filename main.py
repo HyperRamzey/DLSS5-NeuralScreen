@@ -330,6 +330,9 @@ class _Pipeline:
         "reader",
         "record_audio",
         "recorder",
+        "recording_finalizer",
+        "recording_finalize_deadline",
+        "last_recording",
         "running",
         "shm",
         "shot_dialog_open",
@@ -517,6 +520,7 @@ def main() -> int:
 
             # The answer from the "Save as" dialog (it runs in its own thread).
             commands.drain_save_dialog(st)
+            commands.poll_recording_finalizer(st)
 
             # NR OFF is a real idle state unless an explicit consumer still
             # needs bypass frames.  No code below this branch captures, sends,
@@ -981,10 +985,10 @@ def main() -> int:
                         print(f"[main] frame write failed ({rec_exc}) - "
                               f"stopping the recording", file=sys.stderr)
                         try:
-                            st.recorder.close()
-                        except Exception:
-                            pass
-                        st.recorder = None
+                            commands.begin_recording_finalization(st)
+                        except Exception as finish_exc:
+                            print(f"[main] recording finalization could not start: "
+                                  f"{finish_exc}", file=sys.stderr)
                 if st.present_mode:
                     # In WNDO mode the worker draws the frame on screen; in
                     # Python the pixels arrive ONLY on want_pixels
@@ -1159,13 +1163,20 @@ def main() -> int:
                 print(f"  {line}", file=sys.stderr)
         return 1
     finally:
-        # A recording may have been running at exit: without close() the moov
-        # atom is not written and the file stays broken (players refuse it).
+        # A recording may have been running at exit. Begin the same asynchronous
+        # path the UI uses, then wait here only because the UI is already gone.
         if st.recorder is not None:
             try:
-                st.recorder.close()
+                commands.begin_recording_finalization(st, announce=False)
+            except Exception as exc:
+                print(f"[main] failed to start recording finalization: {exc}",
+                      file=sys.stderr)
+        if st.recording_finalizer is not None:
+            try:
+                st.recording_finalizer.close()
             except Exception as exc:
                 print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
+            commands.poll_recording_finalizer(st)
         if st.worker is not None:
             shutdown_worker(st.worker, st.worker_stop)
         if st.shm is not None:

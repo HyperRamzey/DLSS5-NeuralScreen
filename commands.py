@@ -36,7 +36,7 @@ from hotkeys import build_bindings, parse_binding
 from i18n import STRINGS as UI_STRINGS
 from paths import BASE_DIR
 from pipeline import restart_worker
-from recorder import VideoRecorder
+from recorder import (RecordingError, RecordingStatus, VideoRecorder)
 from settings_io import (CHANNEL_URL, PROFILES, REPO_URL,
                          WORK_SCALE_MIN, WORK_SCALE_STEP,
                          _autostart_enabled, _next_preset_name,
@@ -48,6 +48,27 @@ from winapi import window_frame_rect, window_under_cursor
 #: Identity comparison ensures this sentinel cannot be confused with a future
 #: path-like pending-shot state.
 SHOT_FRAME_PENDING = object()
+
+
+def _configured_directory(value, fallback: Path) -> Path:
+    """Create and return a configured media directory or its portable default."""
+    directory = (Path(value) if isinstance(value, str) and value.strip()
+                 else fallback)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _unique_media_path(directory: Path, prefix: str, suffix: str) -> Path:
+    """A timestamped path that cannot overwrite an existing result/staging file."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    millis = (time.time_ns() // 1_000_000) % 1000
+    stem = f"{prefix}-{stamp}-{millis:03d}"
+    for serial in range(10_000):
+        tail = "" if serial == 0 else f"-{serial}"
+        candidate = directory / f"{stem}{tail}{suffix}"
+        if not candidate.exists() and not Path(f"{candidate}.partial").exists():
+            return candidate
+    raise RuntimeError("could not allocate a unique media filename")
 
 
 def save_screenshot(st, path: Path, rgba) -> None:
@@ -63,10 +84,11 @@ def save_screenshot(st, path: Path, rgba) -> None:
     except Exception as exc:
         print(f"[main] menu was not baked into the screenshot: {exc}", file=sys.stderr)
     try:
-        ok = dialogs.save_jpeg(path, rgba)
+        ok = dialogs.save_image(path, rgba)
         if ok:
             print(f"[main] screenshot: {path}")
-            st.display.alert(f"Screenshot: {path.name}")
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "shot_saved", "Screenshot saved: {path}").format(path=path))
         else:
             print(f"[main] failed to write the screenshot: {path}", file=sys.stderr)
             st.display.alert(UI_STRINGS[st.lang]["shot_fail"])
@@ -107,6 +129,21 @@ def freeze_screenshot_frame(st, rgba) -> bool:
         st.shot_rgba = None
         st.display.alert("No frame yet")
         return False
+    if str(st.cfg.get("screenshot_mode", "ask")) == "auto":
+        suffix = ".png" if str(st.cfg.get("screenshot_format", "png")) == "png" \
+            else ".jpg"
+        try:
+            directory = _configured_directory(
+                st.cfg.get("screenshot_dir"), BASE_DIR / "screenshots")
+            path = _unique_media_path(directory, "neuralscreen", suffix)
+            frozen = st.shot_rgba
+            st.shot_rgba = None
+            save_screenshot(st, path, frozen)
+        except Exception as exc:
+            st.shot_rgba = None
+            print(f"[main] automatic screenshot failed: {exc}", file=sys.stderr)
+            st.display.alert(UI_STRINGS[st.lang]["shot_fail"])
+        return True
     open_save_dialog(st)
     return True
 
@@ -129,18 +166,20 @@ def open_save_dialog(st) -> None:
         return
     st.shot_dialog_open = True
     hwnd = st.display.get_hwnd()
-    default_name = f"neuralscreen-{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+    suffix = ".png" if str(st.cfg.get("screenshot_format", "png")) == "png" \
+        else ".jpg"
+    default_name = f"neuralscreen-{time.strftime('%Y%m%d-%H%M%S')}{suffix}"
     shot_dir = st.cfg.get("screenshot_dir")
     initial_dir = str(shot_dir) if isinstance(shot_dir, str) and shot_dir.strip() else None
 
     def _run() -> None:
         try:
-            st.shot_paths.put(dialogs.ask_save_path(
+            st.shot_paths.put(("save", dialogs.ask_save_path(
                 hwnd, default_name, initial_dir,
-                fallback_dir=BASE_DIR / "screenshots"))
+                fallback_dir=BASE_DIR / "screenshots")))
         except Exception as exc:
             print(f"[main] the save dialog crashed: {exc}", file=sys.stderr)
-            st.shot_paths.put(None)
+            st.shot_paths.put(("save", None))
 
     threading.Thread(target=_run, name="save-dialog", daemon=True).start()
 
@@ -149,21 +188,33 @@ def drain_save_dialog(st) -> None:
     """Take the path from the dialog if the user has already answered."""
     try:
         while True:
-            shot_path = st.shot_paths.get_nowait()
+            answer = st.shot_paths.get_nowait()
             st.shot_dialog_open = False
+            if (isinstance(answer, tuple) and len(answer) == 2
+                    and answer[0] in ("save", "screenshot_dir", "recording_dir")):
+                kind, shot_path = answer
+            else:
+                # Backward compatibility for tests and older producers.
+                kind, shot_path = "save", answer
+            if kind in ("screenshot_dir", "recording_dir"):
+                if shot_path is None:
+                    continue
+                cfg_key = kind
+                st.cfg[cfg_key] = str(shot_path)
+                settings_io.save_menu_layout(st)
+                st.display.menu.set_state({cfg_key: str(shot_path)})
+                label_key = ("shot_folder_set" if kind == "screenshot_dir"
+                             else "record_folder_set")
+                fallback = ("Screenshot folder: {path}" if kind == "screenshot_dir"
+                            else "Recording folder: {path}")
+                message = UI_STRINGS[st.lang].get(label_key, fallback).format(
+                    path=shot_path)
+                print(f"[main] {kind} -> {shot_path}")
+                st.display.alert(message)
+                continue
             if shot_path is None:
                 st.shot_rgba = None
                 print("[main] screenshot cancelled by the user")
-                continue
-            if shot_path.is_dir():
-                # The folder picker answered: remember the folder
-                # and let the next screenshot go there without a
-                # dialog (issue #20).
-                st.cfg["screenshot_dir"] = str(shot_path)
-                settings_io.save_menu_layout(st)
-                st.display.menu.set_state({"screenshot_dir": str(shot_path)})
-                print(f"[main] screenshot folder -> {shot_path}")
-                st.display.alert(f"Screenshot folder: {shot_path}")
                 continue
             rgba = st.shot_rgba
             st.shot_rgba = None
@@ -173,6 +224,103 @@ def drain_save_dialog(st) -> None:
             save_screenshot(st, shot_path, rgba)
     except queue.Empty:
         pass
+
+
+def begin_recording_finalization(st, *, announce: bool = True) -> bool:
+    """Move the active recorder to background finalization without waiting."""
+    rec = getattr(st, "recorder", None)
+    if rec is None:
+        return False
+    if getattr(st, "recording_finalizer", None) is not None:
+        raise RuntimeError("a recording is already finalizing")
+    st.recorder = None
+    rec.finish()
+    st.recording_finalizer = rec
+    st.recording_finalize_deadline = (
+        time.monotonic() + float(rec.FINISH_TIMEOUT_S))
+    print(f"[main] recording finalizing: {rec.path}")
+    if announce:
+        st.display.alert(UI_STRINGS[st.lang].get(
+            "record_finalizing", "Finalizing recording..."))
+    return True
+
+
+def _recording_metadata(rec, result=None) -> dict:
+    return {
+        "container": "MP4",
+        "codec": str(getattr(rec, "codec", "unknown")),
+        "fps": float(getattr(rec, "fps", 0.0)),
+        "audio": bool(getattr(rec, "audio_enabled", False)),
+        "path": str((getattr(result, "path", None)
+                     if result is not None else None) or rec.path),
+        "status": str((getattr(result, "status", None)
+                       if result is not None else rec.status).value),
+    }
+
+
+def poll_recording_finalizer(st) -> None:
+    """Publish one terminal recording result; never wait on the UI thread."""
+    rec = getattr(st, "recording_finalizer", None)
+    if rec is None:
+        return
+    result = rec.wait(0)
+    deadline = float(getattr(st, "recording_finalize_deadline", 0.0) or 0.0)
+    if result is None and deadline and time.monotonic() >= deadline:
+        try:
+            rec.close(timeout=0)
+        except RecordingError:
+            pass
+        result = rec.result
+    if result is None:
+        return
+
+    metadata = _recording_metadata(rec, result)
+    st.last_recording = metadata
+    st.recording_finalizer = None
+    st.recording_finalize_deadline = 0.0
+    audio = "AAC" if metadata["audio"] else "no audio"
+    detail = (f"{metadata['container']} | {metadata['codec']} | "
+              f"{metadata['fps']:g} fps | {audio}")
+    if result.status is RecordingStatus.PUBLISHED:
+        print(f"[main] recording published: {metadata['path']} | {detail} | "
+              f"{rec.written} frames, {rec.duration_ms / 1000.0:.1f}s, "
+              f"dropped {rec.dropped}")
+        st.display.alert(UI_STRINGS[st.lang].get(
+            "record_saved", "Recording saved: {path}").format(
+                path=metadata["path"]))
+        return
+
+    error = result.error
+    stage = getattr(error, "stage", "finalize")
+    partial = metadata["path"] if result.path else "—"
+    print(f"[main] recording failed at {stage}: {error}; partial={partial}",
+          file=sys.stderr)
+    st.display.alert(UI_STRINGS[st.lang].get(
+        "record_failed_stage", "Recording failed ({stage}); partial: {path}").format(
+            stage=stage, path=partial))
+
+
+def open_folder_picker(st, kind: str) -> None:
+    """Open one media-directory picker and return a tagged queue result."""
+    if kind not in ("screenshot_dir", "recording_dir") or st.shot_dialog_open:
+        return
+    st.shot_dialog_open = True
+    hwnd = st.display.get_hwnd()
+    title_key = ("select_shot_dir" if kind == "screenshot_dir"
+                 else "select_record_dir")
+    fallback = ("Select the screenshot folder" if kind == "screenshot_dir"
+                else "Select the recording folder")
+    title = UI_STRINGS[st.lang].get(title_key, fallback)
+
+    def _pick_dir() -> None:
+        try:
+            selected = dialogs.pick_directory(hwnd, title)
+        except Exception as exc:
+            print(f"[main] folder picker crashed: {exc}", file=sys.stderr)
+            selected = None
+        st.shot_paths.put((kind, selected))
+
+    threading.Thread(target=_pick_dir, name="folder-picker", daemon=True).start()
 
 
 def apply_menu_action(st, action: tuple) -> None:
@@ -290,6 +438,16 @@ def apply_menu_action(st, action: tuple) -> None:
                                    new_params)
     elif kind == "motion_backend":
         pipeline.apply_motion_backend(st, action[1])
+    elif kind == "screenshot_mode":
+        mode = str(action[1])
+        if mode in ("ask", "auto"):
+            st.cfg["screenshot_mode"] = mode
+            settings_io.save_menu_layout(st)
+    elif kind == "screenshot_format":
+        image_format = str(action[1]).lower()
+        if image_format in ("png", "jpg"):
+            st.cfg["screenshot_format"] = image_format
+            settings_io.save_menu_layout(st)
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])
@@ -435,24 +593,9 @@ def apply_menu_action(st, action: tuple) -> None:
             else:
                 st.display.alert(UI_STRINGS[st.lang]["fs_active"])
         elif name == "shot_dir":
-            # The screenshot folder picker (issue #20). The dialog
-            # is modal, so it lives in its own thread; the chosen
-            # folder comes back through the same queue as the save
-            # dialog, and the config is written on the main thread.
-            if st.shot_dialog_open:
-                return
-            st.shot_dialog_open = True
-            hwnd = st.display.get_hwnd()  # captured here: pygame is not thread-safe
-
-            def _pick_dir() -> None:
-                # The picker blocks its thread; the answer
-                # (or None on cancel) goes back through the
-                # queue the main loop drains.
-                st.shot_paths.put(dialogs.pick_directory(
-                    hwnd, "Select the screenshot folder"))
-
-            threading.Thread(target=_pick_dir, name="folder-picker",
-                             daemon=True).start()
+            open_folder_picker(st, "screenshot_dir")
+        elif name == "record_dir":
+            open_folder_picker(st, "recording_dir")
         elif name == "github":
             # The hotkeys, profiles and requirements are described
             # only in the README - there was no way to learn about
@@ -634,14 +777,15 @@ def drain_commands(st) -> bool:
                 # FRAME_FLAG_WANT_PIXELS (the screenshot mechanism,
                 # but for every recorded frame).
                 if st.recorder is None:
-                    rec_dir = BASE_DIR / "recordings"
-                    rec_dir.mkdir(exist_ok=True)
-                    stamp = time.strftime("%Y%m%d-%H%M%S")
-                    # Two recordings within one second must not
-                    # overwrite each other - we add milliseconds.
-                    stamp = f"{stamp}-{time.time() % 1 * 1000:03.0f}"
-                    path = str(rec_dir / f"neuralscreen-{stamp}.mp4")
+                    if getattr(st, "recording_finalizer", None) is not None:
+                        st.display.alert(UI_STRINGS[st.lang].get(
+                            "record_finalizing", "Finalizing recording..."))
+                        continue
                     try:
+                        rec_dir = _configured_directory(
+                            st.cfg.get("recording_dir"), BASE_DIR / "recordings")
+                        path = str(_unique_media_path(
+                            rec_dir, "neuralscreen", ".mp4"))
                         # 30 fps, not 60: every recorded frame is a
                         # full 33 MB round-trip from the worker
                         # (FRAME_FLAG_WANT_PIXELS -> pipe), and the
@@ -656,20 +800,19 @@ def drain_commands(st) -> bool:
                         st.display.alert(f"REC ERROR: {exc}")
                         st.recorder = None
                     else:
-                        print(f"[main] recording started: {path}")
-                        st.display.alert(UI_STRINGS[st.lang]["record_on"])
+                        audio = "AAC" if st.recorder.audio_enabled else "no audio"
+                        detail = (f"MP4 | {st.recorder.codec} | "
+                                  f"{st.recorder.fps:g} fps | {audio}")
+                        print(f"[main] recording started: {path} | {detail}")
+                        st.display.alert(UI_STRINGS[st.lang].get(
+                            "record_started", "Recording: {details}").format(
+                                details=detail))
                 else:
-                    rec_path = st.recorder.path
                     try:
-                        st.recorder.close()
+                        begin_recording_finalization(st)
                     except Exception as exc:
-                        print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
+                        print(f"[main] failed to finalize the recording: {exc}", file=sys.stderr)
                         st.display.alert(UI_STRINGS[st.lang]["rec_save_fail"])
-                    secs = st.recorder.duration_ms / 1000.0
-                    print(f"[main] recording finished: {rec_path} "
-                          f"({st.recorder.written} frames, {secs:.1f}s)")
-                    st.display.alert(UI_STRINGS[st.lang]["record_off"])
-                    st.recorder = None
             elif cmd == "window_mode":
                 # The window under the cursor wins: it works on the
                 # desktop too (the focused window there is Progman,

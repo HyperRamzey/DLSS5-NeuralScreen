@@ -88,10 +88,51 @@ def personal_config_keys():
     return sorted(set(payload) | {"hotkeys"})
 
 
+def shipped_config_defaults():
+    """The committed config.json is the product default, not a live file.
+
+    A maintainer's working values shipped inside an archive twice - the
+    SR-removal merge left frame_generation true and motion_backend nvofa
+    (1.10.0), and frame_multiplier 3 survived into 1.10.0 and 1.11.0 (a
+    40-series card caps at 2x). The zip-vs-HEAD comparison cannot catch
+    this class - both sides carry the same wrong values - so HEAD's config
+    is checked against the profile-derived defaults directly.
+    """
+    import sys as _sys
+    if str(ROOT) not in _sys.path:
+        _sys.path.insert(0, str(ROOT))
+    import settings_io
+    head = json.loads(subprocess.check_output(
+        ["git", "show", "HEAD:config.json"], cwd=ROOT))
+    natural = settings_io.PROFILES["Natural"]
+    problems = []
+    if head.get("frame_multiplier") != 2:
+        problems.append(f"frame_multiplier={head.get('frame_multiplier')!r} "
+                        f"- the safe floor is 2 (RTX 40 caps at 2x)")
+    if head.get("frame_generation") is not False:
+        problems.append(f"frame_generation={head.get('frame_generation')!r} "
+                        f"- a fresh install must be opt-in")
+    if head.get("motion_backend") != "cpu":
+        problems.append(f"motion_backend={head.get('motion_backend')!r} "
+                        f"- cpu is the default")
+    for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
+        if key not in head or head[key] is None:
+            continue
+        try:
+            same = abs(float(head[key]) - float(natural[key])) < 1e-9
+        except (TypeError, ValueError):
+            same = False
+        if not same:
+            problems.append(f"{key}={head[key]!r} - Natural says {natural[key]}")
+    if problems:
+        return False, "HEAD config is not the product default: " + "; ".join(problems)
+    return True, "multiplier 2, FG off, CPU motion, Natural's four sliders"
+
+
 def zip_integrity():
-    zpath = ROOT / "neuralscreen-v1.11.0-full.zip"
+    zpath = ROOT / "neuralscreen-v1.11.1-full.zip"
     if not zpath.is_file():
-        return False, "no neuralscreen-v1.11.0-full.zip"
+        return False, "no neuralscreen-v1.11.1-full.zip"
     required = [
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
@@ -577,6 +618,7 @@ def main():
     else:
         check("worker: fresh, with the hook", fresh_worker)
         check("zip: integrity and contents", zip_integrity)
+        check("config: the shipped defaults", shipped_config_defaults)
         check("gpuinfo: answers", gpuinfo_works)
         check("spoof: on by default", spoof_default_on)
         check("README: EN/RU agree", readme_consistency)

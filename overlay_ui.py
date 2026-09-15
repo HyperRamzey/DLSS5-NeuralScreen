@@ -894,15 +894,18 @@ class OverlayMenu:
             fg = bool(self.state.get("frame_generation"))
             multiplier = int(self.state.get("frame_multiplier", 2))
             # The multiplier rides the FG row: three small buttons between the
-            # label and the switch, the active one filled (user, 14.09).
+            # label and the switch, the selected one filled (user, 14.09).
+            # Selectable whether or not FG runs (user, 15.09): it is a
+            # preference for the next attempt, not a live control - locking it
+            # behind the switch deadlocked a 40-series card (caps at 2x) when
+            # the first attempt refused and flipped itself back off.
             toggle("frame_generation", "DLSS 4.5 FG", fg,
                    inline_right=[("frame_multiplier:2", "×2"),
                                  ("frame_multiplier:3", "×3"),
                                  ("frame_multiplier:4", "×4")])
             for idx, value in enumerate((2, 3, 4)):
                 btn = items[-3 + idx]
-                btn.extra["filled"] = fg and multiplier == value
-                btn.extra["disabled"] = not fg
+                btn.extra["filled"] = multiplier == value
 
 
             boost = bool(self.state.get("nr_small"))

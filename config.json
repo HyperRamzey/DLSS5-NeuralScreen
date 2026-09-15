@@ -8,9 +8,9 @@
  "lang": "en",
  "profile": "Natural",
  "intensity": 1.0,
- "local_tone": 0.75,
+ "local_tone": 0.5,
  "local_structure": 1.0,
- "skin_structure": 0.8,
+ "skin_structure": -1.0,
  "worker_present": true,
  "motion_on_gpu": true,
  "capture_in_worker": true,
@@ -35,8 +35,6 @@
  "gpu_no_nr": [],
  "presets": {},
  "motion_backend": "cpu",
- "dlss_sr_scale": 0.55,
- "dlss_sr": false,
  "frame_generation": false,
- "frame_multiplier": 3
+ "frame_multiplier": 2
 }

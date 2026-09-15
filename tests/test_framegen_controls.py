@@ -30,6 +30,24 @@ def main():
     assert toggle is not None
     st = SimpleNamespace(cfg={})
     with patch.object(settings_io, "save_menu_layout") as save:
+        # FG off, nothing chosen yet: the x2/x3/x4 group must already be
+        # usable. Locking it behind the switch deadlocked a 40-series card -
+        # it caps at 2x, the first switch-on refused x3 and flipped itself
+        # back off before the user could ever pick 2 (user, 15.09).
+        menu.set_state(st.cfg)
+        paint(menu)
+        btns = [i for i in menu.items
+                if i.kind == "button" and i.key.startswith("frame_multiplier:")]
+        assert len(btns) == 3, [i.extra["label"] for i in btns]
+        assert not any(i.extra.get("disabled") for i in btns), \
+            "the multiplier must be selectable while FG is off"
+        active = [i for i in btns if i.extra["filled"]]
+        assert len(active) == 1 and active[0].key == "frame_multiplier:2"
+        actions = click(menu, next(i for i in btns if i.key == "frame_multiplier:2"))
+        assert actions == [("button", "frame_multiplier:2")], actions
+        commands.apply_menu_action(st, actions[0])
+        assert st.cfg["frame_multiplier"] == 2
+
         actions = click(menu, toggle)
         assert actions == [("toggle", "frame_generation")], actions
         commands.apply_menu_action(st, actions[0])
@@ -37,7 +55,7 @@ def main():
         menu.set_state(st.cfg)
         paint(menu)
         # The multiplier rides the FG row: three small buttons beside the
-        # switch, the active one filled, disabled while FG is off.
+        # switch, the selected one filled.
         btns = [i for i in menu.items
                 if i.kind == "button" and i.key.startswith("frame_multiplier:")]
         assert len(btns) == 3, [i.extra["label"] for i in btns]
@@ -65,9 +83,14 @@ def main():
         menu.set_state(st.cfg)
         paint(menu)
         assert not st.cfg["frame_generation"]
-        assert not [i for i in menu.items if i.extra.get("filled")
-                    and i.key.startswith("frame_multiplier:")]
-        assert save.call_count == 5
+        # With FG off the selected step STAYS lit - a preference for the
+        # next attempt - and nothing is disabled.
+        btns = [i for i in menu.items
+                if i.kind == "button" and i.key.startswith("frame_multiplier:")]
+        filled = [i for i in btns if i.extra["filled"]]
+        assert len(filled) == 1 and filled[0].key == "frame_multiplier:4", filled
+        assert not any(i.extra.get("disabled") for i in btns)
+        assert save.call_count == 6
     # The prepared-capture flag rides the same header, independent of FG.
     worker = SimpleNamespace(stdin=io.BytesIO())
     protocol.send_frame(worker, 9, None, np.zeros((2, 2, 2), np.float16), False, 0,

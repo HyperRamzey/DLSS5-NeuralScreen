@@ -89,9 +89,9 @@ def personal_config_keys():
 
 
 def zip_integrity():
-    zpath = ROOT / "neuralscreen-v1.10.0-full.zip"
+    zpath = ROOT / "neuralscreen-v1.11.0-full.zip"
     if not zpath.is_file():
-        return False, "no neuralscreen-v1.10.0-full.zip"
+        return False, "no neuralscreen-v1.11.0-full.zip"
     required = [
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",

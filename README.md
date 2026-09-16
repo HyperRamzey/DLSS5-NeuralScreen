@@ -197,5 +197,4 @@ The code here is source-available under the PolyForm Strict License 1.0.0:
 noncommercial use is free; copying, modifying, distributing or building on it
 needs the author's permission - see [LICENSE](LICENSE). NVIDIA's runtimes ship
 unmodified and remain NVIDIA's property, as-is, research-only: `nvngx_dlssnr.dll`
-(leaked 310.8.0) and `nvngx_dlssg.dll` (310.9.1.0). Interface faces: IBM Plex
-(OFL-1.1, `fonts/OFL.txt`).
+(leaked 310.8.0) and `nvngx_dlssg.dll` (310.9.1.0). Interface faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).

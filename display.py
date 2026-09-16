@@ -117,6 +117,7 @@ import numpy as np
 import pygame
 
 import fonts
+import vdesk
 from overlay_ui import OverlayMenu, palette as ui_palette
 
 from i18n import STRINGS
@@ -920,6 +921,39 @@ class Display:
                   f"(layer state {self._layer_state})")
         self._last_overlay = 0.0  # the next draw_overlay redraws immediately
 
+    def follow_taskbar_desktop(self) -> None:
+        """Put the overlay windows on the same virtual desktop as the button.
+
+        Windows 11 keeps the 1x1 taskbar window with the desktop the user
+        moved the program to (through Task View), while the borderless HUD
+        and picture windows can stay behind - the menu then opens on a
+        desktop the user is not looking at and reads as "the program does
+        not expand" (issue #93, user Saymoin: "if you put the NeuralScreen
+        on desktop 2 ... does not expand").
+
+        Quietly does nothing when the interface or the taskbar window is
+        unavailable, and when both windows are already together (so it is
+        safe to call on every menu show).
+        """
+        try:
+            ref = user32.FindWindowW("NeuralScreenTaskbar", "NeuralScreen")
+            if not ref:
+                return
+            hud = None
+            try:
+                hud = pygame.display.get_wm_info()["window"]
+            except Exception:
+                hud = None
+            present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
+            moved = False
+            for hwnd in (hud, present):
+                if hwnd and vdesk.follow_window(hwnd, ref):
+                    moved = True
+            if moved:
+                self._last_overlay = 0.0  # force a redraw after the move
+        except Exception:
+            pass
+
     def raise_topmost(self) -> None:
         """Raise the worker picture first and the HUD last.
 
@@ -968,10 +1002,21 @@ class Display:
             if top == hud:
                 pass  # the HUD is on top; nothing to do
             elif top == present:
-                # The picture took the band: insert the HUD above it (one
-                # placement, after the picture) - the invariant is owned.
-                user32.SetWindowPos(hud, present, 0, 0, 0, 0,
-                                    0x0001 | 0x0002 | 0x0010 | 0x0004)
+                # The picture took the band (a worker restart re-asserts it
+                # HWND_TOPMOST): bring the HUD back above it. NO SWP_NOZORDER
+                # here - that flag makes SetWindowPos ignore hWndInsertAfter,
+                # so the call was a silent no-op (#94: "the panel disappears
+                # while I change settings"; the same after an NR/FG toggle,
+                # which restarts the worker).
+                #
+                # Inserting after `present` does NOT work while both windows
+                # are TOPMOST: inside the topmost band the order is decided by
+                # the band, not by hWndInsertAfter, so the HUD has to be
+                # re-asserted as topmost itself - it goes to the top of the
+                # band. Measured: hud z=15 / present z=13 stayed that way with
+                # the insert-after call, and flipped with this one.
+                user32.SetWindowPos(hud, -1, 0, 0, 0, 0,
+                                    0x0001 | 0x0002 | 0x0010)
             elif top_is_foreign:
                 # A foreign window took the topmost slot: re-assert the pair.
                 user32.SetWindowPos(hud, -1, 0, 0, 0, 0,

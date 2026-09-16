@@ -614,10 +614,18 @@ def main() -> int:
                 st.last_foreground = fg
             # A game that goes fullscreen raises itself above every topmost
             # window, ours included, and then the menu is drawn but not on
-            # screen. While it is open we keep coming back up; a SetWindowPos
-            # that changes nothing is cheap, and 30 frames is fast enough that
-            # nobody sees the menu disappear.
-            if st.display.menu.visible and st.frame_index % 30 == 0:
+            # screen. While it is open we keep coming back up.
+            if st.display.menu.visible:
+                # The menu is up: the worker's picture window is re-asserted
+                # HWND_TOPMOST on every restart (NR off->on, a settings apply,
+                # a mode switch), which lands the picture ABOVE the HUD and
+                # hides the panel behind it - the "menu disappears while I am
+                # using it" reports (#94, and the NR/FG toggle case). While
+                # the menu is open the pair is re-asserted EVERY frame: the
+                # call is idempotent (raise_topmost inserts the HUD above the
+                # picture, or does nothing when it is already there), so the
+                # steady state costs no SetWindowPos at all. The 30-frame
+                # cadence below stays for the menu-closed HUD case.
                 st.display.raise_topmost()
             # The same for the HUD even when the menu is closed: a borderless
             # game (Cyberpunk) keeps itself on top and our HUD stays

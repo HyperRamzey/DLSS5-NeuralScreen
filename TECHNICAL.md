@@ -565,7 +565,7 @@ bundled copy remains the fallback. There is no network updater or downloader.
 
 ## Reproducible release contract
 
-`build_release_zip.py v1.13.0` accepts only a clean checkout whose `HEAD` is the
+`build_release_zip.py v1.13.1` accepts only a clean checkout whose `HEAD` is the
 requested tag and whose version sources agree. The allowlist covers every
 shipped Python/C++/header/shader/resource, while `runtime-manifest.json` binds
 the package paths and hashes. Archive ordering, timestamps and metadata are

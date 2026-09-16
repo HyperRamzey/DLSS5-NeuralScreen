@@ -57,7 +57,7 @@ class DiagnosticBundleTests(unittest.TestCase):
                 "dred": {"message": r"dump at E:\Crash Dumps\gpu.dmp"},
                 "api_token": "another-secret",
             },
-            app_version="1.13.0",
+            app_version="1.13.1",
             commit="0123456789abcdef0123456789abcdef01234567",
             runtime_path=self.runtime,
             log_path=self.log,
@@ -106,7 +106,7 @@ class DiagnosticBundleTests(unittest.TestCase):
         self.assertTrue(all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in infos))
 
         self.assertEqual(report["schema"], "neuralscreen.diagnostics/v1")
-        self.assertEqual(report["application"]["version"], "1.13.0")
+        self.assertEqual(report["application"]["version"], "1.13.1")
         self.assertEqual(
             report["application"]["commit"],
             "0123456789abcdef0123456789abcdef01234567",
@@ -163,7 +163,7 @@ class DiagnosticBundleTests(unittest.TestCase):
         fixture = self.work / "release"
         fixture.mkdir()
         fixture.joinpath("VERSION.txt").write_text(
-            "NeuralScreen 1.13.0\n"
+            "NeuralScreen 1.13.1\n"
             "commit: abcdef0123456789abcdef0123456789abcdef01\n",
             encoding="utf-8",
         )
@@ -171,7 +171,7 @@ class DiagnosticBundleTests(unittest.TestCase):
             diagnostics.discover_application_identity(fixture),
             {
                 "name": "NeuralScreen",
-                "version": "1.13.0",
+                "version": "1.13.1",
                 "commit": "abcdef0123456789abcdef0123456789abcdef01",
             },
         )

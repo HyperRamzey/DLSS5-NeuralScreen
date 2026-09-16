@@ -52,6 +52,7 @@ MANDATORY_FILES = (
     "NeuralScreen-diag.vbs",
     "README.md",
     "README.ru.md",
+    "LICENSE",
     "native/nvngx.dll",
     "native/nvngx.dll_ns-forwarder.dll",
     "native/nvngx_dlssnr.dll",

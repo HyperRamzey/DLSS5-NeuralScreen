@@ -193,8 +193,9 @@ settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR
 
 ## License
 
-The code here is MIT. NVIDIA's runtimes ship unmodified and remain NVIDIA's
-property: `nvngx_dlssnr.dll` is the leaked 310.8.0 build (sm_75/86/89/120
-kernels, RTX 20-50), `nvngx_dlssg.dll` is the public 310.9.1.0
-redistributable — both as received, no guarantees, research-only. Interface
-faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).
+The code here is source-available under the PolyForm Strict License 1.0.0:
+noncommercial use is free; copying, modifying, distributing or building on it
+needs the author's permission - see [LICENSE](LICENSE). NVIDIA's runtimes ship
+unmodified and remain NVIDIA's property, as-is, research-only: `nvngx_dlssnr.dll`
+(leaked 310.8.0) and `nvngx_dlssg.dll` (310.9.1.0). Interface faces: IBM Plex
+(OFL-1.1, `fonts/OFL.txt`).

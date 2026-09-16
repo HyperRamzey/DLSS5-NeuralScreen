@@ -4,6 +4,10 @@ Off by default. Enable Frame Generation in the processing menu and select
 an output multiplier from 2x to 4x. Requires `native/nvngx_dlssg.dll`, supplied
 separately from the source repository.
 
+The current backend is DLSS Frame Generation. v1.13 does not contain an FSR FG
+fallback for RTX 20/30; that is a separate research candidate rather than a
+compatibility promise.
+
 Generated frames follow neural rendering and optional SR. A separate presenter
 paces bounded frame slots and drops outdated generated frames. It still shares
 the GPU command queue with neural rendering; this does not guarantee lower latency

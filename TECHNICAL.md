@@ -206,6 +206,13 @@ They talk over stdin/stdout with a binary protocol:
 frame is copied into a cross-device shared texture and swizzled to RGBA.
 Python stops capturing entirely — `grab` and `guides` drop to 0.1 ms.
 
+With HDR compatibility off, DDA deliberately uses the original
+`IDXGIOutput1::DuplicateOutput`, whose desktop image is converted to BGRA8.
+The v1.12 attempt to request BGRA8 alone through `DuplicateOutput1` proved
+insufficient on the drivers reported in #86 and #89: acquired frames still
+alternated between FP16 and BGRA8 and rebuilt the bridge repeatedly.
+`DuplicateOutput1` is therefore reserved for the opt-in HDR path.
+
 That `guides` figure is a STATIC screen, and it is worth saying so: with
 nothing moving, `process()` sees a scene score under 0.001 and returns a
 cached zero field without ever calling DIS (measured 0.03 ms). On moving
@@ -261,6 +268,12 @@ return to Python. The pygame window stays as the menu layer — its background
 is filled with a chroma key and made transparent (`LWA_COLORKEY`). While the
 menu is open the window's global alpha (`LWA_ALPHA`) goes to 255, otherwise
 the bright frame underneath bleeds through the panel.
+
+Logical menu state and physical HWND visibility are handled separately. Every
+open/show request reveals a hidden layer, reapplies visibility, raises it above
+the presenter and redraws it. This makes taskbar activation idempotent while
+recovering the invisible-menu state reported after monitor/GPU changes (#87,
+#88).
 
 **NR OFF.** With FG off and no recording or pending screenshot, the lifecycle
 closes DDA/WGC and presentation, sends no `FRM1` packets and hides the output;

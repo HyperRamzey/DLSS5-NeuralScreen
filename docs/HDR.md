@@ -31,8 +31,10 @@ happened.
 
 ## Behavior
 
-- Desktop capture negotiates FP16 with `IDXGIOutput5::DuplicateOutput1` when HDR is
-  enabled. Single-window WGC capture requests FP16 on an HDR display.
+- Desktop capture uses the original `IDXGIOutput1::DuplicateOutput` conversion to
+  stable BGRA8 while HDR compatibility is off. It negotiates FP16 with
+  `IDXGIOutput5::DuplicateOutput1` only when HDR is enabled. Single-window WGC
+  capture requests FP16 on an HDR display.
 - The raw signed scRGB image is retained in the shared GPU texture. The new
   presentation texture and swap chain use `R16G16B16A16_FLOAT` and
   `RGB_FULL_G10_NONE_P709`; scRGB 1.0 represents 80 nits.
@@ -75,9 +77,9 @@ and evaluated directly in HDR. Strong edits can change highlights and colors.
   They contain the processed proxy, not an HDR copy of the screen.
 - Python/pygame fallback capture and presentation remain SDR. The two `[hdr]` log
   lines above distinguish an active HDR path from a fallback.
-- The upstream desktop worker still selects output 0 of its selected adapter.
-  Multi-monitor selection, windows spanning mixed HDR/SDR displays, and cross-GPU
-  capture are not certified by this change.
+- The selected monitor resolves to its owning adapter/output pair. Cross-GPU
+  capture can still fall back to the Python path; HDR preservation across
+  independent GPUs and windows spanning mixed HDR/SDR displays is not certified.
 - Exclusive fullscreen remains subject to the upstream overlay limitations.
 - Hardware smoke tests verify successful capture, processing, presentation, export,
   and recovery to SDR. They are not a calibrated measurement of monitor luminance
@@ -106,11 +108,12 @@ gamut preservation, bit-exact zero-edit and bypass, the comparison wipe, finite
 bounded output, SDR output, and unchanged BGRA/RGBA channel order. No NVIDIA
 runtime or HDR display is required for that test.
 
-The Python integration tests require an RTX GPU, the NVIDIA runtime, and an HDR
-primary display. They are opt-in because they briefly show an overlay. The WGC test
-opens a colored 640x360 window; DDA uses the primary display. Both send bypass,
-neural, and wipe frames, request SDR pixels, then disable capture and verify a
-byte-exact SDR pipe frame after the swap-chain transition.
+The Python integration tests require an RTX GPU and the NVIDIA runtime. HDR
+assertions require an HDR primary display. They are opt-in because they briefly
+show an overlay. The WGC test opens a colored 640x360 window; DDA uses the primary
+display. On SDR, the DDA variant instead verifies stable BGRA8 capture with no
+format-bridge rebuild. Both send bypass, neural, and wipe frames, request SDR
+pixels, then disable capture and verify a byte-exact SDR pipe frame.
 
 Observed on 2026-09-11: RTX 5080, HDR enabled, SDR white 280 nits, primary display
 2560x1440; WGC and DDA each completed 12 capture/present frames plus one SDR
@@ -121,6 +124,7 @@ before and after it).
 ## References
 
 - [Microsoft: HDR screen capture](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture)
+- [Microsoft: DuplicateOutput](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput)
 - [Microsoft: DuplicateOutput1](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_5/nf-dxgi1_5-idxgioutput5-duplicateoutput1)
 - [Microsoft: DirectX Advanced Color](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range)
 - [Microsoft: SDR white level](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-displayconfig_sdr_white_level)

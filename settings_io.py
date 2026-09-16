@@ -894,6 +894,20 @@ def _worker_idle(st) -> bool:
     return False
 
 
+def _window_menu_state(windows: list[tuple[int, str]],
+                       current_hwnd: int | None) -> tuple[list[dict], dict | None]:
+    """Build the window-picker payload without mixing identity into labels.
+
+    HWND remains an integer through hover and selection.  Titles are display
+    text only, so duplicate titles and titles containing colons are safe.
+    """
+    entries = [{"hwnd": int(hwnd), "title": str(title)}
+               for hwnd, title in windows]
+    current = next((dict(entry) for entry in entries
+                    if entry["hwnd"] == current_hwnd), None)
+    return entries, current
+
+
 def menu_payload(st) -> dict:
     """The current state for the menu - a single source of truth."""
     refresh_gpu_ok(st)
@@ -918,6 +932,8 @@ def menu_payload(st) -> dict:
         wins = sorted(list_capturable_windows(),
                       key=lambda hw: (str(hw[1]).casefold(), hw[0]))
         st.window_list = wins
+    window_entries, current_window = _window_menu_state(
+        wins, getattr(st, "window_hwnd", None))
     # The devicename is the stable identity: the menu hands it back
     # on a switch, so a reorder cannot redirect the capture.
     monitor_entries = [f"{i}: {w}x{h} ({dev})"
@@ -1057,9 +1073,8 @@ def menu_payload(st) -> dict:
             (m for m in monitor_entries
              if m.startswith(f"{st.monitor}: ")),
             str(st.monitor)),
-        "windows": [f"{h:X}: {t}" for h, t in wins],
-        "window_current": next(
-            (f"{h:X}: {t}" for h, t in wins if h == st.window_hwnd), ""),
+        "windows": window_entries,
+        "window_current": current_window,
         "version": APP_VERSION,
         "channel": CHANNEL_LABEL,
     }

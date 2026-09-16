@@ -357,6 +357,24 @@ def create_diagnostics(st) -> None:
     threading.Thread(target=_run, name="diagnostic-bundle", daemon=True).start()
 
 
+def _window_action_hwnd(value) -> int:
+    """Read HWND from the action identity, never from a displayed title."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, dict) and "hwnd" in value:
+        return int(value["hwnd"])
+    if isinstance(value, (tuple, list)) and value:
+        return int(value[0])
+
+    # Pre-1.13 menus emitted one combined identity token.  Keep that narrow
+    # upgrade path, but new payloads/actions always carry an integer HWND and
+    # titles containing colons never enter this branch.
+    prefix, marker, _title = str(value).partition(": ")
+    if not marker:
+        raise ValueError("window action has no HWND")
+    return int(prefix, 16)
+
+
 def apply_menu_action(st, action: tuple) -> None:
     """A menu action -> a real setting.
 
@@ -569,10 +587,10 @@ def apply_menu_action(st, action: tuple) -> None:
         if new_monitor != st.capture.devicename:
             pipeline.switch_monitor(st, new_monitor)
     elif kind == "window":
-        # The window list in the menu: the value is "hwnd: title".
+        # The row carries HWND separately from its clean display title.
         try:
-            target = int(str(action[1]).split(":")[0], 16)
-        except (ValueError, IndexError):
+            target = _window_action_hwnd(action[1])
+        except (TypeError, ValueError, IndexError, KeyError):
             print(f"[main] invalid window: {action[1]!r}", file=sys.stderr)
             return
         if not ctypes.windll.user32.IsWindow(ctypes.c_void_p(target)):

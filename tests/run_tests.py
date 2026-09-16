@@ -5,10 +5,10 @@ time, and that is how a regression shipped: audit #3 broke the shared-memory
 pixel channel, `test_out_shm.py` caught it, and nobody ran `test_out_shm.py`.
 One command, one verdict, a non-zero exit on any failure.
 
-    runtime\\python.exe run_tests.py            static + tests + smoke
-    runtime\\python.exe run_tests.py --gui      ... and the full GUI cycle
-    runtime\\python.exe run_tests.py --only out_shm      one test by name
-    runtime\\python.exe run_tests.py --no-smoke          skip the smoke test
+    runtime\\python.exe tests\\run_tests.py            static + tests + smoke
+    runtime\\python.exe tests\\run_tests.py --gui      ... and the full GUI cycle
+    runtime\\python.exe tests\\run_tests.py --only out_shm      one test by name
+    runtime\\python.exe tests\\run_tests.py --no-smoke          skip the smoke test
 
 Two of the stages take over the screen for a few seconds each (the overlay is
 raised for real) and the machine should be left alone while they run. Nothing
@@ -20,6 +20,7 @@ probes, and those are nobody's regression suite.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -43,6 +44,26 @@ SETTLE_LIMIT = 10.0
 #: (label, seconds) per test - reported in the summary so a run where
 #: nothing ever waited is visible as evidence, not as silence.
 SETTLES: list = []
+
+GROUP_UNIT_STATIC = "unit/static"
+GROUP_WARP = "WARP"
+GROUP_GPU = "GPU"
+GROUP_GUI_E2E = "GUI-E2E"
+GROUP_ORDER = (GROUP_UNIT_STATIC, GROUP_WARP, GROUP_GPU, GROUP_GUI_E2E)
+
+STATUS_PASS = "PASS"
+STATUS_FAIL = "FAIL"
+STATUS_SKIP = "SKIP"
+STATUS_ERROR = "ERROR"
+STATUS_TIMEOUT = "TIMEOUT"
+STATUS_ORDER = (STATUS_PASS, STATUS_FAIL, STATUS_SKIP,
+                STATUS_ERROR, STATUS_TIMEOUT)
+BLOCKING_STATUSES = frozenset({STATUS_FAIL, STATUS_ERROR, STATUS_TIMEOUT})
+
+# A child may explain that one optional sub-check was skipped in prose.  Only
+# a dedicated, canonical result line turns the whole test into SKIP.
+CANONICAL_SKIP_RE = re.compile(
+    r"^\s*(?:SKIP(?:\s*:|\s*$)|\[SKIP\](?:\s|$))", re.MULTILINE)
 
 # What each test is for, in one line - a failing name should not send anyone
 # digging through the file to find out what broke.
@@ -136,26 +157,288 @@ ABOUT = {
     "test_taskbar_show.py": "duplicate taskbar activation shows the menu without closing it",
     "test_ui_buttons.py": "every control on every page fires the right command",
     "test_controls_visual.py": "the switch, the slider ticks and the Quit edge draw",
+    "test_keyboard_navigation.py": "Tab, arrows, activation, Esc and focus auto-scroll",
+    "test_light_theme_contrast.py": "light/dark text, controls and focus meet WCAG contrast",
     "test_wgc_capture.py": "the worker captures one window (the single-window input)",
     "test_window_filter.py": "the window list holds only real taskbar windows",
+    "test_window_labels.py": "window titles stay clean while HWND remains the identity",
     "test_windows_page.py": "the windows page lists, highlights and switches",
     "test_window_mode.py": "the one-window hotkey switches the pipeline and back",
     "test_window_surround.py": "a window-sized frame's surround is keyed, the layer is really keyed",
     "test_window_mode_menu.py": "the menu stays fully visible across the window-mode switch",
     "test_switch_veil.py": "the mode-switch veil eases in/out and owns the layer",
+    "test_runner_reporting.py": "pure runner routing, SKIP classification and exact summaries",
 }
+
+
+# Every test belongs to exactly one execution class.  This inventory is
+# deliberately explicit: adding a tracked test without choosing its class is
+# a runner error.  Tests that render UI into dummy/in-memory surfaces stay in
+# unit/static; GUI-E2E is reserved for real desktop/app-shell scenarios.
+TEST_GROUPS = {
+    GROUP_UNIT_STATIC: frozenset({
+        "test_adaptive_exposure.py",
+        "test_alert_font_size.py",
+        "test_alert_position.py",
+        "test_audio_limiter.py",
+        "test_audio_pack.py",
+        "test_boost_toggle.py",
+        "test_capture_format_stability.py",
+        "test_channel_flags.py",
+        "test_choice_hint_hit.py",
+        "test_compatibility_preflight.py",
+        "test_compatibility_runtime.py",
+        "test_config.py",
+        "test_config_atomic.py",
+        "test_config_schema.py",
+        "test_controls_visual.py",
+        "test_crash_report.py",
+        "test_diagnostic_bundle.py",
+        "test_env_header.py",
+        "test_esc_order.py",
+        "test_follow_monitor_init.py",
+        "test_frame_pacing.py",
+        "test_framegen_controls.py",
+        "test_gpu_alert_path.py",
+        "test_gpu_identity.py",
+        "test_gpu_mark.py",
+        "test_gpu_pending_wgc.py",
+        "test_gpu_rollback.py",
+        "test_gpu_select.py",
+        "test_hard_failure_window.py",
+        "test_hdr_notice.py",
+        "test_hdr_switch.py",
+        "test_header_footer.py",
+        "test_highlight_origin.py",
+        "test_hotkey_bindings.py",
+        "test_hotkey_held.py",
+        "test_hotkey_once.py",
+        "test_hotkey_rebind.py",
+        "test_hotkey_remap_no_fire.py",
+        "test_i18n.py",
+        "test_i18n_direct_keys.py",
+        "test_idle_flag.py",
+        "test_keyboard_navigation.py",
+        "test_leak_list.py",
+        "test_light_theme_contrast.py",
+        "test_live_resize.py",
+        "test_low_cost_off.py",
+        "test_media_output_flow.py",
+        "test_menu_position.py",
+        "test_menu_scroll.py",
+        "test_menu_state_keys.py",
+        "test_module_layers.py",
+        "test_monitor_hint.py",
+        "test_monitor_identity.py",
+        "test_monitor_origin.py",
+        "test_monitor_resize.py",
+        "test_monitor_switch.py",
+        "test_motion_capture_order.py",
+        "test_motion_floor.py",
+        "test_motion_trust.py",
+        "test_mss_fallback.py",
+        "test_mss_identity.py",
+        "test_multi_gpu_monitor.py",
+        "test_mv_validation.py",
+        "test_nvofa_confidence_metrics.py",
+        "test_nvofa_controls.py",
+        "test_out_ring.py",
+        "test_out_status.py",
+        "test_preset_roundtrip.py",
+        "test_presets.py",
+        "test_protocol_sizes.py",
+        "test_rebuild_warmup.py",
+        "test_rec_indicator.py",
+        "test_recorder_lifecycle.py",
+        "test_recovery.py",
+        "test_release_contract.py",
+        "test_resolution_limits.py",
+        "test_revive_race.py",
+        "test_revive_warmup.py",
+        "test_runner_reporting.py",
+        "test_save_dialog.py",
+        "test_screenshot_before_dialog.py",
+        "test_settings_hints.py",
+        "test_shot_dir.py",
+        "test_shot_unicode.py",
+        "test_silent_spots.py",
+        "test_spout_shutdown.py",
+        "test_spout_toggle.py",
+        "test_state_contract.py",
+        "test_swappable_runtime.py",
+        "test_switch_veil.py",
+        "test_taskbar_show.py",
+        "test_theme_rebuild.py",
+        "test_ui_buttons.py",
+        "test_verdict_classifier.py",
+        "test_verdict_forget.py",
+        "test_wait_rack_eof.py",
+        "test_window_filter.py",
+        "test_window_follow_size.py",
+        "test_window_labels.py",
+        "test_window_surround.py",
+        "test_windows_page.py",
+    }),
+    GROUP_WARP: frozenset({
+        "test_hdr_shaders.py",
+        "test_quality_gpu.py",
+    }),
+    GROUP_GPU: frozenset({
+        "test_adapter_agreement.py",
+        "test_bypass.py",
+        "test_direct_reconstruction.py",
+        "test_dred_diag.py",
+        "test_failure_stages.py",
+        "test_feature_leak.py",
+        "test_fence_waits.py",
+        "test_frame_generation.py",
+        "test_frame_retirement.py",
+        "test_hdr_capture.py",
+        "test_motion_small.py",
+        "test_ngx_forwarder.py",
+        "test_nr_small.py",
+        "test_odd_frame_size.py",
+        "test_out_shm.py",
+        "test_param_apply.py",
+        "test_param_effect.py",
+        "test_pixels_after_resize.py",
+        "test_prepared_capture.py",
+        "test_present_window_leak.py",
+        "test_recorder_audio.py",
+        "test_recorder_fallback.py",
+        "test_recorder_high_rate_audio.py",
+        "test_recorder_thread.py",
+        "test_residual.py",
+        "test_residual_split.py",
+        "test_resize.py",
+        "test_skip_static.py",
+        "test_spout_adapter.py",
+        "test_spout_library.py",
+        "test_split.py",
+        "test_stdout_noise.py",
+        "test_wgc_capture.py",
+    }),
+    GROUP_GUI_E2E: frozenset({
+        "test_capture_visibility.py",
+        "test_focus_z_order.py",
+        "test_monitor_windows.py",
+        "test_overlay_toolwindow.py",
+        "test_reveal.py",
+        "test_taskbar_window.py",
+        "test_window_mode.py",
+        "test_window_mode_menu.py",
+    }),
+}
+
+
+def group_for_test(path: str) -> str:
+    """Return the single explicit group for a test, or fail closed."""
+    name = Path(path).name
+    matches = [group for group, names in TEST_GROUPS.items() if name in names]
+    if not matches:
+        raise ValueError(f"unrouted test: {name}")
+    if len(matches) != 1:
+        raise ValueError(f"test has multiple groups: {name} -> {matches}")
+    return matches[0]
 
 
 def tracked_tests() -> list:
     try:
         out = subprocess.check_output(["git", "ls-files", "tests/test_*.py"], cwd=ROOT,
                                       text=True, encoding="utf-8", errors="replace")
-        names = [n.strip() for n in out.splitlines() if n.strip()]
+        names = [Path(n.strip()).name for n in out.splitlines() if n.strip()]
         if names:
             return sorted(names)
     except Exception as exc:
         print(f"(git ls-files failed: {exc!r} - falling back to a glob)")
     return sorted(p.name for p in ROOT.glob("tests/test_*.py"))
+
+
+def classify_result(returncode: int | None, stdout: str = "", stderr: str = "",
+                    *, timed_out: bool = False, error: bool = False) -> str:
+    """Classify one child result without touching hardware or the filesystem."""
+    if timed_out:
+        return STATUS_TIMEOUT
+    if error or returncode is None:
+        return STATUS_ERROR
+    if returncode != 0:
+        return STATUS_FAIL
+    if CANONICAL_SKIP_RE.search(f"{stdout}\n{stderr}"):
+        return STATUS_SKIP
+    return STATUS_PASS
+
+
+def aggregate_results(results: list[dict]) -> dict:
+    """Return exact per-group and global counters for runner results."""
+    groups = {
+        group: {status: 0 for status in STATUS_ORDER}
+        for group in GROUP_ORDER
+    }
+    total = {status: 0 for status in STATUS_ORDER}
+    for result in results:
+        group = result.get("group")
+        status = result.get("status")
+        if group not in groups:
+            raise ValueError(f"unknown result group: {group!r}")
+        if status not in total:
+            raise ValueError(f"unknown result status: {status!r}")
+        groups[group][status] += 1
+        total[status] += 1
+    return {"groups": groups, "global": total}
+
+
+def exit_code_for_results(results: list[dict]) -> int:
+    """FAIL/ERROR/TIMEOUT and an empty run are always non-zero."""
+    if not results:
+        return 1
+    return int(any(r.get("status") in BLOCKING_STATUSES for r in results))
+
+
+def build_jobs(test_names: list[str], argv: list[str]) -> list[dict]:
+    """Build the run plan while preserving --only/--no-smoke/--gui."""
+    only = None
+    if "--only" in argv:
+        index = argv.index("--only")
+        if index + 1 >= len(argv):
+            raise ValueError("--only requires a test-name fragment")
+        only = argv[index + 1]
+
+    jobs: list[dict] = []
+    if only is None:
+        jobs.append({
+            "label": "static checks",
+            "args": ["autocheck.py"],
+            "note": "build, archive, docs, git",
+            "group": GROUP_UNIT_STATIC,
+        })
+    for raw_name in sorted(test_names):
+        name = Path(raw_name).name
+        if only is not None and only not in name:
+            continue
+        jobs.append({
+            "label": name,
+            "args": [name],
+            "note": ABOUT.get(name, ""),
+            "group": group_for_test(name),
+        })
+    if only is None and "--no-smoke" not in argv:
+        jobs.append({
+            "label": "smoke",
+            "args": ["autocheck.py", "--smoke"],
+            "note": "launch -> processing -> exit",
+            "group": GROUP_GPU,
+        })
+    if "--gui" in argv:
+        jobs.append({
+            "label": "GUI cycle",
+            "args": ["autocheck.py", "--gui"],
+            "note": "launch -> record -> exit",
+            "group": GROUP_GUI_E2E,
+        })
+
+    # Stable sort keeps alphabetical test order inside each execution class.
+    rank = {group: index for index, group in enumerate(GROUP_ORDER)}
+    return sorted(jobs, key=lambda job: rank[job["group"]])
 
 
 def settle(limit: float = SETTLE_LIMIT) -> float:
@@ -184,15 +467,17 @@ def settle(limit: float = SETTLE_LIMIT) -> float:
     return time.monotonic() - started
 
 
-def run(label: str, args: list, note: str = "") -> dict:
-    print(f"\n>>> {label}" + (f"  ({note})" if note else ""))
-    waited = settle()
-    SETTLES.append((label, waited))
-    if waited > 0.5:
-        print(f"    (waited {waited:.1f}s for the previous test's "
-              f"processes to exit)")
-    started = time.monotonic()
+def run(label: str, args: list, note: str = "",
+        group: str = GROUP_UNIT_STATIC) -> dict:
+    print(f"\n>>> [{group}] {label}" + (f"  ({note})" if note else ""))
+    started = None
     try:
+        waited = settle()
+        SETTLES.append((label, waited))
+        if waited > 0.5:
+            print(f"    (waited {waited:.1f}s for the previous test's "
+                  f"processes to exit)")
+        started = time.monotonic()
         # Only file arguments get the tests/ prefix - flags (--smoke,
         # --gui) must pass through untouched, otherwise autocheck.py runs
         # without its flag and fails on the stale zip instead of doing
@@ -203,64 +488,89 @@ def run(label: str, args: list, note: str = "") -> dict:
                            capture_output=True, text=True, env=CHILD_ENV,
                            encoding="utf-8", errors="replace")
         took = time.monotonic() - started
-        ok = r.returncode == 0
-        tail = [l for l in (r.stdout or "").splitlines() if l.strip()][-3:]
-        if not ok:
-            tail = ([l for l in (r.stdout or "").splitlines() if l.strip()][-8:]
-                    or [(r.stderr or "").strip()[-400:]])
+        status = classify_result(r.returncode, r.stdout or "", r.stderr or "")
+        lines = [line for stream in (r.stdout or "", r.stderr or "")
+                 for line in stream.splitlines() if line.strip()]
+        tail_size = 8 if status in BLOCKING_STATUSES else 3
+        tail = lines[-tail_size:]
+        if status == STATUS_SKIP:
+            skip_lines = [line for line in lines
+                          if CANONICAL_SKIP_RE.match(line)]
+            if skip_lines and skip_lines[-1] not in tail:
+                tail = [skip_lines[-1]] + tail[-2:]
         for l in tail:
             print(f"    {l}")
-        print(f"    [{'PASS' if ok else 'FAIL'}] {took:.1f}s")
-        return {"label": label, "ok": ok, "took": took}
+        print(f"    [{status}] {took:.1f}s")
+        return {"label": label, "group": group,
+                "status": status, "took": took}
     except subprocess.TimeoutExpired:
-        took = time.monotonic() - started
-        print(f"    [FAIL] timed out after {took:.0f}s")
-        return {"label": label, "ok": False, "took": took}
+        took = 0.0 if started is None else time.monotonic() - started
+        print(f"    [TIMEOUT] after {took:.0f}s")
+        return {"label": label, "group": group,
+                "status": STATUS_TIMEOUT, "took": took}
+    except Exception as exc:
+        took = 0.0 if started is None else time.monotonic() - started
+        print(f"    [ERROR] {exc!r}")
+        return {"label": label, "group": group,
+                "status": STATUS_ERROR, "took": took}
+
+
+def _format_counts(counts: dict) -> str:
+    return " ".join(f"{status}={counts[status]}" for status in STATUS_ORDER)
+
+
+def print_summary(results: list[dict]) -> None:
+    summary = aggregate_results(results)
+    print("\n" + "=" * 70)
+    width = max(len(r["label"]) for r in results)
+    for result in results:
+        print(f"{result['status']:<7} [{result['group']:<11}] "
+              f"{result['label']:<{width}}  {result['took']:6.1f}s")
+
+    print("-" * 70)
+    for group in GROUP_ORDER:
+        print(f"{group:<11} {_format_counts(summary['groups'][group])}")
+    print(f"{'GLOBAL':<11} {_format_counts(summary['global'])}")
+
+    total_time = sum(result["took"] for result in results)
+    if SETTLES:
+        worst_label, worst = max(SETTLES, key=lambda item: item[1])
+        print(f"settle: {sum(seconds for _, seconds in SETTLES):.1f}s total, "
+              f"longest {worst:.1f}s before {worst_label}")
+    print("=" * 70)
+
+    blocking = [r for r in results if r["status"] in BLOCKING_STATUSES]
+    if blocking:
+        labels = ", ".join(f"{r['label']} ({r['status']})" for r in blocking)
+        print(f"RESULT: FAIL - {len(blocking)} blocking result(s): {labels}")
+    else:
+        skipped = summary["global"][STATUS_SKIP]
+        print(f"RESULT: PASS - {len(results)} checks, {skipped} skipped, "
+              f"{total_time:.0f}s")
 
 
 def main() -> int:
-    only = None
-    if "--only" in sys.argv:
-        only = sys.argv[sys.argv.index("--only") + 1]
     if not PY.exists():
         print(f"no {PY} - run this with the bundled runtime")
+        return 1
+
+    try:
+        jobs = build_jobs(tracked_tests(), sys.argv[1:])
+    except ValueError as exc:
+        print(f"RESULT: ERROR - {exc}")
+        return 1
+    if not jobs:
+        print("RESULT: ERROR - no tests selected")
         return 1
 
     print(f"NeuralScreen test run - {ROOT}")
     print("The screen is taken over a few times; leave the machine alone.")
     print("=" * 70)
-    results = []
-
-    if only is None:
-        results.append(run("static checks", ["autocheck.py"],
-                           "build, archive, docs, git"))
-    for name in tracked_tests():
-        if only is not None and only not in name:
-            continue
-        results.append(run(name, [name], ABOUT.get(name, "")))
-    if only is None and "--no-smoke" not in sys.argv:
-        results.append(run("smoke", ["autocheck.py", "--smoke"],
-                           "launch -> processing -> exit"))
-    if "--gui" in sys.argv:
-        results.append(run("GUI cycle", ["autocheck.py", "--gui"],
-                           "launch -> record -> exit"))
-
-    print("\n" + "=" * 70)
-    width = max(len(r["label"]) for r in results)
-    for r in results:
-        print(f"{'PASS' if r['ok'] else 'FAIL'}  {r['label']:<{width}}  {r['took']:6.1f}s")
-    failed = [r["label"] for r in results if not r["ok"]]
-    total = sum(r["took"] for r in results)
-    if SETTLES:
-        worst_label, worst = max(SETTLES, key=lambda x: x[1])
-        print(f"settle: {sum(s for _, s in SETTLES):.1f}s total, "
-              f"longest {worst:.1f}s before {worst_label}")
-    print("=" * 70)
-    if failed:
-        print(f"RESULT: {len(failed)} of {len(results)} FAILED in {total:.0f}s - {failed}")
-        return 1
-    print(f"RESULT: all {len(results)} green in {total:.0f}s")
-    return 0
+    SETTLES.clear()
+    results = [run(job["label"], job["args"], job["note"], job["group"])
+               for job in jobs]
+    print_summary(results)
+    return exit_code_for_results(results)
 
 
 if __name__ == "__main__":

@@ -18,11 +18,11 @@
         "size": 1689
       },
       {
-        "git_blob": "a77cebb0cf8f3fdf33083fb76699fe9f280c616b",
+        "git_blob": "17c7b971a45ca3eaa419765eba76d7d9f287b83c",
         "origin": "git",
         "path": "LICENSE",
-        "sha256": "9b1aedc3072f07ebdba99414b6bed69f49bf3be08571787cc019f59b6495116c",
-        "size": 1288
+        "sha256": "11d4501711908c067388e8a75e57c9801a9228e22d532bd66bc1be02b56824dc",
+        "size": 4163
       },
       {
         "git_blob": "10d2717f9573783ebed54e3f916f5986388727f2",
@@ -52,18 +52,18 @@
         "size": 2614
       },
       {
-        "git_blob": "0e88d3401179f215fb2644efe8ee219eeaf3b7b3",
+        "git_blob": "65b1f8e0c3dc147498a7e6f9021ed72938baf8c3",
         "origin": "git",
         "path": "README.md",
-        "sha256": "069e91a51fa8ac03faffd19f36690ffb3ba306849d35cf300d0816c4f934fafc",
-        "size": 10911
+        "sha256": "d309e003d2aaa690a85ca9ce41c93331a928f57b94c45b51ed42fd54fb262ca9",
+        "size": 10996
       },
       {
-        "git_blob": "7a48311b713bf77faf33b923e7870ef0d6851c29",
+        "git_blob": "1d8376fa0a83b3598889d3a60d5101aaf114803e",
         "origin": "git",
         "path": "README.ru.md",
-        "sha256": "863cf923b24a6ec92bd2b4f17789ee2822ec7d2d0b9f8f6864a2dbc04ae3ec96",
-        "size": 17696
+        "sha256": "c41c26849cafac71831e1b623f5e165046cae9ab4120103722a8cc7a687bd5f2",
+        "size": 17769
       },
       {
         "git_blob": "e0d6313ba5970ecbb0715c997fa9455f62455c43",
@@ -8164,7 +8164,7 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "1a0e27b5216beaf3264dc00aaf08698984abffc0e1f4fd8ee2f05f38f88fb64a"
+    "tree_sha256": "f764b8c7361dca5917d0deae48576dfada9c80b9d90531af8ec42b477db419b4"
   },
   "product": "NeuralScreen",
   "runtime": {
@@ -14734,11 +14734,11 @@
       "size": 1689
     },
     {
-      "git_blob": "a77cebb0cf8f3fdf33083fb76699fe9f280c616b",
+      "git_blob": "17c7b971a45ca3eaa419765eba76d7d9f287b83c",
       "path": "LICENSE",
       "role": "shipped-resource",
-      "sha256": "9b1aedc3072f07ebdba99414b6bed69f49bf3be08571787cc019f59b6495116c",
-      "size": 1288
+      "sha256": "11d4501711908c067388e8a75e57c9801a9228e22d532bd66bc1be02b56824dc",
+      "size": 4163
     },
     {
       "git_blob": "10d2717f9573783ebed54e3f916f5986388727f2",
@@ -14762,18 +14762,18 @@
       "size": 2614
     },
     {
-      "git_blob": "0e88d3401179f215fb2644efe8ee219eeaf3b7b3",
+      "git_blob": "65b1f8e0c3dc147498a7e6f9021ed72938baf8c3",
       "path": "README.md",
       "role": "shipped-resource",
-      "sha256": "069e91a51fa8ac03faffd19f36690ffb3ba306849d35cf300d0816c4f934fafc",
-      "size": 10911
+      "sha256": "d309e003d2aaa690a85ca9ce41c93331a928f57b94c45b51ed42fd54fb262ca9",
+      "size": 10996
     },
     {
-      "git_blob": "7a48311b713bf77faf33b923e7870ef0d6851c29",
+      "git_blob": "1d8376fa0a83b3598889d3a60d5101aaf114803e",
       "path": "README.ru.md",
       "role": "shipped-resource",
-      "sha256": "863cf923b24a6ec92bd2b4f17789ee2822ec7d2d0b9f8f6864a2dbc04ae3ec96",
-      "size": 17696
+      "sha256": "c41c26849cafac71831e1b623f5e165046cae9ab4120103722a8cc7a687bd5f2",
+      "size": 17769
     },
     {
       "git_blob": "e0d6313ba5970ecbb0715c997fa9455f62455c43",
@@ -14804,11 +14804,11 @@
       "size": 17006
     },
     {
-      "git_blob": "46e9f0603a91971e5b658ba4e69d347f9f6add5a",
+      "git_blob": "0bb7f8bab5acc6808b7189de90a35ddd2b989702",
       "path": "build_release_zip.py",
       "role": "version-source",
-      "sha256": "842e8bc2a34e534a018fa137956ae5935b88f29a79a5763cd941f488d240ce5f",
-      "size": 34301
+      "sha256": "08d8c4fce20f3beb29f61cd49c0aedcb5facaa06002918fd84b53da3c7daa3f2",
+      "size": 34316
     },
     {
       "git_blob": "ed044c27ac9d0848d3ce443a4de3760fe369e1e0",
@@ -15437,11 +15437,11 @@
   "version": "1.13.0",
   "version_sources": [
     {
-      "git_blob": "46e9f0603a91971e5b658ba4e69d347f9f6add5a",
+      "git_blob": "0bb7f8bab5acc6808b7189de90a35ddd2b989702",
       "path": "build_release_zip.py",
       "role": "version-source",
-      "sha256": "842e8bc2a34e534a018fa137956ae5935b88f29a79a5763cd941f488d240ce5f",
-      "size": 34301,
+      "sha256": "08d8c4fce20f3beb29f61cd49c0aedcb5facaa06002918fd84b53da3c7daa3f2",
+      "size": 34316,
       "values": {
         "VERSION": "1.13.0"
       }

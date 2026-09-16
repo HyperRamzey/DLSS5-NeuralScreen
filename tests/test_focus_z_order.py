@@ -19,15 +19,19 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from ctypes import wintypes
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import autocheck  # noqa: E402
+
 PY = BASE / "runtime" / "python.exe"
 PYW = BASE / "runtime" / "pythonw.exe"
-CONFIG = BASE / "config.json"
 LOG = BASE / "NeuralScreen.log"
+NR_FRAME_MARKER = autocheck.NR_FRAME_MARKER
 
 TARGET_TITLE = "NeuralScreen focus z-order target"
 TARGET_SIZE = (960, 540)
@@ -261,10 +265,10 @@ def _wait_fresh_nr(offset: int, timeout: float = 60.0) -> str:
         text = _log_since(offset)
         if "NR OFF" in text:
             raise RuntimeError("fresh launch log contains NR OFF")
-        if "NR ON | FPS" in text:
+        if NR_FRAME_MARKER in text:
             return text
         time.sleep(0.25)
-    raise RuntimeError("no fresh NR ON | FPS output")
+    raise RuntimeError("no fresh NR processing-rate output")
 
 
 def _wait_newer_nr(offset: int, previous_count: int,
@@ -274,10 +278,10 @@ def _wait_newer_nr(offset: int, previous_count: int,
         text = _log_since(offset)
         if "NR OFF" in text:
             raise RuntimeError("fresh log contains NR OFF")
-        if text.count("NR ON | FPS") > previous_count:
+        if text.count(NR_FRAME_MARKER) > previous_count:
             return text
         time.sleep(0.25)
-    raise RuntimeError("NR ON | FPS output did not advance after the focus cycles")
+    raise RuntimeError("NR processing-rate output did not advance after the focus cycles")
 
 
 def _mutex_exists() -> bool:
@@ -439,7 +443,6 @@ def main() -> int:
         print("FAIL: NeuralScreen is already running (mutex or exact output window)")
         return 1
 
-    original_config: bytes | None = None
     original_foreground: int | None = None
     cursor: wintypes.POINT | None = None
     original_numlock: bool | None = None
@@ -448,6 +451,7 @@ def main() -> int:
     app = None
     worker_pid = 0
     worker_handle = None
+    test_config_dir = None
     result = 1
     cleanup_failures: list[str] = []
     try:
@@ -456,18 +460,18 @@ def main() -> int:
         if not user32.GetCursorPos(ctypes.byref(cursor)):
             raise RuntimeError("could not save the cursor position")
         original_numlock = _numlock_on()
-        original_config = CONFIG.read_bytes()
         if not original_numlock:
             _toggle_numlock()
 
-        cfg = json.loads(original_config.decode("utf-8"))
-        cfg.update({
+        cfg = autocheck.shipped_config({
             "worker_present": True,
             "capture_in_worker": True,
             "fullscreen": True,
             "open_menu_on_start": True,
         })
-        CONFIG.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        test_config_dir = tempfile.TemporaryDirectory(prefix="ns-focus-")
+        test_config = Path(test_config_dir.name) / "config.json"
+        test_config.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         log_offset = _log_offset()
 
         target = subprocess.Popen(
@@ -488,10 +492,11 @@ def main() -> int:
             lambda: _find_window("pygame", AWAY_TITLE, pid=away.pid),
             10.0, "the exact focus-away helper window")
 
-        app = subprocess.Popen([str(PYW), str(BASE / "main.py")], cwd=str(BASE),
-                               creationflags=subprocess.CREATE_NO_WINDOW)
+        app = subprocess.Popen(
+            [str(PYW), str(BASE / "main.py"), "--config", str(test_config)],
+            cwd=str(BASE), creationflags=subprocess.CREATE_NO_WINDOW)
         text = _wait_fresh_nr(log_offset)
-        nr_on_count = text.count("NR ON | FPS")
+        nr_on_count = text.count(NR_FRAME_MARKER)
 
         picture, worker_pid = _wait_window(_find_present, 30.0,
                                            "the exact NeuralScreenPresent window")
@@ -540,7 +545,7 @@ def main() -> int:
 
         tail = _wait_newer_nr(log_offset, nr_on_count)
         print(f"PASS: HUD > picture > target for five focus cycles, worker pid {worker_pid}; "
-              f"fresh NR ON lines {nr_on_count}->{tail.count('NR ON | FPS')}")
+              f"fresh NR ON lines {nr_on_count}->{tail.count(NR_FRAME_MARKER)}")
         result = 0
     except Exception as exc:
         print(f"FAIL: {exc}")
@@ -569,16 +574,11 @@ def main() -> int:
         except Exception as exc:
             cleanup_failures.append(f"NeuralScreen worker handle close failed: {exc}")
         try:
-            if original_config is None:
-                cleanup_failures.append("config baseline was not captured")
-            else:
-                CONFIG.write_bytes(original_config)
-                if CONFIG.read_bytes() != original_config:
-                    cleanup_failures.append("config.json bytes were not restored")
-                else:
-                    print("config restored: yes")
+            if test_config_dir is not None:
+                test_config_dir.cleanup()
+                print("user config untouched: yes")
         except Exception as exc:
-            cleanup_failures.append(f"config restore failed: {exc}")
+            cleanup_failures.append(f"temporary config cleanup failed: {exc}")
 
         try:
             if cursor is None:

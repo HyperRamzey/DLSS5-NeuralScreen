@@ -149,7 +149,7 @@ def main() -> int:
     failures = []
     offset = autocheck.launch(overrides)
     try:
-        if not autocheck.wait_for(offset, "NR ON | FPS", 30.0):
+        if not autocheck.wait_for(offset, autocheck.NR_FRAME_MARKER, 30.0):
             print("FAIL: NeuralScreen did not start processing")
             return 1
         # The menu is open at start (the config says so). The overlay holds
@@ -172,8 +172,8 @@ def main() -> int:
             return 1
         # The switch overlay (blur + spinner) is up while the new worker
         # warms up; it comes down on the first processed frame. Waiting for
-        # "NR ON | FPS" is NOT enough: that line is printed every frame and
-        # the PRE-SWITCH one is already in the log, so the wait returns
+        # A generic NR frame line is NOT enough: a pre-switch line is already
+        # in the log, so such a wait returns
         # instantly and the test captures the screen under the veil (0.0%
         # panel in the suite). The exact signal is the overlay coming down.
         if autocheck.wait_for(offset, "switch overlay OFF", 30.0) is None:

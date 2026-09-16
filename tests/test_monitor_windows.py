@@ -17,6 +17,7 @@ without that Windows reports scaled coordinates and a window at (220, 160)
 comes back as (176, 128) on a 125% display.
 """
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -34,6 +35,7 @@ import autocheck  # noqa: E402
 ORIGIN = (220, 160)
 SHIM = '''import sys
 sys.path.insert(0, r"{root}")
+sys.argv = [sys.argv[0], "--config", r"{config}"]
 import capture
 capture.monitor_origin = lambda name: {origin}
 import main
@@ -88,14 +90,20 @@ def main() -> int:
         print("FAIL: a copy of the program is already running - close it first")
         return 1
 
-    shim = Path(tempfile.mkdtemp(prefix="ns-origin-")) / "run_at_origin.py"
-    shim.write_text(SHIM.format(root=str(BASE), origin=repr(ORIGIN)),
+    work_dir = tempfile.TemporaryDirectory(prefix="ns-origin-")
+    work = Path(work_dir.name)
+    config = work / "config.json"
+    config.write_text(json.dumps(autocheck.shipped_config(), indent=2) + "\n",
+                      encoding="utf-8")
+    shim = work / "run_at_origin.py"
+    shim.write_text(SHIM.format(root=str(BASE), config=str(config),
+                                origin=repr(ORIGIN)),
                     encoding="utf-8")
     offset = autocheck.log_offset()
     proc = subprocess.Popen([str(BASE / "runtime" / "pythonw.exe"), str(shim)],
                             cwd=str(BASE))
     try:
-        if autocheck.wait_for(offset, "NR ON | FPS", 60.0) is None:
+        if autocheck.wait_for(offset, autocheck.NR_FRAME_MARKER, 60.0) is None:
             print("FAIL: the pipeline never came up")
             return 1
 
@@ -130,6 +138,7 @@ def main() -> int:
             proc.wait(timeout=15)
         except Exception:
             proc.kill()
+        work_dir.cleanup()
 
     for f in failures:
         print("FAIL:", f)

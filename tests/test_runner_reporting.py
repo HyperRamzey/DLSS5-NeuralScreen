@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import autocheck
 import run_tests as runner
 
 
@@ -53,6 +54,16 @@ class ResultClassificationTests(unittest.TestCase):
             runner.classify_result(None, error=True),
             runner.STATUS_ERROR,
         )
+
+
+class AutocheckLogContractTests(unittest.TestCase):
+    def test_honest_nr_rate_line_is_the_gui_liveness_contract(self) -> None:
+        line = ("[main] NR ON | NR  59.8 fps | skipped 7 | frames 321 | "
+                "work 1664x936 | scene 0.012")
+        self.assertIn(autocheck.NR_FRAME_MARKER, line)
+        self.assertEqual(autocheck.nr_stats(line), [(59.8, 321)])
+        self.assertEqual(autocheck.nr_stats(
+            "[main] NR ON | FPS 59.8 | frames 321"), [])
 
 
 class AggregationTests(unittest.TestCase):

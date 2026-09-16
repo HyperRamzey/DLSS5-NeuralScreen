@@ -32,9 +32,7 @@ Run:  runtime\\python.exe test_window_mode.py
 """
 import ctypes
 import ctypes.wintypes
-import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -196,6 +194,13 @@ def main() -> int:
             pump(0.4)
             if user32.GetForegroundWindow() == hwnd:
                 return True
+        foreground = int(user32.GetForegroundWindow() or 0)
+        cls = ctypes.create_unicode_buffer(128)
+        title = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(ctypes.c_void_p(foreground), cls, len(cls))
+        user32.GetWindowTextW(ctypes.c_void_p(foreground), title, len(title))
+        print(f"    focus diagnostic: target=0x{hwnd:X}, "
+              f"foreground=0x{foreground:X} {cls.value!r} {title.value!r}")
         return False
 
     def menu_change(cam, rect) -> float:
@@ -260,13 +265,11 @@ def main() -> int:
     import dxcam
     cam = dxcam.create(output_idx=0, output_color="RGB")
     failures = []
-    import json
     global autocheck_json_cfg
-    autocheck_json_cfg = json.loads(subprocess.check_output(
-        ["git", "show", "HEAD:config.json"], cwd=BASE))
+    autocheck_json_cfg = autocheck.shipped_config()
     offset = autocheck.launch()
     try:
-        if not wait_log(offset, "NR ON | FPS", 30.0):
+        if not wait_log(offset, autocheck.NR_FRAME_MARKER, 30.0):
             print("FAIL: NeuralScreen did not start processing")
             return 1
         # The overlay opens its menu on start and takes both the focus and the
@@ -308,7 +311,7 @@ def main() -> int:
         mark = autocheck.log_offset()
         pump(4.0)
         after = autocheck.log_since(mark)
-        if "NR ON | FPS" not in after:
+        if autocheck.NR_FRAME_MARKER not in after:
             failures.append("no frames in window mode - the pipeline stalled")
         if "back to full screen" in after:
             failures.append("window mode dropped itself back to full screen")
@@ -447,7 +450,7 @@ def main() -> int:
                 failures.append("switching back kept the window size")
         mark = autocheck.log_offset()
         pump(4.0)
-        if "NR ON | FPS" not in autocheck.log_since(mark):
+        if autocheck.NR_FRAME_MARKER not in autocheck.log_since(mark):
             failures.append("no frames after switching back")
 
         # 8. On the whole screen the hiding is mandatory again: the input is

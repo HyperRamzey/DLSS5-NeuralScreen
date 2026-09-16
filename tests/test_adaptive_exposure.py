@@ -14,10 +14,12 @@ Checked:
   EMA converges to the target.
 """
 import math
+import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -27,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 LOG = BASE / "NeuralScreen.log"
 PY = BASE / "runtime" / "python.exe"
+
+import autocheck  # noqa: E402
 
 
 def _smoothstep(t: float) -> float:
@@ -42,35 +46,40 @@ def _target(avg: float, dark: float, lit: float, mn: float, mx: float) -> float:
 def _run_worker(env_extra: dict) -> str:
     LOG.write_text("", encoding="utf-8")
     env = dict(os.environ, NS_PHASE="1", **env_extra)
-    proc = subprocess.Popen([str(PY), "-u", "main.py"], cwd=str(BASE),
-                            env=env, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
-    try:
-        deadline = time.time() + 30
-        pw_line = None
-        nr_line = None
-        while time.time() < deadline:
-            text = LOG.read_text(encoding="utf-8", errors="replace")
-            if pw_line is None:
-                m = re.search(r"\[pw\] adaptive exposure on", text)
-                if m:
-                    pw_line = m.group(0)
-            if nr_line is None and "NR ON" in text:
-                nr_line = "NR ON"
-            if (pw_line or "NS_PW=0" in str(env_extra)) and nr_line:
-                break
-            time.sleep(0.5)
-    finally:
-        proc.terminate()
+    with tempfile.TemporaryDirectory(prefix="ns-adaptive-") as temporary:
+        config = Path(temporary) / "config.json"
+        config.write_text(json.dumps(autocheck.shipped_config(), indent=2) + "\n",
+                          encoding="utf-8")
+        proc = subprocess.Popen(
+            [str(PY), "-u", "main.py", "--config", str(config)],
+            cwd=str(BASE), env=env, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
         try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        # terminate() kills only python.exe - the worker (nvngx.dll) is a
-        # child of main.py and survives, which makes the next GUI test fail
-        # with "NeuralScreen is already running". Kill it by name.
-        subprocess.run(["taskkill", "/F", "/IM", "nvngx.dll"],
-                       capture_output=True)
+            deadline = time.time() + 30
+            pw_line = None
+            nr_line = None
+            while time.time() < deadline:
+                text = LOG.read_text(encoding="utf-8", errors="replace")
+                if pw_line is None:
+                    m = re.search(r"\[pw\] adaptive exposure on", text)
+                    if m:
+                        pw_line = m.group(0)
+                if nr_line is None and "NR ON" in text:
+                    nr_line = "NR ON"
+                if (pw_line or "NS_PW=0" in str(env_extra)) and nr_line:
+                    break
+                time.sleep(0.5)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            # terminate() kills only python.exe - the worker (nvngx.dll) is a
+            # child of main.py and survives, which makes the next GUI test fail
+            # with "NeuralScreen is already running". Kill it by name.
+            subprocess.run(["taskkill", "/F", "/IM", "nvngx.dll"],
+                           capture_output=True)
     return (pw_line or "") + "|" + (nr_line or "")
 
 

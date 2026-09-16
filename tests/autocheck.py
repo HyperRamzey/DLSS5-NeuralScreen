@@ -16,6 +16,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent  # the project root (tests/ lives inside it)
 FAILS = []
 
+# The live-loop line is also consumed by GUI/smoke checks.  Keep its contract
+# in one place: v1.13 deliberately labels the neural-processing rate as
+# ``NR ... fps`` instead of presenting it as an ambiguous display FPS.
+NR_FRAME_MARKER = "NR ON | NR "
+NR_STATS_RE = re.compile(
+    r"NR ON \| NR\s+([\d.]+) fps \| skipped \d+ \| frames (\d+)"
+)
+
 NATIVE = ROOT / "native"
 NATIVE_INCLUDE_DIRS = (NATIVE, NATIVE / "include", NATIVE / "src")
 NATIVE_INCLUDE_RE = re.compile(
@@ -426,6 +434,29 @@ def log_since(offset):
         return fh.read()
 
 
+def shipped_config(overrides: dict | None = None) -> dict:
+    """Return the committed product defaults with optional test overrides."""
+    head = subprocess.run(
+        ["git", "show", "HEAD:config.default.json"], cwd=ROOT,
+        capture_output=True,
+    )
+    if head.returncode != 0:
+        detail = head.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"cannot read committed config.default.json: {detail or head.returncode}"
+        )
+    cfg = json.loads(head.stdout.decode("utf-8"))
+    if overrides:
+        cfg.update(overrides)
+    return cfg
+
+
+def nr_stats(text: str) -> list[tuple[float, int]]:
+    """Extract honest neural-rate/frame counters from current live-loop logs."""
+    return [(float(fps), int(frames))
+            for fps, frames in NR_STATS_RE.findall(text)]
+
+
 def running_instances():
     """Our processes that are already up.
 
@@ -452,14 +483,9 @@ def launch(overrides: dict | None = None):
     start, a theme) passes {key: value} - applied on top of the defaults,
     so the user's file is never touched at all.
     """
-    import json
     global _test_config_path
     offset = log_offset()
-    head = subprocess.run(["git", "show", "HEAD:config.default.json"], cwd=ROOT,
-                          capture_output=True)
-    cfg = json.loads(head.stdout.decode("utf-8"))
-    if overrides:
-        cfg.update(overrides)
+    cfg = shipped_config(overrides)
     path = ROOT / "_work" / "test-config.json"
     path.parent.mkdir(exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
@@ -512,7 +538,6 @@ def smoke_check():
     shared-memory one (it silently fell back to the pipe once - see the OUTS
     regression), and Ctrl+Alt+Q leaves nothing running.
     """
-    import re
     import time
 
     MIN_FRAMES, MIN_FPS = 60, 15.0
@@ -526,9 +551,9 @@ def smoke_check():
         fps, frames, deadline = 0.0, 0, time.monotonic() + 30.0
         while time.monotonic() < deadline:
             text = log_since(offset)
-            stats = re.findall(r"NR ON \| FPS\s+([\d.]+) \| frames (\d+)", text)
+            stats = nr_stats(text)
             if stats:
-                fps, frames = float(stats[-1][0]), int(stats[-1][1])
+                fps, frames = stats[-1]
                 if frames >= MIN_FRAMES:
                     break
             time.sleep(0.5)
@@ -558,7 +583,6 @@ def smoke_check():
 def gui_check():
     """The full GUI cycle: launch -> record -> exit. Requires NeuralScreen not
     to be running. ~50 seconds."""
-    import re
     import time
 
     busy = running_instances()
@@ -578,9 +602,9 @@ def gui_check():
     fps, frames, deadline = 0.0, 0, time.monotonic() + 40.0
     while time.monotonic() < deadline:
         text = log_since(offset)
-        stats = re.findall(r"NR ON \| FPS\s+([\d.]+) \| frames (\d+)", text)
+        stats = nr_stats(text)
         if stats:
-            fps, frames = float(stats[-1][0]), int(stats[-1][1])
+            fps, frames = stats[-1]
             if frames >= 300:
                 break
         time.sleep(0.5)

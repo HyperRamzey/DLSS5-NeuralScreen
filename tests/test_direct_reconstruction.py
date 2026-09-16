@@ -65,11 +65,13 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, NATIVE_DIR, OUT_FMT, OUT_MAGIC, PROFILES,
                   RACK_FMT, RESIZE_ACK_MAGIC, VIDEO_MAGIC, WORKER_EXE)
 from protocol import send_resize  # noqa: E402
+from worker_reply import read_reply  # noqa: E402
 
 WORK_W, WORK_H = 640, 360     # what the network sees
 FULL_W, FULL_H = 1280, 720    # what comes in and goes out
@@ -112,7 +114,7 @@ def send_and_get(worker, index: int, frame: np.ndarray,
     worker.stdin.write(frame.tobytes())
     worker.stdin.write(motion.tobytes())
     worker.stdin.flush()
-    head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
+    head = read_reply(worker.stdout, struct.calcsize(OUT_FMT))
     magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
     if magic != OUT_MAGIC:
         raise RuntimeError(f"foreign reply 0x{magic:08X}")
@@ -133,7 +135,7 @@ def flip(proc, params, nr_direct: bool) -> None:
     send_resize(proc, params, WORK_W, WORK_H, WARMUP,
                 FULL_W, FULL_H, nr_small=True, nr_direct=nr_direct)
     magic, ok, ngx, _r, _pts = struct.unpack(
-        RACK_FMT, read_exact(proc.stdout, struct.calcsize(RACK_FMT)))
+        RACK_FMT, read_reply(proc.stdout, struct.calcsize(RACK_FMT)))
     if magic != RESIZE_ACK_MAGIC:
         raise RuntimeError(f"expected RACK, got 0x{magic:08X}")
     if not ok:

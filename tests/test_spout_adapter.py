@@ -28,9 +28,12 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
-                  HEADER_FMT, OUT_FMT, PROFILES, VIDEO_MAGIC, WORKER_EXE)
+                  HEADER_FMT, OUT_FMT, OUT_MAGIC, PROFILES, VIDEO_MAGIC,
+                  WORKER_EXE)
+from worker_reply import read_exact, read_reply  # noqa: E402
 
 W, H = 640, 360
 LUID_LINE = re.compile(r"\[spout\] D3D11 on (.+) \(luid ([0-9A-F]{8}:[0-9A-F]{8}), "
@@ -75,12 +78,12 @@ def main() -> int:
                 proc.stdin.write(frame.tobytes())
                 proc.stdin.write(motion.tobytes())
                 proc.stdin.flush()
-                head = proc.stdout.read(struct.calcsize(OUT_FMT))
-                if len(head) < struct.calcsize(OUT_FMT):
-                    break
-                _m, _i, _ok, nbytes, _n, _p = struct.unpack(OUT_FMT, head)
+                head = read_reply(proc.stdout, struct.calcsize(OUT_FMT))
+                magic, _i, _ok, nbytes, _n, _p = struct.unpack(OUT_FMT, head)
+                if magic != OUT_MAGIC:
+                    raise AssertionError(f"foreign frame reply: 0x{magic:08X}")
                 if nbytes:
-                    proc.stdout.read(nbytes)
+                    read_exact(proc.stdout, nbytes)
             proc.stdin.close()
             proc.wait(timeout=20)
         finally:

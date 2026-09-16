@@ -34,6 +34,7 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 
 import pygame  # noqa: E402
@@ -43,19 +44,10 @@ from main import (FRAME_FLAG_NO_COLOR, FRAME_FLAG_WANT_PIXELS,  # noqa: E402
                   PROFILES, RACK_FMT, RESIZE_ACK_MAGIC, RESIZE_FMT,
                   RESIZE_MAGIC, VIDEO_MAGIC, WGC_ACK_FMT, WGC_ACK_MAGIC,
                   WORKER_EXE)
+from worker_reply import read_exact, read_reply  # noqa: E402
 
 W, H = 640, 360
 TARGET = (40, 150, 220)
-
-
-def read_exact(pipe, n: int) -> bytes:
-    buf = b""
-    while len(buf) < n:
-        chunk = pipe.read(n - len(buf))
-        if not chunk:
-            raise EOFError("the worker closed stdout")
-        buf += chunk
-    return buf
 
 
 def send_frame(proc, index, motion, want_pixels):
@@ -65,7 +57,7 @@ def send_frame(proc, index, motion, want_pixels):
     proc.stdin.write(motion.tobytes())
     proc.stdin.flush()
     magic, _i, ok, nbytes, _n, _p = struct.unpack(
-        OUT_FMT, read_exact(proc.stdout, struct.calcsize(OUT_FMT)))
+        OUT_FMT, read_reply(proc.stdout, struct.calcsize(OUT_FMT)))
     if magic != OUT_MAGIC:
         raise RuntimeError(f"foreign reply: 0x{magic:08X}")
     data = read_exact(proc.stdout, nbytes) if nbytes else b""
@@ -81,7 +73,7 @@ def send_resize(proc, w, h, params):
         float(params["skin_structure"]), 0, 0))
     proc.stdin.flush()
     magic, ok, _n, _r, _p = struct.unpack(
-        RACK_FMT, read_exact(proc.stdout, struct.calcsize(RACK_FMT)))
+        RACK_FMT, read_reply(proc.stdout, struct.calcsize(RACK_FMT)))
     if magic != RESIZE_ACK_MAGIC:
         raise RuntimeError(f"foreign reply to RNSZ: 0x{magic:08X}")
     return ok
@@ -117,7 +109,7 @@ def main() -> int:
             proc.stdin.flush()
             wire.send_wgc(proc, hwnd)
             ack = struct.unpack(WGC_ACK_FMT,
-                                read_exact(proc.stdout, struct.calcsize(WGC_ACK_FMT)))
+                                read_reply(proc.stdout, struct.calcsize(WGC_ACK_FMT)))
             if ack[0] != WGC_ACK_MAGIC or not ack[1]:
                 print(f"FAIL: the worker refused the window: {ack}")
                 return 1

@@ -29,6 +29,7 @@ from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, NATIVE_DIR, OUT_FMT, OUT_MAGIC, PROFILES,
                   RACK_FMT, RESIZE_ACK_MAGIC, RESIZE_FLAG_NR_SMALL, RESIZE_FMT,
                   RESIZE_MAGIC, VIDEO_MAGIC, WORKER_EXE)
+from worker_reply import read_reply  # noqa: E402
 
 FULL_W, FULL_H = 1920, 1080
 WORK_W, WORK_H = 1280, 720
@@ -87,7 +88,7 @@ def run_worker(small: bool) -> dict:
                                          FRAME_FLAG_WANT_PIXELS, i))
             proc.stdin.write(body)
             proc.stdin.flush()
-            head = read_exact(proc.stdout, struct.calcsize(OUT_FMT))
+            head = read_reply(proc.stdout, struct.calcsize(OUT_FMT))
             magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
             if magic != OUT_MAGIC or not ok:
                 raise RuntimeError(f"bad reply magic=0x{magic:08X} ok={ok} ngx=0x{ngx:08X}")
@@ -313,7 +314,7 @@ def check_live_switch(failures: list) -> None:
                                      FRAME_FLAG_WANT_PIXELS, index))
         proc.stdin.write(body)
         proc.stdin.flush()
-        head = read_exact(proc.stdout, struct.calcsize(OUT_FMT))
+        head = read_reply(proc.stdout, struct.calcsize(OUT_FMT))
         magic, _i, ok, nbytes, _n, _p = struct.unpack(OUT_FMT, head)
         if magic != OUT_MAGIC or not ok:
             raise RuntimeError("bad reply")
@@ -340,7 +341,7 @@ def check_live_switch(failures: list) -> None:
             float(params["local_structure"]), float(params["skin_structure"]),
             FULL_W, FULL_H))
         proc.stdin.flush()
-        ack = read_exact(proc.stdout, struct.calcsize(RACK_FMT))
+        ack = read_reply(proc.stdout, struct.calcsize(RACK_FMT))
         magic, ok, ngx, _r, _p = struct.unpack(RACK_FMT, ack)
         acked = magic == RESIZE_ACK_MAGIC and bool(ok)
         print(f"resize with the flag: acked={acked} ngx=0x{ngx:08X}")

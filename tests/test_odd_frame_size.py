@@ -22,6 +22,7 @@ BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
+from worker_reply import read_reply  # noqa: E402
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, OUT_FMT, OUT_MAGIC, PROFILES, VIDEO_MAGIC,
                   WORKER_EXE)
@@ -89,7 +90,7 @@ def main() -> int:
             worker.stdin.write(frame.tobytes())
             worker.stdin.write(motion.tobytes())
             worker.stdin.flush()
-            head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
+            head = read_reply(worker.stdout, struct.calcsize(OUT_FMT))
             magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
             if magic != OUT_MAGIC:
                 failures.append(f"foreign reply 0x{magic:08X}")
@@ -109,8 +110,16 @@ def main() -> int:
             worker.stdin.close()
         except Exception:
             pass
-        worker.wait(timeout=10)
-        if worker.returncode not in (0, None):
+        timed_out = False
+        try:
+            worker.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            worker.kill()
+            worker.wait(timeout=10)
+        if timed_out:
+            failures.append("the worker did not exit after stdin closed; killed")
+        elif worker.returncode not in (0, None):
             failures.append(f"the worker exited with code {worker.returncode}")
         err = worker.stderr.read().decode("utf-8", "replace")
         tail = [l for l in err.splitlines() if "feature 18" in l or "failed" in l]

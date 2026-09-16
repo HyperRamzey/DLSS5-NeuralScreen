@@ -41,6 +41,7 @@ from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, OUT_FMT, OUT_MAGIC, PROFILES, RACK_FMT,
                   RESIZE_ACK_MAGIC, RESIZE_FMT, RESIZE_MAGIC, VIDEO_MAGIC,
                   WORKER_EXE)
+from worker_reply import read_reply  # noqa: E402
 
 W, H = 1280, 720
 WARMUP = 8
@@ -75,7 +76,7 @@ def send_frame(worker, index: int, frame: np.ndarray, motion: np.ndarray):
     worker.stdin.write(frame.tobytes())
     worker.stdin.write(motion.tobytes())
     worker.stdin.flush()
-    head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
+    head = read_reply(worker.stdout, struct.calcsize(OUT_FMT))
     magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
     if magic != OUT_MAGIC or not ok or nbytes == 0:
         raise RuntimeError(f"bad reply magic=0x{magic:08X} ok={ok} bytes={nbytes}")
@@ -93,7 +94,7 @@ def send_params(worker, params, w=W, h=H):
         float(params["skin_structure"]), 0, 0))
     worker.stdin.flush()
     started = time.perf_counter()
-    ack = read_exact(worker.stdout, struct.calcsize(RACK_FMT))
+    ack = read_reply(worker.stdout, struct.calcsize(RACK_FMT))
     took = (time.perf_counter() - started) * 1000.0
     magic, ok, ngx, _r, _pts = struct.unpack(RACK_FMT, ack)
     if magic != RESIZE_ACK_MAGIC:

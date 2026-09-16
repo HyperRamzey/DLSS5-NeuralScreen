@@ -162,6 +162,7 @@ ABOUT = {
     "test_wgc_capture.py": "the worker captures one window (the single-window input)",
     "test_window_filter.py": "the window list holds only real taskbar windows",
     "test_window_labels.py": "window titles stay clean while HWND remains the identity",
+    "test_worker_reply.py": "raw native tests consume explicit CACK before command replies",
     "test_windows_page.py": "the windows page lists, highlights and switches",
     "test_window_mode.py": "the one-window hotkey switches the pipeline and back",
     "test_window_surround.py": "a window-sized frame's surround is keyed, the layer is really keyed",
@@ -278,6 +279,7 @@ TEST_GROUPS = {
         "test_window_labels.py",
         "test_window_surround.py",
         "test_windows_page.py",
+        "test_worker_reply.py",
     }),
     GROUP_WARP: frozenset({
         "test_hdr_shaders.py",

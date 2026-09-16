@@ -21,6 +21,7 @@ BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
+from worker_reply import read_reply  # noqa: E402
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, OUT_FMT, OUT_MAGIC, PROFILES, RACK_FMT,
                   RESIZE_ACK_MAGIC, RESIZE_FLAG_NR_SMALL, RESIZE_FMT,
@@ -61,7 +62,7 @@ def send_frame(worker, index: int, frame: np.ndarray, motion: np.ndarray) -> np.
     worker.stdin.write(frame.tobytes())
     worker.stdin.write(motion.tobytes())
     worker.stdin.flush()
-    head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
+    head = read_reply(worker.stdout, struct.calcsize(OUT_FMT))
     magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
     if magic != OUT_MAGIC or not ok:
         raise RuntimeError(f"bad reply magic=0x{magic:08X} ok={ok} ngx=0x{ngx:08X}")
@@ -77,7 +78,7 @@ def send_resize(worker, w: int, h: int, nr_small: bool, full_w: int = 0, full_h:
                                    flags, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0,
                                    full_w, full_h))
     worker.stdin.flush()
-    ack = read_exact(worker.stdout, struct.calcsize(RACK_FMT))
+    ack = read_reply(worker.stdout, struct.calcsize(RACK_FMT))
     magic, ok, ngx, _r, _pts = struct.unpack(RACK_FMT, ack)
     if magic != RESIZE_ACK_MAGIC:
         raise RuntimeError(f"foreign reply to RNSZ: 0x{magic:08X}")

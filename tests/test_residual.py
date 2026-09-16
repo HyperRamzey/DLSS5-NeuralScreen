@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, NATIVE_DIR, OUT_FMT, OUT_MAGIC, PROFILES,
                   VIDEO_MAGIC, WORKER_EXE)
+from worker_reply import read_reply  # noqa: E402
 
 FULL_W, FULL_H = 1920, 1080
 WORK_W, WORK_H = 1280, 720
@@ -92,7 +93,7 @@ def run_worker(residual: bool, strength: float = 1.0) -> dict:
                                          FRAME_FLAG_WANT_PIXELS, i))
             proc.stdin.write(body)
             proc.stdin.flush()
-            head = read_exact(proc.stdout, struct.calcsize(OUT_FMT))
+            head = read_reply(proc.stdout, struct.calcsize(OUT_FMT))
             magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
             if magic != OUT_MAGIC or not ok:
                 raise RuntimeError(f"bad reply magic=0x{magic:08X} ok={ok} ngx=0x{ngx:08X}")

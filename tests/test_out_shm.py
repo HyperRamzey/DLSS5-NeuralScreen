@@ -22,6 +22,8 @@ import numpy as np
 BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
+
+from worker_reply import read_reply  # noqa: E402
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, OUT_BYTES_IN_SHM, OUT_FMT, OUT_MAGIC,
                   OUTS_ACK_FMT, OUTS_ACK_MAGIC, OUTS_FMT, OUTS_MAGIC,
@@ -71,7 +73,7 @@ def send_frame(worker, index: int, frame: np.ndarray, motion: np.ndarray,
 
 def recv_result(worker, view):
     """Return (pixels, source) - 'shm' or 'pipe'."""
-    head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
+    head = read_reply(worker.stdout, struct.calcsize(OUT_FMT))
     magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
     assert magic == OUT_MAGIC, f"foreign reply 0x{magic:08X}"
     assert ok, f"ok=0, ngx=0x{ngx:08X}"
@@ -128,7 +130,7 @@ def main() -> int:
         worker.stdin.write(struct.pack(OUTS_FMT, OUTS_MAGIC, W, H, 0, 0,
                                        name.encode("ascii")))
         worker.stdin.flush()
-        ack = read_exact(worker.stdout, struct.calcsize(OUTS_ACK_FMT))
+        ack = read_reply(worker.stdout, struct.calcsize(OUTS_ACK_FMT))
         magic, ok, _r0, _r1, _pts = struct.unpack(OUTS_ACK_FMT, ack)
         print(f"OUTS: magic 0x{magic:08X}, ok={ok}")
         if magic != OUTS_ACK_MAGIC or not ok:
@@ -153,7 +155,7 @@ def main() -> int:
         worker.stdin.write(struct.pack(OUTS_FMT, OUTS_MAGIC, 0, 0, 0, 0,
                                        name.encode("ascii")))
         worker.stdin.flush()
-        ack = read_exact(worker.stdout, struct.calcsize(OUTS_ACK_FMT))
+        ack = read_reply(worker.stdout, struct.calcsize(OUTS_ACK_FMT))
         _m, ok, _r0, _r1, _p = struct.unpack(OUTS_ACK_FMT, ack)
         send_frame(worker, 4, frame, motion, reset=1)
         back_px, src = recv_result(worker, view)

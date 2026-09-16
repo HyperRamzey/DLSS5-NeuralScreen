@@ -32,22 +32,14 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, OUT_FMT, OUT_MAGIC, PROFILES, VIDEO_MAGIC,
                   WORKER_EXE)
+from worker_reply import read_exact, read_reply  # noqa: E402
 
 W, H = 640, 360
-
-
-def read_exact(pipe, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = pipe.read(n - len(buf))
-        if not chunk:
-            raise EOFError(f"the worker closed stdout (got {len(buf)} of {n})")
-        buf += chunk
-    return buf
 
 
 def run(shared: bool):
@@ -94,7 +86,7 @@ def run(shared: bool):
                 proc.stdin.write(frame.tobytes())
                 proc.stdin.write(motion.tobytes())
                 proc.stdin.flush()
-                head = read_exact(proc.stdout, struct.calcsize(OUT_FMT))
+                head = read_reply(proc.stdout, struct.calcsize(OUT_FMT))
                 magic, index, ok, nbytes, _ngx, _pts = struct.unpack(OUT_FMT, head)
                 replies.append((magic, index, ok, nbytes))
                 if magic != OUT_MAGIC:

@@ -23,9 +23,8 @@ import display as display_mod  # noqa: E402
 
 
 def _is_red(p) -> bool:
-    """The danger colour #BC4C2E = (188, 76, 46); the chroma key is
-    (255,0,255) - the blue channel separates them."""
-    return p.r > 150 and p.g < 100 and p.b < 100
+    """Recognise both theme danger reds; magenta chroma-key stays excluded."""
+    return p.r >= 140 and p.r > p.g * 1.8 and p.r > p.b * 1.8
 
 
 def main() -> int:

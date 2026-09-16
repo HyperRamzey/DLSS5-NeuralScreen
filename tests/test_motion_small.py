@@ -25,6 +25,7 @@ BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
+from worker_reply import read_reply  # noqa: E402
 from main import (FRAME_FLAG_MOTION_SMALL, FRAME_FLAG_WANT_PIXELS,  # noqa: E402
                   FRAME_FMT, FRAME_MAGIC, HEADER_FMT, MOTION_ACK_FMT,
                   MOTION_ACK_MAGIC, MOTION_FMT, MOTION_MAGIC, OUT_FMT,
@@ -62,7 +63,7 @@ def read_exact(pipe, n: int) -> bytes:
 def send_mots(worker, w: int, h: int) -> int:
     worker.stdin.write(struct.pack(MOTION_FMT, MOTION_MAGIC, w, h, 0, 0))
     worker.stdin.flush()
-    ack = read_exact(worker.stdout, struct.calcsize(MOTION_ACK_FMT))
+    ack = read_reply(worker.stdout, struct.calcsize(MOTION_ACK_FMT))
     magic, ok, _r1, _r2, _pts = struct.unpack(MOTION_ACK_FMT, ack)
     if magic != MOTION_ACK_MAGIC:
         raise RuntimeError(f"foreign reply to MOTS: 0x{magic:08X}")
@@ -77,7 +78,7 @@ def send_frame(worker, index: int, frame: np.ndarray, motion: np.ndarray,
     worker.stdin.write(frame.tobytes())
     worker.stdin.write(motion.tobytes())
     worker.stdin.flush()
-    head = read_exact(worker.stdout, struct.calcsize(OUT_FMT))
+    head = read_reply(worker.stdout, struct.calcsize(OUT_FMT))
     magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(OUT_FMT, head)
     if magic != OUT_MAGIC or not ok:
         raise RuntimeError(f"bad reply magic=0x{magic:08X} ok={ok} ngx=0x{ngx:08X}")

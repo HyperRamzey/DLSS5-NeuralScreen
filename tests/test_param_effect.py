@@ -41,12 +41,14 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 from main import (FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,  # noqa: E402
                   HEADER_FMT, NATIVE_DIR, OUT_FMT, OUT_MAGIC, RACK_FMT,
                   RESIZE_ACK_MAGIC, RESIZE_FMT, RESIZE_MAGIC, VIDEO_MAGIC,
                   WORKER_EXE)
+from worker_reply import read_reply  # noqa: E402
 
 W, H = 1280, 720
 WARMUP = 8
@@ -138,7 +140,7 @@ def pump(proc, frames=SETTLE, reset_first=True, collect=False):
         proc.stdin.write(BODY)
         proc.stdin.flush()
         magic, _idx, ok, nbytes, ngx, _pts = struct.unpack(
-            OUT_FMT, read_exact(proc.stdout, struct.calcsize(OUT_FMT)))
+            OUT_FMT, read_reply(proc.stdout, struct.calcsize(OUT_FMT)))
         if magic != OUT_MAGIC or not ok:
             raise RuntimeError(f"bad reply ok={ok} ngx=0x{ngx:08X}")
         if nbytes:
@@ -153,7 +155,7 @@ def apply(proc, p):
     proc.stdin.write(pack(RESIZE_FMT, RESIZE_MAGIC, p))
     proc.stdin.flush()
     magic, ok, ngx, _r, _p = struct.unpack(
-        RACK_FMT, read_exact(proc.stdout, struct.calcsize(RACK_FMT)))
+        RACK_FMT, read_reply(proc.stdout, struct.calcsize(RACK_FMT)))
     if magic != RESIZE_ACK_MAGIC or not ok:
         raise RuntimeError(f"the worker refused the parameters 0x{ngx:08X}")
 

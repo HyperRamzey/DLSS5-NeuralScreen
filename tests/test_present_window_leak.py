@@ -44,10 +44,12 @@ import numpy as np
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from main import (FRAME_FMT, FRAME_MAGIC, HEADER_FMT, OUT_FMT,  # noqa: E402
-                  PROFILES, VIDEO_MAGIC, WINDOW_ACK_FMT, WINDOW_ACK_MAGIC,
-                  WINDOW_FMT, WINDOW_MAGIC, WORKER_EXE)
+                  OUT_MAGIC, PROFILES, VIDEO_MAGIC, WINDOW_ACK_FMT,
+                  WINDOW_ACK_MAGIC, WINDOW_FMT, WINDOW_MAGIC, WORKER_EXE)
+from worker_reply import read_reply  # noqa: E402
 
 W, H = 640, 360
 CYCLES = 6
@@ -73,21 +75,11 @@ def present_windows(pid: int) -> int:
     return len(found)
 
 
-def read_exact(pipe, n: int) -> bytes:
-    buf = b""
-    while len(buf) < n:
-        chunk = pipe.read(n - len(buf))
-        if not chunk:
-            raise EOFError("the worker closed stdout")
-        buf += chunk
-    return buf
-
-
 def send_window(proc, w: int, h: int, flags: int) -> int:
     proc.stdin.write(struct.pack(WINDOW_FMT, WINDOW_MAGIC, w, h, flags, 0))
     proc.stdin.flush()
     magic, ok, _a, _b, _pts = struct.unpack(
-        WINDOW_ACK_FMT, read_exact(proc.stdout, struct.calcsize(WINDOW_ACK_FMT)))
+        WINDOW_ACK_FMT, read_reply(proc.stdout, struct.calcsize(WINDOW_ACK_FMT)))
     if magic != WINDOW_ACK_MAGIC:
         raise RuntimeError(f"foreign reply to WNDO: 0x{magic:08X}")
     return ok
@@ -128,7 +120,10 @@ def main() -> int:
                 proc.stdin.write(frame.tobytes())
                 proc.stdin.write(motion.tobytes())
                 proc.stdin.flush()
-                read_exact(proc.stdout, struct.calcsize(OUT_FMT))
+                magic, *_rest = struct.unpack(
+                    OUT_FMT, read_reply(proc.stdout, struct.calcsize(OUT_FMT)))
+                if magic != OUT_MAGIC:
+                    raise RuntimeError(f"foreign frame reply: 0x{magic:08X}")
                 open_count = present_windows(proc.pid)
                 send_window(proc, 0, 0, 0)      # WNDO with no size: close it
                 time.sleep(0.25)                # the thread has to finish

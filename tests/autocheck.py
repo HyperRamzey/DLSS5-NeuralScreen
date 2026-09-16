@@ -639,8 +639,8 @@ def main():
     print("RESULT: all checks PASS")
     if "--gui" not in sys.argv and "--smoke" not in sys.argv:
         print()
-        print("smoke (20 s):  runtime\\python.exe autocheck.py --smoke")
-        print("GUI part:      runtime\\python.exe autocheck.py --gui")
+        print("smoke (20 s):  runtime\\python.exe tests\\autocheck.py --smoke")
+        print("GUI part:      runtime\\python.exe tests\\autocheck.py --gui")
     return 0
 
 

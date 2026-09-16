@@ -1,329 +1,989 @@
-"""Build the NeuralScreen release archive: git files + artifacts + runtime.
+r"""Build a fail-closed NeuralScreen release set.
 
-The archive carries a VERSION.txt manifest (git commit, runtime SHA-256,
-target architectures) so a user can tell exactly which build they have.
-The build refuses to package a runtime whose kernels do not match the
-expected set (the v1.5.0 mistake: a zip that claimed "everything" but
-carried a Blackwell-only DLL).
+The release set consists of the application ZIP plus three public sidecars:
+``runtime-manifest.json`` pins every runtime byte and the complete tracked
+source/resource inventory; ``SHA256SUMS`` authenticates the ZIP, manifest and
+third-party notice. The ZIP carries the same manifest and notice, and its own
+member-level ``SHA256SUMS``.
+
+Normal use (after the release commit has been tagged):
+
+    runtime\python.exe build_release_zip.py v1.13.0
+
+The command deliberately refuses release candidates, dirty tracked trees and
+tags that do not resolve to HEAD. Ignored local files do not affect the gate.
 """
+from __future__ import annotations
+
+import argparse
+import collections
 import hashlib
+import json
+import ntpath
 import os
+import re
+import struct
 import subprocess
+import sys
+import tempfile
 import zipfile
-from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Iterable, Sequence
 
-# The script must work from any directory: every path is relative to git.
+
 BASE = Path(__file__).resolve().parent
-os.chdir(BASE)
+VERSION = "1.13.0"
+EXPECTED_TAG = f"v{VERSION}"
+TARGET_ARCHS = (
+    "RTX 30/40/50 (sm_86/89/120 kernels, spoof 0x1B0; "
+    "RTX 20 cannot run - below minimum)"
+)
+RUNTIME_MANIFEST = "runtime-manifest.json"
+THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.md"
+CHECKSUMS = "SHA256SUMS"
 
-VERSION = "1.12.0"
-# The bundle is architecture-agnostic by design: the dcc0dc24 runtime and
-# the 0x1B0 spoof work on RTX 30/40/50 (v1.3.0 behaviour). The manifest
-# still records what is inside so a mismatch is catchable.
-TARGET_ARCHS = "RTX 30/40/50 (sm_86/89/120 kernels, spoof 0x1B0; RTX 20 cannot run - below minimum)"
-
-files = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
-extra = [
-    # The tracked product defaults ship; config.json is created beside them
-    # on first launch and is never a release input.
+MANDATORY_FILES = (
     "config.default.json",
-    # The BYO folder doc ships so user installs have the drop location ready.
     "native/libraries/README.md",
     "native/nvngx_dlssg.dll",
     "resolution_limits.py",
     "NeuralScreen.exe",
     "NeuralScreen.vbs",
     "NeuralScreen-diag.vbs",
+    "README.md",
     "README.ru.md",
     "native/nvngx.dll",
-    # The module the NGX calls leave from. Its file name is what the
-    # feature library checks; without it Neural Rendering does not start.
     "native/nvngx.dll_ns-forwarder.dll",
     "native/nvngx_dlssnr.dll",
-]
-# tcl/tk stays out of the archive: the tkinter settings window is gone and the
-# whole interface lives in the overlay menu. Nothing in the project imports
-# tkinter (PIL/_tkinter_finder pulls it lazily and only for ImageTk).
-TK_SKIP = ("runtime/tcl/", "runtime/tcl86t.dll", "runtime/tk86t.dll",
-           "runtime/_tkinter.pyd", "runtime/Lib/tkinter/")
+    "native/Spout.dll",
+    "native/SpoutDX.dll",
+    RUNTIME_MANIFEST,
+    THIRD_PARTY_NOTICES,
+)
 
-# The runtime was assembled for other work and drags in packages the program
-# never touches: a web frontend, dataframes, a bundler. Checked through
-# sys.modules after importing every project module — only av, cv2, numpy, PIL,
-# pygame, pystray, dxcam and comtypes are needed. The rest is cut, ~130 MB
-# before compression.
+# Pinned individually in addition to the complete runtime tree digest.
+REQUIRED_RUNTIME_ARTIFACTS = (
+    "NeuralScreen.exe",
+    "native/nvngx.dll",
+    "native/nvngx.dll_ns-forwarder.dll",
+    "native/nvngx_dlssg.dll",
+    "native/nvngx_dlssnr.dll",
+    "native/Spout.dll",
+    "native/SpoutDX.dll",
+    "runtime/python.exe",
+    "runtime/pythonw.exe",
+)
+
+TK_SKIP = (
+    "runtime/tcl/",
+    "runtime/tcl86t.dll",
+    "runtime/tk86t.dll",
+    "runtime/_tkinter.pyd",
+    "runtime/Lib/tkinter/",
+)
+SP = "runtime/Lib/site-packages/"
 DROP_PACKAGES = {
-    # gradio and its surroundings
     "gradio", "gradio_client", "hf_gradio", "huggingface_hub", "hf_xet",
     "fastapi", "starlette", "uvicorn", "pydantic", "pydantic_core",
-    "annotated_types", "annotated_doc", "typing_inspection",
-    "safehttpx", "groovy", "pydub", "python_multipart", "multipart",
-    "orjson", "httpx", "httpcore", "h11", "anyio", "idna", "certifi",
-    "fsspec", "filelock", "jinja2", "markupsafe", "tqdm", "audioop",
-    "audioop_lts", "brotli", "_brotli", "yaml", "_yaml", "pyyaml",
-    "semantic_version", "tomlkit", "typer", "click", "shellingham",
-    "rich", "markdown_it", "markdown_it_py", "mdurl", "pygments",
-    # dataframes and time zones
-    "pandas", "pytz", "tzdata", "dateutil", "python_dateutil",
-    # bundler
-    "PyInstaller", "pyinstaller", "_pyinstaller_hooks_contrib",
-    "pyinstaller_hooks_contrib", "altgraph", "pefile", "peutils", "ordlookup",
-    "psutil",
-    # the end user has no use for a package manager
-    "pip",
-    # setuptools and its distutils shim: nothing in the project imports
-    # pkg_resources or setuptools (checked with grep over every module).
-    # ~2.8 MB of dead weight in the archive (audit #3, N2).
-    "setuptools", "pkg_resources", "_distutils_hack", "distutils-precedence.pth",
+    "annotated_types", "annotated_doc", "typing_inspection", "safehttpx",
+    "groovy", "pydub", "python_multipart", "multipart", "orjson", "httpx",
+    "httpcore", "h11", "anyio", "idna", "certifi", "fsspec", "filelock",
+    "jinja2", "markupsafe", "tqdm", "audioop", "audioop_lts", "brotli",
+    "_brotli", "yaml", "_yaml", "pyyaml", "semantic_version", "tomlkit",
+    "typer", "click", "shellingham", "rich", "markdown_it",
+    "markdown_it_py", "mdurl", "pygments", "pandas", "pytz", "tzdata",
+    "dateutil", "python_dateutil", "PyInstaller", "pyinstaller",
+    "_pyinstaller_hooks_contrib", "pyinstaller_hooks_contrib", "altgraph",
+    "pefile", "peutils", "ordlookup", "psutil", "pip", "setuptools",
+    "pkg_resources", "_distutils_hack", "distutils-precedence.pth",
 }
-SP = "runtime/Lib/site-packages/"
-
-# Dev-only files that must NOT reach the release archive (user rule
-# 2026-09-08: the archive contains only what the program needs to run).
 DEV_ONLY = {
-    "autocheck.py",
-    "run_tests.py",
-    "build_release_zip.py",
-    # A release-verification tool for the maintainer. It shipped to users and
-    # would fail on the first line of work: it reads build_release_zip.py,
-    # which is dev-only and not in the archive.
-    "verify_github.py",
-    # The docs folder holds the README screenshots - repository/release
-    # assets, not program code. The archive must contain exactly what the
-    # program needs to run (user rule 2026-09-08).
-    "docs/",
-    # Spout2 SDK dev baggage: the headers, the test tools and the build
-    # scripts are for the repository, not for the end user. The release
-    # needs only the two DLLs (Spout.dll, SpoutDX.dll) and the bridge
-    # sources that the worker links.
-    "native/include/spout/",
-    "native/spout_bridge.h",
-    "native/spout_bridge.cpp",
-    "native/spout_sender.cpp",
-    "native/spout_receiver.cpp",
-    "native/spout_roundtrip.cpp",
-    "native/spout_compile_check.cpp",
-    "native/spout_adapter_check.cpp",
-    "native/build-spout-test.bat",
-    "native/build-spout-check.bat",
-    "native/build-spout-adapter.bat",
+    "autocheck.py", "run_tests.py", "build_release_zip.py",
+    "verify_github.py", "docs/", "native/include/spout/",
+    "native/spout_bridge.h", "native/spout_bridge.cpp",
+    "native/spout_sender.cpp", "native/spout_receiver.cpp",
+    "native/spout_roundtrip.cpp", "native/spout_compile_check.cpp",
+    "native/spout_adapter_check.cpp", "native/build-spout-test.bat",
+    "native/build-spout-check.bat", "native/build-spout-adapter.bat",
     "native/SpoutDX.lib",
 }
+META_FILES = {RUNTIME_MANIFEST, THIRD_PARTY_NOTICES, CHECKSUMS, "VERSION.txt"}
+SOURCE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inl",
+    ".hlsl", ".glsl", ".vert", ".frag", ".comp", ".metal", ".wgsl",
+    ".rc",
+}
+VERSION_SOURCE_PATHS = (
+    "build_release_zip.py",
+    "settings_io.py",
+    "native/launcher.rc",
+)
+ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+ZIP_MODE = 0o100644 << 16
+
+
+class ReleaseContractError(RuntimeError):
+    """The release cannot be proven to match its declared contract."""
+
+
+def _norm(path: str | Path) -> str:
+    return os.fspath(path).replace("\\", "/")
+
+
+def _safe_relpath(path: str | Path, *, label: str = "release path") -> str:
+    """Return one canonical archive path or reject Windows/POSIX escapes."""
+    raw = os.fspath(path)
+    norm = _norm(raw)
+    posix = PurePosixPath(norm)
+    windows = PureWindowsPath(norm)
+    if (
+        not norm
+        or "\0" in norm
+        or ":" in norm
+        or norm.startswith(("/", "\\"))
+        or posix.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or ntpath.splitdrive(norm)[0]
+        or any(part in ("", ".", "..") for part in norm.split("/"))
+        or posix.as_posix() != norm
+    ):
+        raise ReleaseContractError(f"unsafe {label}: {raw!r}")
+    return norm
+
+
+def _repo_file(repo: Path, rel: str | Path) -> Path:
+    norm = _safe_relpath(rel)
+    path = repo.joinpath(*PurePosixPath(norm).parts)
+    try:
+        path.resolve().relative_to(repo.resolve())
+    except ValueError as exc:
+        raise ReleaseContractError(f"release path escapes repository: {norm!r}") from exc
+    if path.is_symlink():
+        raise ReleaseContractError(f"symbolic links are not release inputs: {norm}")
+    return path
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    if not check and result.returncode:
+        return ""
+    if check and result.returncode:
+        raise ReleaseContractError(
+            f"git {' '.join(args)} failed: {result.stderr.strip()}"
+        )
+    return result.stdout.strip()
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, check=False,
+    )
+    if result.returncode:
+        error = result.stderr.decode("utf-8", "replace").strip()
+        raise ReleaseContractError(f"git {' '.join(args)} failed: {error}")
+    return result.stdout
+
+
+def git_tree(repo: Path, ref: str = "HEAD") -> dict[str, dict[str, str]]:
+    """Return regular tracked blobs from a commit/tree, keyed by safe path."""
+    output = _git_bytes(repo, "ls-tree", "-r", "-z", "--full-tree", ref)
+    result: dict[str, dict[str, str]] = {}
+    for raw in output.split(b"\0"):
+        if not raw:
+            continue
+        try:
+            metadata, raw_path = raw.split(b"\t", 1)
+            mode, kind, oid = metadata.decode("ascii").split(" ", 2)
+            rel = _safe_relpath(raw_path.decode("utf-8"), label="Git path")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ReleaseContractError(f"invalid Git tree entry at {ref!r}") from exc
+        if kind != "blob" or mode == "120000":
+            continue
+        result[rel] = {"mode": mode, "oid": oid}
+    return result
+
+
+def _git_blob_bytes(repo: Path, oid: str) -> bytes:
+    return _git_bytes(repo, "cat-file", "blob", oid)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _drop_sitepackage(norm: str) -> bool:
     if not norm.startswith(SP):
         return False
     entry = norm[len(SP):].split("/", 1)[0]
-    for name in DROP_PACKAGES:
-        # the package itself, its .py module, its .libs folder and dist-info
-        if (entry == name or entry == name + ".py" or entry == name + ".libs"
-                or entry.startswith(name + "-")):
-            return True
-    return False
+    return any(
+        entry == name or entry == name + ".py" or entry == name + ".libs"
+        or entry.startswith(name + "-")
+        for name in DROP_PACKAGES
+    )
 
 
-def _skip(path: str) -> bool:
-    norm = path.replace("\\", "/")
-    # config.json is a local user file.  It can still be tracked in an older
-    # checkout while the schema transition is being committed, so exclude it
-    # explicitly rather than relying on git ls-files or the working tree.
+def _skip(path: str | Path) -> bool:
+    norm = _norm(path)
     if norm == "config.json":
         return True
-    if any(norm == p or norm.startswith(p) for p in TK_SKIP):
+    if any(norm == item or norm.startswith(item) for item in TK_SKIP):
         return True
-    # Dev-only files: the tests, the test runner and the release builder are
-    # for the repository, not for the end user. The archive must contain
-    # exactly what the program needs to run (user rule 2026-09-08).
-    # '/test/' and '/tests/'-style paths catch the third-party testing
-    # folders that ship inside site-packages (pygame/tests, comtypes/test,
-    # win32ctypes/tests, numpy/testing) - library developer baggage.
     if norm in DEV_ONLY or norm.startswith("tests/") or norm.startswith("test_"):
         return True
-    # The docs folder holds the README screenshots - repository/release
-    # assets, not program code (user rule 2026-09-08: the archive must
-    # contain exactly what the program needs to run).
     if norm.startswith("docs/"):
         return True
-    # Spout2 SDK dev baggage: the headers, the test tools and the build
-    # scripts are for the repository, not for the end user. The release
-    # needs only the two DLLs (Spout.dll, SpoutDX.dll).
     if norm.startswith("native/include/spout/") or norm.startswith("native/spout_"):
         return True
-    if norm.startswith("native/build-spout-"):
+    if norm.startswith("native/build-spout-") or norm == "native/SpoutDX.lib":
         return True
-    if norm == "native/SpoutDX.lib":
-        return True
-    # The worker's source, the NGX headers and the import library are not
-    # something the program runs: the archive carries the built DLLs. It could
-    # not be rebuilt from the archive in any case - spout_bridge.cpp is
-    # dev-only - so shipping half a source tree only invited the question.
-    # The repository has all of it.
-    # ... except the two images the program LOADS at run time: the tray icon
-    # (tray.py) and the window icon (taskbar.py). Excluded, they do not crash
-    # anything - both have a fallback - so a build would ship with the wrong
-    # icons and nothing would say why. Named one by one rather than by
-    # extension: the rule is "these two files", and a .png dropped into
-    # native/ tomorrow is still developer baggage.
-    RUNTIME_ASSETS = ("native/neuralscreen.ico",)
-    if (norm.startswith("native/") and not norm.endswith(".dll")
-            and norm not in RUNTIME_ASSETS):
+    runtime_assets = {"native/neuralscreen.ico"}
+    if norm.startswith("native/") and not norm.endswith(".dll") and norm not in runtime_assets:
         return True
     if "/test/" in norm or "/tests/" in norm or "/testing/" in norm:
         return True
-    # numpy's C test modules (_multiarray_tests.pyd etc.) ship next to the
-    # real modules inside numpy/_core - same rule, they are developer
-    # baggage, not program code.
     if "_tests." in norm or norm.startswith(SP + "pygame/tests/"):
         return True
-    # pygame demo/docs folders and numpy pytest config: not program code.
-    # NOTE: numpy/_pytesttester.py itself MUST stay - numpy/__init__.py
-    # imports it unconditionally (verified).
     if norm.startswith(SP + "pygame/examples/") or norm.startswith(SP + "pygame/docs/"):
         return True
     if norm == SP + "numpy/conftest.py" or norm.startswith(SP + "numpy/ma/testutils"):
         return True
     if norm == SP + "numpy/_pytesttester.pyi":
         return True
-    # .pyc/__pycache__ is dead weight (~13 MB in the zip): pythonw regenerates
-    # them on the fly, a distribution does not need them.
     if norm.endswith(".pyc") or "/__pycache__/" in norm:
         return True
     return _drop_sitepackage(norm)
 
 
-for root, _dirs, fs in os.walk("runtime"):
-    for f in fs:
-        path = os.path.join(root, f)
-        if _skip(path):
+def tracked_files(repo: Path, ref: str = "HEAD") -> list[str]:
+    return sorted(git_tree(repo, ref))
+
+
+def runtime_files(repo: Path) -> list[str]:
+    root = repo / "runtime"
+    if not root.is_dir():
+        return []
+    result = []
+    for path in root.rglob("*"):
+        if path.is_file():
+            rel = _safe_relpath(path.relative_to(repo), label="runtime path")
+            _repo_file(repo, rel)
+            if not _skip(rel):
+                result.append(rel)
+    return sorted(result)
+
+
+def assert_clean_tracked_tree(repo: Path) -> None:
+    dirty = _git(repo, "status", "--porcelain=v1", "--untracked-files=no")
+    if dirty:
+        raise ReleaseContractError(
+            "tracked working tree is dirty; commit or restore these paths:\n" + dirty
+        )
+
+
+def assert_release_tag(repo: Path, expected_tag: str, version: str) -> str:
+    canonical = f"v{version}"
+    if expected_tag != canonical:
+        raise ReleaseContractError(
+            f"expected tag must be {canonical}, got {expected_tag!r}"
+        )
+    head = _git(repo, "rev-parse", "HEAD")
+    tagged = _git(
+        repo, "rev-parse", "--verify", f"{expected_tag}^{{commit}}", check=False
+    )
+    if not tagged:
+        raise ReleaseContractError(f"required tag {expected_tag} does not exist")
+    if tagged != head:
+        raise ReleaseContractError(
+            f"tag {expected_tag} resolves to {tagged[:12]}, HEAD is {head[:12]}"
+        )
+    return head
+
+
+def _file_record(repo: Path, rel: str, role: str | None = None) -> dict:
+    rel = _safe_relpath(rel)
+    path = _repo_file(repo, rel)
+    record = {
+        "path": rel,
+        "size": path.stat().st_size,
+        "sha256": _sha256_file(path),
+    }
+    if role:
+        record["role"] = role
+    return record
+
+
+def _git_file_record(
+    repo: Path,
+    rel: str,
+    entry: dict[str, str],
+    role: str | None = None,
+) -> dict:
+    rel = _safe_relpath(rel, label="Git record path")
+    data = _git_blob_bytes(repo, entry["oid"])
+    record = {
+        "path": rel,
+        "size": len(data),
+        "sha256": _sha256_bytes(data),
+        "git_blob": entry["oid"],
+    }
+    if role:
+        record["role"] = role
+    return record
+
+
+def _source_inventory_paths(
+    repo: Path,
+    tracked: Sequence[str],
+    mandatory_files: Sequence[str] = MANDATORY_FILES,
+) -> list[str]:
+    """Every tracked native source/shader plus every tracked shipped resource."""
+    del repo  # kept in the signature for a stable public helper
+    mandatory = {
+        _safe_relpath(item, label="mandatory release path")
+        for item in mandatory_files
+    }
+    generated_meta = {RUNTIME_MANIFEST, CHECKSUMS, "VERSION.txt"}
+    result = set()
+    for rel in tracked:
+        native_source = Path(rel).suffix.lower() in SOURCE_SUFFIXES
+        version_source = rel in VERSION_SOURCE_PATHS
+        shipped_resource = (
+            (not _skip(rel) or rel in mandatory)
+            and rel not in generated_meta
+        )
+        if native_source or version_source or shipped_resource:
+            result.add(rel)
+    return sorted(result)
+
+
+def _decode_source(data: bytes, path: str) -> str:
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ReleaseContractError(f"version source is not UTF-8: {path}") from exc
+
+
+def _single_match(pattern: str, text: str, path: str, field: str) -> str:
+    values = re.findall(pattern, text, re.MULTILINE)
+    if len(values) != 1:
+        raise ReleaseContractError(
+            f"{path} must declare exactly one {field}; found {len(values)}"
+        )
+    value = values[0]
+    if isinstance(value, tuple):
+        value = ".".join(value)
+    return value
+
+
+def _version_values(path: str, data: bytes) -> dict[str, str]:
+    text = _decode_source(data, path)
+    if path == "build_release_zip.py":
+        return {
+            "VERSION": _single_match(
+                r'^VERSION\s*=\s*["\']([^"\']+)["\']\s*$',
+                text, path, "VERSION",
+            )
+        }
+    if path == "settings_io.py":
+        return {
+            "APP_VERSION": _single_match(
+                r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']\s*$',
+                text, path, "APP_VERSION",
+            )
+        }
+    if path == "native/launcher.rc":
+        return {
+            "FILEVERSION": _single_match(
+                r"^\s*FILEVERSION\s+(\d+),(\d+),(\d+),(\d+)\s*$",
+                text, path, "FILEVERSION",
+            ),
+            "PRODUCTVERSION": _single_match(
+                r"^\s*PRODUCTVERSION\s+(\d+),(\d+),(\d+),(\d+)\s*$",
+                text, path, "PRODUCTVERSION",
+            ),
+            "FileVersion": _single_match(
+                r'^\s*VALUE\s+"FileVersion",\s*"([^"]+)"\s*$',
+                text, path, "FileVersion string",
+            ),
+            "ProductVersion": _single_match(
+                r'^\s*VALUE\s+"ProductVersion",\s*"([^"]+)"\s*$',
+                text, path, "ProductVersion string",
+            ),
+        }
+    raise ReleaseContractError(f"unknown version source: {path}")
+
+
+def _version_source_records(
+    repo: Path, tree: dict[str, dict[str, str]]
+) -> list[dict]:
+    records = []
+    for rel in VERSION_SOURCE_PATHS:
+        entry = tree.get(rel)
+        if entry is None:
+            raise ReleaseContractError(f"version source is not tracked: {rel}")
+        data = _git_blob_bytes(repo, entry["oid"])
+        record = _git_file_record(repo, rel, entry, "version-source")
+        record["values"] = _version_values(rel, data)
+        records.append(record)
+    return records
+
+
+def assert_version_coherence(version: str, records: Sequence[dict]) -> None:
+    parts = version.split(".")
+    if len(parts) != 3 or any(not part.isdigit() for part in parts):
+        raise ReleaseContractError(f"release version is not X.Y.Z: {version!r}")
+    rc_version = ".".join([*parts, "0"])
+    expected = {
+        "build_release_zip.py": {"VERSION": version},
+        "settings_io.py": {"APP_VERSION": version},
+        "native/launcher.rc": {
+            "FILEVERSION": rc_version,
+            "PRODUCTVERSION": rc_version,
+            "FileVersion": rc_version,
+            "ProductVersion": version,
+        },
+    }
+    actual = {record.get("path"): record.get("values") for record in records}
+    if actual != expected:
+        raise ReleaseContractError(
+            "version drift: builder, APP_VERSION and launcher.rc disagree; "
+            f"expected {expected}, got {actual}"
+        )
+
+
+def _runtime_tree_digest(records: Sequence[dict]) -> str:
+    digest = hashlib.sha256()
+    for record in records:
+        digest.update(record["path"].encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(record["sha256"].encode("ascii"))
+        digest.update(b"\0")
+        digest.update(str(record["size"]).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _package_paths(
+    tree: dict[str, dict[str, str]],
+    mandatory_files: Sequence[str],
+    runtime_paths: Sequence[str],
+) -> list[str]:
+    mandatory = {
+        _safe_relpath(rel, label="mandatory release path")
+        for rel in mandatory_files
+    }
+    result = set()
+    for rel in [*sorted(tree), *sorted(mandatory), *sorted(runtime_paths)]:
+        rel = _safe_relpath(rel)
+        if rel in META_FILES or (_skip(rel) and rel not in mandatory):
             continue
-        extra.append(path)
+        result.add(rel)
+    return sorted(result)
 
-seen = set()
-uniq = []
-for f in files + extra:
-    norm = f.replace("\\", "/")
-    if norm in seen:
-        continue
-    seen.add(norm)
-    # The same dev-only filter applies to the git-tracked files: the
-    # tests and the builders must not reach the archive (user rule
-    # 2026-09-08).
-    if _skip(norm):
-        continue
-    uniq.append(norm)
 
-out = f"neuralscreen-v{VERSION}-full.zip"
+def _package_inventory_records(
+    repo: Path,
+    tree: dict[str, dict[str, str]],
+    mandatory_files: Sequence[str],
+    required_runtime_artifacts: Sequence[str],
+    runtime_paths: Sequence[str],
+) -> list[dict]:
+    records = []
+    for rel in _package_paths(tree, mandatory_files, runtime_paths):
+        entry = tree.get(rel)
+        if entry is not None:
+            record = _git_file_record(repo, rel, entry)
+            record["origin"] = "git"
+        else:
+            if not _generated_input_allowed(rel, required_runtime_artifacts):
+                raise ReleaseContractError(
+                    f"release input is not tracked by the tag: {rel}"
+                )
+            path = _repo_file(repo, rel)
+            if not path.is_file():
+                raise ReleaseContractError(f"release input is missing: {rel}")
+            record = _file_record(repo, rel)
+            record["origin"] = "generated"
+        records.append(record)
+    return records
 
-# The runtime kernel check: the v1.5.0 zip shipped a Blackwell-only DLL as
-# if it were universal. The kernel names live inside CUDA fatbin records
-# (compressed cubins - plain string search finds nothing). Port of the
-# proven parser from DLSS5-Autopilot (core/gpu.py, MIT).
-import struct
-import collections
+
+def create_runtime_manifest(
+    repo: Path = BASE,
+    *,
+    version: str = VERSION,
+    expected_tag: str | None = None,
+    git_ref: str = "HEAD",
+    mandatory_files: Sequence[str] = MANDATORY_FILES,
+    required_runtime_artifacts: Sequence[str] = REQUIRED_RUNTIME_ARTIFACTS,
+) -> dict:
+    repo = Path(repo).resolve()
+    tag = expected_tag or f"v{version}"
+    tree = git_tree(repo, git_ref)
+    tracked = sorted(tree)
+    inventory = [
+        _git_file_record(
+            repo, rel, tree[rel],
+            "native-source"
+            if Path(rel).suffix.lower() in SOURCE_SUFFIXES
+            else "version-source"
+            if rel in VERSION_SOURCE_PATHS
+            else "shipped-resource",
+        )
+        for rel in _source_inventory_paths(repo, tracked, mandatory_files)
+    ]
+    runtime_paths = runtime_files(repo)
+    runtime_records = [_file_record(repo, rel) for rel in runtime_paths]
+    artifacts = []
+    for rel in required_runtime_artifacts:
+        rel = _safe_relpath(rel, label="runtime artifact path")
+        path = _repo_file(repo, rel)
+        if not path.is_file():
+            raise ReleaseContractError(f"required runtime artifact is missing: {rel}")
+        if rel in tree:
+            artifacts.append(_git_file_record(repo, rel, tree[rel]))
+        else:
+            artifacts.append(_file_record(repo, rel))
+    version_sources = _version_source_records(repo, tree)
+    package_records = _package_inventory_records(
+        repo,
+        tree,
+        mandatory_files,
+        required_runtime_artifacts,
+        runtime_paths,
+    )
+    return {
+        "schema_version": 3,
+        "product": "NeuralScreen",
+        "version": version,
+        "expected_tag": tag,
+        "version_sources": version_sources,
+        "runtime": {
+            "file_count": len(runtime_records),
+            "tree_sha256": _runtime_tree_digest(runtime_records),
+            "files": runtime_records,
+            "artifacts": artifacts,
+        },
+        "package": {
+            "file_count": len(package_records),
+            "tree_sha256": _runtime_tree_digest(package_records),
+            "files": package_records,
+        },
+        "source_inventory": inventory,
+    }
+
+
+def write_runtime_manifest(
+    repo: Path = BASE,
+    *,
+    version: str = VERSION,
+    expected_tag: str | None = None,
+    mandatory_files: Sequence[str] = MANDATORY_FILES,
+    required_runtime_artifacts: Sequence[str] = REQUIRED_RUNTIME_ARTIFACTS,
+) -> Path:
+    repo = Path(repo).resolve()
+    assert_clean_tracked_tree(repo)
+    tree = git_tree(repo, "HEAD")
+    _assert_mandatory_inputs(
+        repo,
+        tree,
+        mandatory_files,
+        required_runtime_artifacts,
+        ref="HEAD",
+        allow_manifest_output=True,
+    )
+    manifest = create_runtime_manifest(
+        repo, version=version, expected_tag=expected_tag,
+        git_ref="HEAD",
+        mandatory_files=mandatory_files,
+        required_runtime_artifacts=required_runtime_artifacts,
+    )
+    assert_version_coherence(version, manifest["version_sources"])
+    destination = Path(repo) / RUNTIME_MANIFEST
+    destination.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+    return destination
+
+
+def validate_runtime_manifest(
+    repo: Path,
+    *,
+    version: str,
+    expected_tag: str,
+    git_ref: str,
+    mandatory_files: Sequence[str] = MANDATORY_FILES,
+    required_runtime_artifacts: Sequence[str] = REQUIRED_RUNTIME_ARTIFACTS,
+) -> tuple[dict, bytes]:
+    tree = git_tree(repo, git_ref)
+    entry = tree.get(RUNTIME_MANIFEST)
+    if entry is None:
+        raise ReleaseContractError(
+            f"{RUNTIME_MANIFEST} is not tracked by release ref {git_ref}"
+        )
+    raw = _git_blob_bytes(repo, entry["oid"])
+    try:
+        expected = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseContractError(f"cannot read {RUNTIME_MANIFEST}: {exc}") from exc
+    actual = create_runtime_manifest(
+        repo, version=version, expected_tag=expected_tag,
+        git_ref=git_ref,
+        mandatory_files=mandatory_files,
+        required_runtime_artifacts=required_runtime_artifacts,
+    )
+    assert_version_coherence(version, actual["version_sources"])
+    if expected != actual:
+        raise ReleaseContractError(
+            f"{RUNTIME_MANIFEST} does not match tagged runtime/source inventory; "
+            "regenerate and review it before the release commit"
+        )
+    canonical = (
+        json.dumps(expected, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if raw != canonical:
+        raise ReleaseContractError(
+            f"{RUNTIME_MANIFEST} must use canonical UTF-8 JSON formatting"
+        )
+    return expected, canonical
+
 
 _FATBIN_MAGIC = struct.pack("<I", 0xBA55ED50)
 SM_NAMES = {75: "sm_75", 86: "sm_86", 89: "sm_89", 120: "sm_120"}
 KNOWN_SM = set(SM_NAMES) | {50, 52, 53, 60, 61, 62, 70, 72, 80, 90, 100, 101, 110}
 
 
-def dll_architectures(path: str) -> set[int]:
-    """Supported sm versions, from the CUDA fatbin records inside the DLL."""
+def dll_architectures(path: str | Path) -> set[int]:
     try:
-        d = Path(path).read_bytes()
+        data = Path(path).read_bytes()
     except OSError:
         return set()
     found: collections.Counter[int] = collections.Counter()
-    off = 0
+    offset = 0
     while True:
-        i = d.find(_FATBIN_MAGIC, off)
-        if i < 0:
+        index = data.find(_FATBIN_MAGIC, offset)
+        if index < 0:
             break
-        off = i + 4
+        offset = index + 4
         try:
-            hsize = struct.unpack_from("<H", d, i + 6)[0]
-            fatsize = struct.unpack_from("<Q", d, i + 8)[0]
-            if hsize < 16 or not (0 < fatsize <= len(d)):
+            header_size = struct.unpack_from("<H", data, index + 6)[0]
+            fat_size = struct.unpack_from("<Q", data, index + 8)[0]
+            if header_size < 16 or not (0 < fat_size <= len(data)):
                 continue
-            p, end = i + hsize, i + hsize + fatsize
-            while p < end - 32:
-                ehdr = struct.unpack_from("<I", d, p + 4)[0]
-                payload = struct.unpack_from("<Q", d, p + 8)[0]
-                if ehdr < 24 or ehdr > 4096 or not (0 < payload <= len(d)):
+            cursor, end = index + header_size, index + header_size + fat_size
+            while cursor < end - 32:
+                entry_header = struct.unpack_from("<I", data, cursor + 4)[0]
+                payload = struct.unpack_from("<Q", data, cursor + 8)[0]
+                if entry_header < 24 or entry_header > 4096 or not (0 < payload <= len(data)):
                     break
-                for so in (24, 28, 20):
-                    if p + so + 4 > len(d):
-                        continue
-                    sm = struct.unpack_from("<I", d, p + so)[0]
-                    if sm in KNOWN_SM:
-                        found[sm] += 1
-                        break
-                p += ehdr + payload
-        except Exception:
+                for sm_offset in (24, 28, 20):
+                    if cursor + sm_offset + 4 <= len(data):
+                        sm = struct.unpack_from("<I", data, cursor + sm_offset)[0]
+                        if sm in KNOWN_SM:
+                            found[sm] += 1
+                            break
+                cursor += entry_header + payload
+        except (IndexError, struct.error):
             continue
     return set(found)
 
 
-dll_path = Path("native/nvngx_dlssnr.dll")
-dll_data = dll_path.read_bytes()
-dll_sha = hashlib.sha256(dll_data).hexdigest()
-print(f"runtime: {dll_path.name} {len(dll_data)} bytes, sha256 {dll_sha[:16]}...")
-archs = dll_architectures(str(dll_path))
-print(f"  kernels found: {', '.join(sorted(SM_NAMES.get(a, f'sm_{a}') for a in archs)) or 'NONE'}")
-for want in (75, 86, 89, 120):
-    if want not in archs:
-        raise SystemExit(
-            f"RUNTIME MISMATCH: sm_{want} not found in {dll_path.name} - the "
-            f"archive would not run on the claimed cards. Refusing to build.")
-    print(f"  kernel sm_{want}: ok")
+def _checksum_text(records: Iterable[tuple[str, str]]) -> bytes:
+    normalized = [
+        (_safe_relpath(name, label="checksum path"), digest)
+        for name, digest in records
+    ]
+    lines = [f"{digest} *{name}" for name, digest in sorted(normalized)]
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
-# The manifest: built-from commit, runtime identity, target architectures.
-# The user can verify which build they have without asking anyone.
-commit = subprocess.check_output(
-    ["git", "rev-parse", "HEAD"], text=True).strip()
-# One tag, one set of bytes. The archive is rebuilt after every commit so the
-# static checks can compare it against HEAD - which means a zip built today
-# still carries yesterday's version number, passes every gate, and would be
-# accepted by a release that was tagged a dozen commits ago. Nothing caught
-# that: autocheck compares the zip with HEAD, verify_github compares it with
-# what is published, and neither has ever looked at the tag. So the manifest
-# says which it is, and the build says it out loud.
-try:
-    tagged = subprocess.check_output(
-        ["git", "rev-parse", "v" + VERSION + "^{commit}"], text=True,
-        stderr=subprocess.DEVNULL).strip()
-except Exception:
-    tagged = ""
-if not tagged:
-    tag_line = "tag: v" + VERSION + " does not exist yet - release candidate\n"
-elif tagged == commit:
-    tag_line = "tag: v" + VERSION + "\n"
-else:
-    ahead = subprocess.check_output(
-        ["git", "rev-list", "--count", "v" + VERSION + "..HEAD"],
-        text=True).strip()
-    tag_line = ("tag: NOT v" + VERSION + " - " + ahead
-                + " commits past it (tagged " + tagged[:9] + ")\n")
-    print("  NOTE: this archive is " + ahead + " commits past v" + VERSION
-          + ". It is a development build - do NOT upload it to that tag. "
-            "Bump the version, build, then tag.")
-version_txt = (
-    f"NeuralScreen {VERSION}\n"
-    f"commit: {commit}\n"
-    + tag_line +
-    f"runtime: nvngx_dlssnr.dll sha256 {dll_sha}\n"
-    f"kernel archs: {', '.join(sorted(SM_NAMES.get(a, f'sm_{a}') for a in archs))}\n"
-    f"targets: {TARGET_ARCHS}\n"
-    f"built: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-)
 
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-    z.writestr("VERSION.txt", version_txt)
-    for f in uniq:
-        if not os.path.isfile(f):
-            print("MISSING:", f)
+def _zip_info(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(_safe_relpath(name, label="ZIP member"), ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = ZIP_MODE
+    info.flag_bits = 0
+    return info
+
+
+def _write_zip_member(bundle: zipfile.ZipFile, name: str, data: bytes) -> None:
+    bundle.writestr(
+        _zip_info(name), data, compress_type=zipfile.ZIP_DEFLATED,
+        compresslevel=6,
+    )
+
+
+def _generated_input_allowed(
+    rel: str, required_runtime_artifacts: Sequence[str]
+) -> bool:
+    allowed = {
+        _safe_relpath(item, label="runtime artifact path")
+        for item in required_runtime_artifacts
+    }
+    return rel.startswith("runtime/") or rel in allowed
+
+
+def _assert_mandatory_inputs(
+    repo: Path,
+    tree: dict[str, dict[str, str]],
+    mandatory_files: Sequence[str],
+    required_runtime_artifacts: Sequence[str],
+    *,
+    ref: str,
+    allow_manifest_output: bool = False,
+) -> list[str]:
+    mandatory = [
+        _safe_relpath(rel, label="mandatory release path")
+        for rel in mandatory_files
+    ]
+    missing = []
+    for rel in mandatory:
+        if rel in tree or (allow_manifest_output and rel == RUNTIME_MANIFEST):
             continue
-        z.write(f, f)
-print("entries:", len(uniq))
-print("size:", os.path.getsize(out))
+        path = _repo_file(repo, rel)
+        if not path.is_file():
+            missing.append(rel)
+        elif not _generated_input_allowed(rel, required_runtime_artifacts):
+            raise ReleaseContractError(
+                f"mandatory release input is untracked at {ref}: {rel}"
+            )
+    if missing:
+        raise ReleaseContractError(
+            "mandatory release files are missing: " + ", ".join(missing)
+        )
+    return mandatory
+
+
+def _release_input_bytes(
+    repo: Path,
+    rel: str,
+    tree: dict[str, dict[str, str]],
+    required_runtime_artifacts: Sequence[str],
+) -> bytes:
+    rel = _safe_relpath(rel)
+    entry = tree.get(rel)
+    if entry is not None:
+        return _git_blob_bytes(repo, entry["oid"])
+    if not _generated_input_allowed(rel, required_runtime_artifacts):
+        raise ReleaseContractError(
+            f"release input is not tracked by the tag: {rel}"
+        )
+    path = _repo_file(repo, rel)
+    if not path.is_file():
+        raise ReleaseContractError(f"release input is missing: {rel}")
+    return path.read_bytes()
+
+
+def _assert_record_matches_bytes(record: dict, data: bytes, label: str) -> None:
+    path = record.get("path", "?")
+    if record.get("size") != len(data):
+        raise ReleaseContractError(f"{label} size changed during build: {path}")
+    if record.get("sha256") != _sha256_bytes(data):
+        raise ReleaseContractError(f"{label} bytes changed during build: {path}")
+
+
+def _assert_payload_matches_manifest(
+    manifest: dict,
+    package_data: dict[str, bytes],
+    notice_bytes: bytes,
+) -> None:
+    package_records = {
+        record["path"]: record for record in manifest["package"]["files"]
+    }
+    if set(package_records) != set(package_data):
+        raise ReleaseContractError(
+            "package inventory changed between manifest validation and packaging"
+        )
+    for path, record in package_records.items():
+        _assert_record_matches_bytes(record, package_data[path], "package file")
+    runtime = manifest["runtime"]
+    runtime_records = {record["path"]: record for record in runtime["files"]}
+    packaged_runtime = {
+        path for path in package_data if path.startswith("runtime/")
+    }
+    if set(runtime_records) != packaged_runtime:
+        raise ReleaseContractError(
+            "runtime inventory changed between manifest validation and packaging"
+        )
+    for path, record in runtime_records.items():
+        _assert_record_matches_bytes(record, package_data[path], "runtime file")
+    for record in runtime["artifacts"]:
+        path = record["path"]
+        data = package_data.get(path)
+        if data is None:
+            raise ReleaseContractError(f"runtime artifact is not packaged: {path}")
+        _assert_record_matches_bytes(record, data, "runtime artifact")
+    notice_record = next(
+        (
+            record for record in manifest["source_inventory"]
+            if record["path"] == THIRD_PARTY_NOTICES
+        ),
+        None,
+    )
+    if notice_record is None:
+        raise ReleaseContractError(
+            f"source inventory does not cover {THIRD_PARTY_NOTICES}"
+        )
+    _assert_record_matches_bytes(
+        notice_record, notice_bytes, "third-party notice"
+    )
+
+
+def build_release(
+    repo: Path = BASE,
+    *,
+    version: str = VERSION,
+    expected_tag: str | None = None,
+    output_dir: Path | None = None,
+    mandatory_files: Sequence[str] = MANDATORY_FILES,
+    required_runtime_artifacts: Sequence[str] = REQUIRED_RUNTIME_ARTIFACTS,
+    required_architectures: Sequence[int] = (75, 86, 89, 120),
+) -> Path:
+    repo = Path(repo).resolve()
+    output_dir = Path(output_dir or repo).resolve()
+    tag = expected_tag or f"v{version}"
+
+    assert_clean_tracked_tree(repo)
+    commit = assert_release_tag(repo, tag, version)
+    tree = git_tree(repo, tag)
+    mandatory = _assert_mandatory_inputs(
+        repo,
+        tree,
+        mandatory_files,
+        required_runtime_artifacts,
+        ref=tag,
+    )
+    manifest, manifest_bytes = validate_runtime_manifest(
+        repo, version=version, expected_tag=tag,
+        git_ref=tag,
+        mandatory_files=mandatory,
+        required_runtime_artifacts=required_runtime_artifacts,
+    )
+
+    if required_architectures:
+        architectures = dll_architectures(repo / "native/nvngx_dlssnr.dll")
+        absent = [sm for sm in required_architectures if sm not in architectures]
+        if absent:
+            raise ReleaseContractError(
+                "runtime architecture mismatch: missing "
+                + ", ".join(f"sm_{sm}" for sm in absent)
+            )
+    else:
+        architectures = set()
+
+    package_files = [record["path"] for record in manifest["package"]["files"]]
+
+    notice_entry = tree.get(THIRD_PARTY_NOTICES)
+    if notice_entry is None:
+        raise ReleaseContractError(
+            f"{THIRD_PARTY_NOTICES} is not tracked by release tag {tag}"
+        )
+    notice_bytes = _git_blob_bytes(repo, notice_entry["oid"])
+    version_bytes = (
+        f"NeuralScreen {version}\n"
+        f"commit: {commit}\n"
+        f"tag: {tag}\n"
+        f"runtime manifest: {RUNTIME_MANIFEST} sha256 {_sha256_bytes(manifest_bytes)}\n"
+        f"kernel archs: {', '.join(SM_NAMES.get(sm, f'sm_{sm}') for sm in sorted(architectures)) or 'fixture'}\n"
+        f"targets: {TARGET_ARCHS}\n"
+    ).encode("utf-8")
+
+    package_data = {
+        rel: _release_input_bytes(repo, rel, tree, required_runtime_artifacts)
+        for rel in package_files
+    }
+    _assert_payload_matches_manifest(manifest, package_data, notice_bytes)
+
+    internal_hashes = [
+        ("VERSION.txt", _sha256_bytes(version_bytes)),
+        (RUNTIME_MANIFEST, _sha256_bytes(manifest_bytes)),
+        (THIRD_PARTY_NOTICES, _sha256_bytes(notice_bytes)),
+    ]
+    internal_hashes.extend(
+        (rel, _sha256_bytes(package_data[rel])) for rel in package_files
+    )
+    internal_checksums = _checksum_text(internal_hashes)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    archive = output_dir / f"neuralscreen-v{version}-full.zip"
+    fd, temp_name = tempfile.mkstemp(
+        prefix=archive.name + ".", suffix=".tmp", dir=output_dir
+    )
+    os.close(fd)
+    temp_archive = Path(temp_name)
+    try:
+        with zipfile.ZipFile(
+            temp_archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as bundle:
+            _write_zip_member(bundle, "VERSION.txt", version_bytes)
+            _write_zip_member(bundle, RUNTIME_MANIFEST, manifest_bytes)
+            _write_zip_member(bundle, THIRD_PARTY_NOTICES, notice_bytes)
+            _write_zip_member(bundle, CHECKSUMS, internal_checksums)
+            for rel in package_files:
+                _write_zip_member(bundle, rel, package_data[rel])
+        os.replace(temp_archive, archive)
+    finally:
+        temp_archive.unlink(missing_ok=True)
+
+    sidecar_manifest = output_dir / RUNTIME_MANIFEST
+    sidecar_notice = output_dir / THIRD_PARTY_NOTICES
+    if sidecar_manifest.resolve() != (repo / RUNTIME_MANIFEST).resolve():
+        sidecar_manifest.write_bytes(manifest_bytes)
+    if sidecar_notice.resolve() != (repo / THIRD_PARTY_NOTICES).resolve():
+        sidecar_notice.write_bytes(notice_bytes)
+    sidecar_hashes = _checksum_text([
+        (archive.name, _sha256_file(archive)),
+        (RUNTIME_MANIFEST, _sha256_bytes(manifest_bytes)),
+        (THIRD_PARTY_NOTICES, _sha256_bytes(notice_bytes)),
+    ])
+    checksums_path = output_dir / CHECKSUMS
+    fd, temp_name = tempfile.mkstemp(
+        prefix=CHECKSUMS + ".", suffix=".tmp", dir=output_dir
+    )
+    os.close(fd)
+    temp_checksums = Path(temp_name)
+    try:
+        temp_checksums.write_bytes(sidecar_hashes)
+        os.replace(temp_checksums, checksums_path)
+    finally:
+        temp_checksums.unlink(missing_ok=True)
+    return archive
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("tag", nargs="?", default=EXPECTED_TAG)
+    parser.add_argument(
+        "--write-runtime-manifest", action="store_true",
+        help="regenerate the pinned manifest for review; does not build a release",
+    )
+    args = parser.parse_args(argv)
+    try:
+        if args.write_runtime_manifest:
+            path = write_runtime_manifest(BASE, expected_tag=args.tag)
+            print(f"wrote {path}")
+            return 0
+        archive = build_release(BASE, expected_tag=args.tag)
+        print(f"built {archive.name} ({archive.stat().st_size} bytes)")
+        print(f"sidecars: {CHECKSUMS}, {RUNTIME_MANIFEST}, {THIRD_PARTY_NOTICES}")
+        return 0
+    except ReleaseContractError as exc:
+        print(f"RELEASE CONTRACT FAILED: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

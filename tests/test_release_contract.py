@@ -1,0 +1,570 @@
+r"""Offline tests for the fail-closed release contract.
+
+Run: runtime\python.exe tests\test_release_contract.py
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import zipfile
+from pathlib import Path
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import build_release_zip as builder
+import verify_github as verifier
+
+
+def run_git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=True,
+    )
+    return result.stdout.strip()
+
+
+def sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def rewrite_release_archive(
+    archive: Path,
+    dist: Path,
+    mutate,
+) -> None:
+    """Rewrite a release coherently so only the manifest contract can reject it."""
+    with zipfile.ZipFile(archive) as source:
+        members = {name: source.read(name) for name in source.namelist()}
+    mutate(members)
+    members[builder.CHECKSUMS] = builder._checksum_text(
+        (name, hashlib.sha256(data).hexdigest())
+        for name, data in members.items()
+        if name != builder.CHECKSUMS
+    )
+    metadata = [
+        "VERSION.txt",
+        builder.RUNTIME_MANIFEST,
+        builder.THIRD_PARTY_NOTICES,
+        builder.CHECKSUMS,
+    ]
+    ordered = metadata + sorted(name for name in members if name not in metadata)
+    replacement = archive.with_suffix(".rewritten")
+    with zipfile.ZipFile(
+        replacement, "w", zipfile.ZIP_DEFLATED, compresslevel=6
+    ) as target:
+        for name in ordered:
+            builder._write_zip_member(target, name, members[name])
+    replacement.replace(archive)
+
+    outer = verifier.parse_sha256sums((dist / builder.CHECKSUMS).read_bytes())
+    outer[archive.name] = sha(archive)
+    (dist / builder.CHECKSUMS).write_bytes(
+        builder._checksum_text(outer.items())
+    )
+
+
+class ReleaseFixture:
+    version = "9.9.0"
+    tag = "v9.9.0"
+    runtime_artifacts = ("runtime/runtime.bin",)
+    mandatory = (
+        "app.py",
+        "native/libraries/README.md",
+        builder.RUNTIME_MANIFEST,
+        builder.THIRD_PARTY_NOTICES,
+    )
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.dist = root / "dist"
+        (root / "native" / "libraries").mkdir(parents=True)
+        (root / "runtime").mkdir()
+        (root / ".gitignore").write_text(
+            "runtime/\ndist*/\nignored.local\n", encoding="utf-8"
+        )
+        (root / "app.py").write_text("print('fixture')\n", encoding="utf-8")
+        (root / "build_release_zip.py").write_text(
+            f'VERSION = "{self.version}"\n', encoding="utf-8"
+        )
+        (root / "pacing.py").write_text("TARGET_FPS = 60\n", encoding="utf-8")
+        (root / "settings_io.py").write_text(
+            f'APP_VERSION = "{self.version}"\n', encoding="utf-8"
+        )
+        self.write_launcher_version(self.version)
+        (root / "native" / "all.cpp").write_text("// cpp\n", encoding="utf-8")
+        (root / "native" / "all.h").write_text("// h\n", encoding="utf-8")
+        (root / "native" / "all.inl").write_text("// inl\n", encoding="utf-8")
+        (root / "native" / "all.hlsl").write_text("// shader\n", encoding="utf-8")
+        (root / "native" / "neuralscreen.ico").write_bytes(b"icon")
+        (root / "native" / "libraries" / "README.md").write_text(
+            "# Runtime libraries\n", encoding="utf-8"
+        )
+        (root / "runtime" / "runtime.bin").write_bytes(b"runtime-v1")
+        (root / "runtime" / "nested.bin").write_bytes(b"runtime-v2")
+        (root / builder.THIRD_PARTY_NOTICES).write_text(
+            "# notices\n", encoding="utf-8"
+        )
+        run_git(root, "init", "-q")
+        run_git(root, "config", "user.email", "release-test@example.invalid")
+        run_git(root, "config", "user.name", "Release Test")
+        run_git(root, "add", ".")
+        run_git(root, "commit", "-qm", "fixture sources")
+        builder.write_runtime_manifest(
+            root,
+            version=self.version,
+            expected_tag=self.tag,
+            mandatory_files=self.mandatory,
+            required_runtime_artifacts=self.runtime_artifacts,
+        )
+        run_git(root, "add", builder.RUNTIME_MANIFEST)
+        run_git(root, "commit", "-qm", "pin release manifest")
+        run_git(root, "tag", self.tag)
+
+    def write_launcher_version(self, version: str) -> None:
+        numeric = version.replace(".", ",") + ",0"
+        (self.root / "native" / "launcher.rc").write_text(
+            "VS_VERSION_INFO VERSIONINFO\n"
+            f" FILEVERSION {numeric}\n"
+            f" PRODUCTVERSION {numeric}\n"
+            "BEGIN\n"
+            f' VALUE "FileVersion", "{version}.0"\n'
+            f' VALUE "ProductVersion", "{version}"\n'
+            "END\n",
+            encoding="utf-8",
+        )
+
+    @property
+    def commit(self) -> str:
+        return run_git(self.root, "rev-parse", "HEAD")
+
+    def build(self) -> Path:
+        return builder.build_release(
+            self.root,
+            version=self.version,
+            expected_tag=self.tag,
+            output_dir=self.dist,
+            mandatory_files=self.mandatory,
+            required_runtime_artifacts=self.runtime_artifacts,
+            required_architectures=(),
+        )
+
+
+class ReleaseContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="ns-release-contract-")
+        self.repo = Path(self.temp.name)
+        self.fixture = ReleaseFixture(self.repo)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_build_creates_strict_release_set_and_complete_inventory(self) -> None:
+        # An ignored local file is intentionally allowed by the tracked-tree gate.
+        (self.repo / "ignored.local").write_text("developer state", encoding="utf-8")
+        archive = self.fixture.build()
+        self.assertTrue(archive.is_file())
+        self.assertTrue((self.fixture.dist / builder.CHECKSUMS).is_file())
+        self.assertTrue((self.fixture.dist / builder.RUNTIME_MANIFEST).is_file())
+        self.assertTrue((self.fixture.dist / builder.THIRD_PARTY_NOTICES).is_file())
+
+        manifest = json.loads(
+            (self.repo / builder.RUNTIME_MANIFEST).read_text(encoding="utf-8")
+        )
+        inventory = {item["path"] for item in manifest["source_inventory"]}
+        for name in (
+            "native/all.cpp", "native/all.h", "native/all.inl",
+            "native/all.hlsl", "native/neuralscreen.ico", "pacing.py",
+            "native/libraries/README.md", builder.THIRD_PARTY_NOTICES,
+            "build_release_zip.py",
+        ):
+            self.assertIn(name, inventory)
+        records = {
+            item["path"]: item for item in manifest["source_inventory"]
+        }
+        self.assertRegex(records["pacing.py"]["git_blob"], r"^[0-9a-f]{40,64}$")
+        runtime_files = {
+            item["path"] for item in manifest["runtime"]["files"]
+        }
+        self.assertEqual(
+            {"runtime/nested.bin", "runtime/runtime.bin"}, runtime_files
+        )
+        self.assertEqual(
+            set(builder.VERSION_SOURCE_PATHS),
+            {item["path"] for item in manifest["version_sources"]},
+        )
+        self.assertEqual(3, manifest["schema_version"])
+        package_records = manifest["package"]["files"]
+        package_paths = {item["path"] for item in package_records}
+        self.assertEqual(len(package_records), manifest["package"]["file_count"])
+        self.assertTrue({
+            "app.py", "native/libraries/README.md",
+            "runtime/nested.bin", "runtime/runtime.bin",
+        } <= package_paths)
+        self.assertTrue({item["origin"] for item in package_records} <= {
+            "git", "generated",
+        })
+        self.assertFalse({
+            "VERSION.txt", builder.RUNTIME_MANIFEST,
+            builder.THIRD_PARTY_NOTICES, builder.CHECKSUMS,
+        } & package_paths)
+
+        failures = verifier.validate_release_set(
+            self.fixture.dist, tag=self.fixture.tag,
+            tag_commit=self.fixture.commit, repo=self.repo,
+        )
+        self.assertEqual([], failures)
+        with zipfile.ZipFile(archive) as bundle:
+            names = set(bundle.namelist())
+            self.assertTrue({
+                "VERSION.txt", builder.RUNTIME_MANIFEST,
+                builder.THIRD_PARTY_NOTICES, builder.CHECKSUMS,
+                "native/libraries/README.md",
+            } <= names)
+
+    def test_dirty_tracked_tree_fails_but_ignored_files_do_not(self) -> None:
+        (self.repo / "ignored.local").write_text("allowed", encoding="utf-8")
+        builder.assert_clean_tracked_tree(self.repo)
+        (self.repo / "app.py").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(builder.ReleaseContractError, "dirty"):
+            self.fixture.build()
+
+    def test_wrong_missing_and_stale_tags_fail(self) -> None:
+        with self.assertRaisesRegex(builder.ReleaseContractError, "must be"):
+            builder.assert_release_tag(self.repo, "v9.9.1", self.fixture.version)
+        run_git(self.repo, "tag", "-d", self.fixture.tag)
+        with self.assertRaisesRegex(builder.ReleaseContractError, "does not exist"):
+            builder.assert_release_tag(
+                self.repo, self.fixture.tag, self.fixture.version
+            )
+        run_git(self.repo, "tag", self.fixture.tag)
+        (self.repo / "next.txt").write_text("next\n", encoding="utf-8")
+        run_git(self.repo, "add", "next.txt")
+        run_git(self.repo, "commit", "-qm", "move head")
+        with self.assertRaisesRegex(builder.ReleaseContractError, "HEAD"):
+            builder.assert_release_tag(
+                self.repo, self.fixture.tag, self.fixture.version
+            )
+
+    def test_missing_mandatory_file_fails(self) -> None:
+        with self.assertRaisesRegex(builder.ReleaseContractError, "mandatory"):
+            builder.build_release(
+                self.repo,
+                version=self.fixture.version,
+                expected_tag=self.fixture.tag,
+                output_dir=self.fixture.dist,
+                mandatory_files=(*self.fixture.mandatory, "missing.bin"),
+                required_runtime_artifacts=self.fixture.runtime_artifacts,
+                required_architectures=(),
+            )
+
+    def test_runtime_manifest_mismatch_fails_closed(self) -> None:
+        # runtime/ is ignored, so this specifically exercises the manifest gate.
+        (self.repo / "runtime" / "runtime.bin").write_bytes(b"runtime-tampered")
+        builder.assert_clean_tracked_tree(self.repo)
+        with self.assertRaisesRegex(
+            builder.ReleaseContractError, "does not match"
+        ):
+            self.fixture.build()
+
+    def test_runtime_change_during_build_is_rejected(self) -> None:
+        original = builder.validate_runtime_manifest
+
+        def validate_then_change(*args, **kwargs):
+            result = original(*args, **kwargs)
+            (self.repo / "runtime" / "nested.bin").write_bytes(b"changed mid-build")
+            return result
+
+        with mock.patch.object(
+            builder, "validate_runtime_manifest", side_effect=validate_then_change
+        ):
+            with self.assertRaisesRegex(
+                builder.ReleaseContractError, "changed during build"
+            ):
+                self.fixture.build()
+
+    def test_new_tracked_native_source_invalidates_manifest(self) -> None:
+        (self.repo / "native" / "new.cpp").write_text("// new\n", encoding="utf-8")
+        run_git(self.repo, "add", "native/new.cpp")
+        run_git(self.repo, "commit", "-qm", "new source")
+        run_git(self.repo, "tag", "-f", self.fixture.tag)
+        with self.assertRaisesRegex(
+            builder.ReleaseContractError, "does not match"
+        ):
+            self.fixture.build()
+
+    def test_published_zip_tamper_is_detected_without_network(self) -> None:
+        archive = self.fixture.build()
+        unpacked = self.repo / "unpacked"
+        with zipfile.ZipFile(archive) as source:
+            source.extractall(unpacked)
+        (unpacked / "app.py").write_text("tampered\n", encoding="utf-8")
+        tampered = archive.with_suffix(".tampered")
+        with zipfile.ZipFile(tampered, "w", zipfile.ZIP_DEFLATED) as target:
+            for path in sorted(unpacked.rglob("*")):
+                if path.is_file():
+                    target.write(path, path.relative_to(unpacked).as_posix())
+        shutil.move(tampered, archive)
+        # Make the outer checksum truthful: the verifier must still reject the
+        # bad member against the independent checksum carried inside the ZIP.
+        outer = verifier.parse_sha256sums(
+            (self.fixture.dist / builder.CHECKSUMS).read_bytes()
+        )
+        outer[archive.name] = sha(archive)
+        (self.fixture.dist / builder.CHECKSUMS).write_bytes(
+            builder._checksum_text(outer.items())
+        )
+        failures = verifier.validate_release_set(
+            self.fixture.dist, tag=self.fixture.tag,
+            tag_commit=self.fixture.commit,
+        )
+        self.assertTrue(
+            any("ZIP checksum mismatch: app.py" in item for item in failures),
+            failures,
+        )
+
+    def test_coherent_extra_zip_member_is_rejected(self) -> None:
+        archive = self.fixture.build()
+        rewrite_release_archive(
+            archive,
+            self.fixture.dist,
+            lambda members: members.__setitem__("extra.bin", b"coherent extra"),
+        )
+        failures = verifier.validate_release_set(
+            self.fixture.dist,
+            tag=self.fixture.tag,
+            tag_commit=self.fixture.commit,
+            repo=self.repo,
+        )
+        self.assertIn(
+            "ZIP has undeclared payload members: ['extra.bin']", failures
+        )
+        self.assertFalse(
+            any("checksum mismatch" in item.lower() for item in failures), failures
+        )
+
+    def test_coherent_missing_zip_member_is_rejected(self) -> None:
+        archive = self.fixture.build()
+        rewrite_release_archive(
+            archive,
+            self.fixture.dist,
+            lambda members: members.pop("app.py"),
+        )
+        failures = verifier.validate_release_set(
+            self.fixture.dist,
+            tag=self.fixture.tag,
+            tag_commit=self.fixture.commit,
+            repo=self.repo,
+        )
+        self.assertIn(
+            "ZIP is missing declared payload members: ['app.py']", failures
+        )
+        self.assertFalse(
+            any("checksum mismatch" in item.lower() for item in failures), failures
+        )
+
+    def test_coherent_runtime_tamper_still_breaks_manifest(self) -> None:
+        archive = self.fixture.build()
+        unpacked = self.repo / "runtime-tamper"
+        with zipfile.ZipFile(archive) as source:
+            source.extractall(unpacked)
+        runtime_path = unpacked / "runtime" / "runtime.bin"
+        runtime_path.write_bytes(b"forged-runtime")
+        checksums = verifier.parse_sha256sums(
+            (unpacked / builder.CHECKSUMS).read_bytes()
+        )
+        checksums["runtime/runtime.bin"] = sha(runtime_path)
+        (unpacked / builder.CHECKSUMS).write_bytes(
+            builder._checksum_text(checksums.items())
+        )
+        replacement = archive.with_suffix(".forged")
+        with zipfile.ZipFile(replacement, "w", zipfile.ZIP_DEFLATED) as target:
+            for path in sorted(unpacked.rglob("*")):
+                if path.is_file():
+                    target.write(path, path.relative_to(unpacked).as_posix())
+        shutil.move(replacement, archive)
+        outer = verifier.parse_sha256sums(
+            (self.fixture.dist / builder.CHECKSUMS).read_bytes()
+        )
+        outer[archive.name] = sha(archive)
+        (self.fixture.dist / builder.CHECKSUMS).write_bytes(
+            builder._checksum_text(outer.items())
+        )
+        failures = verifier.validate_release_set(
+            self.fixture.dist, tag=self.fixture.tag,
+            tag_commit=self.fixture.commit,
+        )
+        self.assertIn("runtime manifest tree digest differs from ZIP", failures)
+        self.assertTrue(
+            any("runtime artifact" in item for item in failures), failures
+        )
+
+    def test_build_is_byte_for_byte_deterministic(self) -> None:
+        first = self.fixture.build()
+        first_zip = first.read_bytes()
+        first_sums = (self.fixture.dist / builder.CHECKSUMS).read_bytes()
+        # Source mtimes and wall-clock time are deliberately irrelevant.
+        for path in (self.repo / "app.py", self.repo / "runtime" / "runtime.bin"):
+            path.touch()
+            path.chmod(path.stat().st_mode)
+        time.sleep(0.02)
+        second = self.fixture.build()
+        self.assertEqual(first_zip, second.read_bytes())
+        self.assertEqual(first_sums, (self.fixture.dist / builder.CHECKSUMS).read_bytes())
+        with zipfile.ZipFile(second) as archive:
+            self.assertTrue(archive.infolist())
+            for info in archive.infolist():
+                self.assertEqual(builder.ZIP_TIMESTAMP, info.date_time)
+                self.assertEqual(3, info.create_system)
+                self.assertEqual(0o100644, info.external_attr >> 16)
+            self.assertNotIn("built:", archive.read("VERSION.txt").decode("utf-8"))
+
+    def test_version_sources_must_match_builder_version(self) -> None:
+        (self.repo / "settings_io.py").write_text(
+            'APP_VERSION = "9.8.0"\n', encoding="utf-8"
+        )
+        run_git(self.repo, "add", "settings_io.py")
+        run_git(self.repo, "commit", "-qm", "introduce app version drift")
+        run_git(self.repo, "tag", "-f", self.fixture.tag)
+        with self.assertRaisesRegex(builder.ReleaseContractError, "version drift"):
+            self.fixture.build()
+
+    def test_tagged_builder_version_is_checked(self) -> None:
+        (self.repo / "build_release_zip.py").write_text(
+            'VERSION = "9.8.0"\n', encoding="utf-8"
+        )
+        run_git(self.repo, "add", "build_release_zip.py")
+        run_git(self.repo, "commit", "-qm", "introduce builder version drift")
+        run_git(self.repo, "tag", "-f", self.fixture.tag)
+        with self.assertRaisesRegex(builder.ReleaseContractError, "version drift"):
+            self.fixture.build()
+
+    def test_launcher_version_fields_are_all_checked(self) -> None:
+        manifest = builder.create_runtime_manifest(
+            self.repo,
+            version=self.fixture.version,
+            expected_tag=self.fixture.tag,
+            mandatory_files=self.fixture.mandatory,
+            required_runtime_artifacts=self.fixture.runtime_artifacts,
+        )
+        launcher = next(
+            item for item in manifest["version_sources"]
+            if item["path"] == "native/launcher.rc"
+        )
+        launcher["values"]["FileVersion"] = "9.8.0.0"
+        with self.assertRaisesRegex(builder.ReleaseContractError, "version drift"):
+            builder.assert_version_coherence(
+                self.fixture.version, manifest["version_sources"]
+            )
+
+    def test_untracked_release_input_is_rejected(self) -> None:
+        (self.repo / "untracked.bin").write_bytes(b"not from the tag")
+        with self.assertRaisesRegex(builder.ReleaseContractError, "untracked"):
+            builder.build_release(
+                self.repo,
+                version=self.fixture.version,
+                expected_tag=self.fixture.tag,
+                output_dir=self.fixture.dist,
+                mandatory_files=(*self.fixture.mandatory, "untracked.bin"),
+                required_runtime_artifacts=self.fixture.runtime_artifacts,
+                required_architectures=(),
+            )
+
+    def test_manifest_generator_rejects_untracked_mandatory_input(self) -> None:
+        run_git(self.repo, "rm", "-q", builder.THIRD_PARTY_NOTICES)
+        run_git(self.repo, "commit", "-qm", "remove tracked notices")
+        (self.repo / builder.THIRD_PARTY_NOTICES).write_text(
+            "# untracked notices\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(builder.ReleaseContractError, "untracked"):
+            builder.write_runtime_manifest(
+                self.repo,
+                version=self.fixture.version,
+                expected_tag=self.fixture.tag,
+                mandatory_files=self.fixture.mandatory,
+                required_runtime_artifacts=self.fixture.runtime_artifacts,
+            )
+
+    def test_manifest_is_bound_to_tagged_git_blobs(self) -> None:
+        self.fixture.build()
+        manifest = json.loads(
+            (self.fixture.dist / builder.RUNTIME_MANIFEST).read_text(encoding="utf-8")
+        )
+        app = next(
+            item for item in manifest["source_inventory"]
+            if item["path"] == "app.py"
+        )
+        app["git_blob"] = "0" * len(app["git_blob"])
+        failures = verifier.validate_manifest_git_binding(
+            self.repo, self.fixture.tag, manifest
+        )
+        self.assertTrue(
+            any("tagged Git blob differs" in item for item in failures), failures
+        )
+
+    def test_windows_and_traversal_paths_are_rejected(self) -> None:
+        unsafe = (
+            "../escape.bin", "/absolute.bin", "C:/absolute.bin",
+            "C:drive-relative.bin", "\\\\server\\share\\file.bin",
+            "safe.txt:alternate-stream",
+        )
+        for name in unsafe:
+            with self.subTest(builder=name):
+                with self.assertRaisesRegex(builder.ReleaseContractError, "unsafe"):
+                    builder._safe_relpath(name)
+            with self.subTest(checksums=name):
+                line = f"{'0' * 64} *{name}\n".encode("utf-8")
+                with self.assertRaisesRegex(ValueError, "unsafe path"):
+                    verifier.parse_sha256sums(line)
+            with self.subTest(zip=name):
+                self.assertFalse(verifier._safe_archive_path(name))
+
+    def test_verifier_rejects_noncanonical_version_inventory(self) -> None:
+        self.fixture.build()
+        manifest = json.loads(
+            (self.fixture.dist / builder.RUNTIME_MANIFEST).read_text(encoding="utf-8")
+        )
+        settings = next(
+            item for item in manifest["version_sources"]
+            if item["path"] == "settings_io.py"
+        )
+        settings["values"]["APP_VERSION"] = "0.0.0"
+        failures = verifier._validate_version_sources(
+            manifest, self.fixture.version
+        )
+        self.assertTrue(any("differs" in item for item in failures), failures)
+
+    def test_verifier_rejects_path_like_version_before_archive_lookup(self) -> None:
+        self.fixture.build()
+        manifest_path = self.fixture.dist / builder.RUNTIME_MANIFEST
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["version"] = "../../outside"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        failures = verifier.validate_release_set(
+            self.fixture.dist,
+            tag=self.fixture.tag,
+            tag_commit=self.fixture.commit,
+            repo=self.repo,
+        )
+        self.assertEqual(
+            [f"{builder.RUNTIME_MANIFEST} version is not X.Y.Z"], failures
+        )
+
+    def test_parallel_release_body_warning_change_is_preserved(self) -> None:
+        self.assertIn("latest NVIDIA driver", verifier.RELEASE_DRIVER_WARNING)
+        self.assertIn("unsupported/non-standard", verifier.RELEASE_DRIVER_WARNING)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

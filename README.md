@@ -14,6 +14,9 @@ same neural network that DLSS 5 games use, and comes back sharper.
 > unmodified, research/educational use only, no warranty, use at your own
 > risk. Rights holders: say the word and the next build ships without them.
 
+<details><summary><b>AMD Radeon build - an active call for testers</b></summary>
+The Radeon build is a separate repository, **[NeuralScreen-AMD](https://github.com/perseval-BLR/NeuralScreen-AMD)** - the same overlay with the neural pass aimed at RX 7000 / 9000 (RDNA3/RDNA4). **It has not run on a real Radeon yet**, and that is what that release is for: start with `native/AMD.md`, then open an issue with `NeuralScreen.log`, `probe_amd.log`, card model and driver version. </details>
+
 ## How it looks
 
 <table>
@@ -27,9 +30,8 @@ same neural network that DLSS 5 games use, and comes back sharper.
 </tr>
 </table>
 
-*One menu inside the overlay, in a light and a dark theme; the settings page;
-the window list — and the **Before / after wipe** slider that splits the
-screen down the middle.*
+*One menu inside the overlay, in light and dark themes; the settings page; the
+window list - and the **Before / after wipe** slider that splits the screen.*
 
 ## What you need
 

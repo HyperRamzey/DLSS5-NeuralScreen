@@ -774,6 +774,14 @@ def drain_commands(st) -> bool:
                     if not st.display.is_visible():
                         st.display.reveal()
                     st.display.set_visible(True)
+                    # The user may have moved us to another virtual desktop
+                    # through Task View: the 1x1 taskbar window travels there,
+                    # the borderless overlay windows are left behind and the
+                    # menu would be drawn on a desktop nobody is looking at
+                    # ("the program does not expand on desktop 2", #93). Put
+                    # the overlay pair where the taskbar window is. Unknown
+                    # (interface absent) leaves everything untouched.
+                    st.display.follow_taskbar_desktop()
                     st.display.raise_topmost()
                     st.display.draw_overlay(0.0)
                 else:

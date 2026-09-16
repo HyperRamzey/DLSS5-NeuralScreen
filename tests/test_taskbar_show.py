@@ -73,6 +73,11 @@ class _Display:
     def raise_topmost(self) -> None:
         self.raises += 1
 
+    def follow_taskbar_desktop(self) -> None:
+        # Virtual-desktop placement is exercised by the vdesk probe test; the
+        # stub only has to exist for the menu-show path.
+        pass
+
     def draw_overlay(self, interval: float) -> None:
         self.draws.append(interval)
 

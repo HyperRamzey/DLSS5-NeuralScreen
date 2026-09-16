@@ -109,7 +109,10 @@ def main():
     paint(menu)
     assert find(menu, "slider", "nr_res")
     # The real serializer must retain the FG settings.
-    cfg = settings_io.load_config(ROOT / "config.json")
+    # This is a serializer contract, not a test of the user's live settings.
+    # Loading ROOT/config.json would migrate and rewrite that personal file as
+    # soon as a new product-default field is added.
+    cfg = settings_io.load_config(ROOT / "config.default.json")
     cfg.update(frame_generation=True, frame_multiplier=4, ui_detection=True)
     params = settings_io.resolve_params(cfg)
     data = dict(cfg)

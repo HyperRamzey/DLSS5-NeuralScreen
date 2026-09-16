@@ -48,9 +48,6 @@ W, H = 960, 540
 VK_NUMPAD2 = 0x62
 VK_NUMPAD5 = 0x65
 KEYEVENTF_KEYUP = 0x0002
-CFG = BASE / "config.json"
-CFG_BACKUP = BASE / "_work" / "config-window-menu-test.json"
-
 # The light theme panel background.
 PANEL_RGB = (240, 238, 230)
 

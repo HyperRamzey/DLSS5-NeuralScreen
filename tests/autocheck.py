@@ -202,6 +202,20 @@ def shipped_config_defaults():
     return True, "multiplier 2, FG off, CPU motion, Natural's four sliders"
 
 
+def tests_isolate_user_config():
+    """No automated test may load the ignored worktree config as live state."""
+    pattern = re.compile(
+        r'\b(?:ROOT|BASE)\s*/\s*["\']config\.json["\']'
+    )
+    offenders = []
+    for path in sorted((ROOT / "tests").glob("test_*.py")):
+        if pattern.search(path.read_text(encoding="utf-8-sig")):
+            offenders.append(path.name)
+    if offenders:
+        return False, "tests touch the user's config.json: " + ", ".join(offenders)
+    return True, "all tests use product defaults or disposable configs"
+
+
 def zip_integrity():
     """Validate the pinned release contract, and a tagged ZIP when present.
 
@@ -651,6 +665,7 @@ def main():
         check("worker: fresh, with the hook", fresh_worker)
         check("zip: integrity and contents", zip_integrity)
         check("config: the shipped defaults", shipped_config_defaults)
+        check("tests: user config isolated", tests_isolate_user_config)
         check("gpuinfo: answers", gpuinfo_works)
         check("spoof: on by default", spoof_default_on)
         check("README: EN/RU agree", readme_consistency)

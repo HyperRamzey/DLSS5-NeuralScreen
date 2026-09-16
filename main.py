@@ -26,17 +26,11 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-from ctypes import wintypes
 import json
-import mmap
-import os
 import queue
-import struct
 import subprocess
 import sys
-import threading
 import time
-import uuid
 from pathlib import Path
 
 
@@ -71,21 +65,14 @@ import cv2
 import numpy as np
 import pygame  # HUD overlay on the recorded frame (image.frombuffer)
 
-from capture import (ScreenCapture, devicename_for_output_idx, list_monitors,
-                     resolve_output_idx)
+from capture import ScreenCapture, resolve_output_idx
 from display import Display
 from guides import TemporalGuideGenerator
 from motion_backend import MotionBackendStatus
-from hotkeys import (HotkeyController, build_bindings,
-                     describe as describe_hotkeys, numlock_needed, numlock_on,
+from hotkeys import (describe as describe_hotkeys, numlock_needed, numlock_on,
                      parse_binding)
-from recorder import VideoRecorder
-from gpuinfo import describe as gpu_describe, probe as gpu_probe
 from i18n import STRINGS as UI_STRINGS
 
-from tray import TrayController
-from taskbar import TaskbarWindow
-import dialogs
 import channels
 import commands
 import compatibility_runtime
@@ -100,16 +87,13 @@ from pipeline import (AUTO_REVIVE_BACKOFF,  # noqa: F401
 # The pieces below live in their own modules now; re-exported because
 # the rest of the program and the tests look them up in main.
 from paths import BASE_DIR, NATIVE_DIR, WORKER_EXE  # noqa: F401
-from protocol import SharedFrameBuffer, _negotiate_shm  # noqa: F401
-from pipeline import (_drain_stderr, restart_worker,  # noqa: F401
+from pipeline import (restart_worker,  # noqa: F401
                       shutdown_worker, start_worker)
-from startup import (LOG_PATH, _apply_gpu_env,  # noqa: F401
-                     _apply_nr_dll, _apply_spout_env, _init_logging,
+from startup import (_apply_nr_dll, _apply_spout_env, _init_logging,
                      _log_environment)
-from settings_io import (DEFAULT_LANG, PRESET_KEYS,  # noqa: F401
-                         load_config, load_presets,
+from settings_io import (load_config, load_presets,  # noqa: F401
                          resolve_params)
-from settings_io import _work_size, hotkey_labels  # noqa: F401
+from settings_io import hotkey_labels  # noqa: F401
 # The settings layer owns these now; re-exported because the rest
 # of the program and the tests look them up in main.
 from settings_io import (  # noqa: F401
@@ -120,8 +104,7 @@ from settings_io import (  # noqa: F401
 # The Win32 window helpers live in winapi.py now. They are re-exported here
 # on purpose: main is where the rest of the program - and the tests - look
 # them up, and moving code must not move its callers.
-from winapi import (DWMWA_EXTENDED_FRAME_BOUNDS, _RECT,  # noqa: F401
-                    _is_desktop_window, _is_our_window, _is_taskbar_window,
+from winapi import (_is_desktop_window, _is_our_window, _is_taskbar_window,
                     foreign_foreground, list_capturable_windows,
                     window_frame_rect, window_under_cursor)
 

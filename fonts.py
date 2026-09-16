@@ -98,8 +98,3 @@ def _build(size: int, mono: bool, bold: bool, lang: str):
         return pygame.font.SysFont("consolas", size, bold=bold)
     except Exception:
         return pygame.font.Font(None, size)
-
-
-def clear_cache() -> None:
-    """Drop the cached faces - used by the tests and after a scale change."""
-    _cache.clear()

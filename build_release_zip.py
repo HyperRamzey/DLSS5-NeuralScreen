@@ -267,10 +267,6 @@ def _skip(path: str | Path) -> bool:
     return _drop_sitepackage(norm)
 
 
-def tracked_files(repo: Path, ref: str = "HEAD") -> list[str]:
-    return sorted(git_tree(repo, ref))
-
-
 def runtime_files(repo: Path) -> list[str]:
     root = repo / "runtime"
     if not root.is_dir():

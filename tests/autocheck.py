@@ -1,18 +1,16 @@
-"""NeuralScreen v1.4 self-checks - the static part (no GUI).
+"""NeuralScreen self-checks - the static part (no GUI).
 
-Run:  runtime\\python.exe autocheck.py
+Run:  runtime\\python.exe tests\\autocheck.py
 The GUI part (menu, recording) is run separately - see the end of the output.
 
 Every check reports PASS / FAIL / SKIP plus a reason. Exit: 0 = all PASS,
 1 = there is a FAIL.
 """
-import hashlib
 import re
 import json
 import os
 import subprocess
 import sys
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # the project root (tests/ lives inside it)
@@ -156,13 +154,13 @@ def personal_config_keys():
 
 
 def shipped_config_defaults():
-    """The committed config.json is the product default, not a live file.
+    """The committed config.default.json is the product default.
 
     A maintainer's working values shipped inside an archive twice - the
     SR-removal merge left frame_generation true and motion_backend nvofa
     (1.10.0), and frame_multiplier 3 survived into 1.10.0 and 1.11.0 (a
     40-series card caps at 2x). The zip-vs-HEAD comparison cannot catch
-    this class - both sides carry the same wrong values - so HEAD's config
+    this class - both sides carry the same wrong values - so HEAD's default
     is checked against the profile-derived defaults directly.
     """
     import sys as _sys
@@ -170,7 +168,7 @@ def shipped_config_defaults():
         _sys.path.insert(0, str(ROOT))
     import settings_io
     head = json.loads(subprocess.check_output(
-        ["git", "show", "HEAD:config.json"], cwd=ROOT))
+        ["git", "show", "HEAD:config.default.json"], cwd=ROOT))
     natural = settings_io.PROFILES["Natural"]
     problems = []
     if head.get("frame_multiplier") != 2:
@@ -197,108 +195,51 @@ def shipped_config_defaults():
 
 
 def zip_integrity():
-    zpath = ROOT / "neuralscreen-v1.12.0-full.zip"
+    """Validate the pinned release contract, and a tagged ZIP when present.
+
+    A production archive cannot exist before the release commit is tagged:
+    the builder deliberately refuses any other state.  Development/static
+    runs therefore prove that HEAD's manifest exactly describes the tracked
+    payload and generated runtime.  Once the versioned ZIP exists, the same
+    check escalates to the complete offline verifier (sidecars, exact member
+    set, tagged blobs, checksums and deterministic metadata).
+    """
+    import sys as _sys
+    if str(ROOT) not in _sys.path:
+        _sys.path.insert(0, str(ROOT))
+    import build_release_zip as release
+    import settings_io
+    version = settings_io.APP_VERSION
+    tag = f"v{version}"
+    try:
+        manifest, _raw = release.validate_runtime_manifest(
+            ROOT,
+            version=version,
+            expected_tag=tag,
+            git_ref="HEAD",
+        )
+    except release.ReleaseContractError as exc:
+        return False, f"release manifest: {exc}"
+
+    package_count = manifest["package"]["file_count"]
+    runtime_count = manifest["runtime"]["file_count"]
+    zpath = ROOT / f"neuralscreen-v{version}-full.zip"
     if not zpath.is_file():
-        return False, "no neuralscreen-v1.12.0-full.zip"
-    required = [
-        "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
-        "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
-        "audio.py", "protocol.py", "winapi.py", "dialogs.py", "channels.py",
-        "settings_io.py", "paths.py", "pipeline.py", "commands.py",
-        "startup.py", "fonts.py", "taskbar.py",
-        "NeuralScreen.exe",
-        "TECHNICAL.md", "TECHNICAL.ru.md",
-        "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
-        "native/nvngx.dll", "native/nvngx_dlssnr.dll",
-        # Neural Rendering does not start without it: the NGX calls
-        # have to leave a module whose path carries "nvngx.dll".
-        "native/nvngx.dll_ns-forwarder.dll",
-        # Loaded at run time, and both have a silent fallback: left out
-        # of the archive the program ships with the wrong icons and says
-        # nothing about it.
-        "native/neuralscreen.ico",
-        # The interface faces travel with the program: a Windows that
-        # lacks Segoe UI (or ships a different cut of it) would draw
-        # the menu in whatever it has.
-        "fonts/IBMPlexSans-Regular.ttf", "fonts/IBMPlexMono-Regular.ttf",
-        "fonts/OFL.txt",
-        "runtime/pythonw.exe", "VERSION.txt",
-    ]
-    with zipfile.ZipFile(zpath) as z:
-        names = set(z.namelist())
-        missing = [f for f in required if f not in names]
-        if missing:
-            return False, f"missing from the archive: {missing}"
-        # the worker in the archive carries the hook
-        dll = z.read("native/nvngx.dll")
-        if b"NS_ARCH_SPOOF" not in dll:
-            return False, "nvngx.dll in the archive has no hook"
-        # the worker in the archive carries the window-capture mode (WGCW)
-        if b"WGCW" not in dll:
-            return False, "nvngx.dll in the archive has no WGCW (window mode)"
-        # the PYTHON SOURCES in the archive must be EXACTLY the committed
-        # ones: the archive is often rebuilt from a dirty tree, and a code
-        # change that never got committed ends up in the zip silently. The
-        # same goes for the worker - the archive carries a freshly built
-        # nvngx.dll whose content nobody can verify by eye, so a
-        # non-committed rebuild slips through (audit #4, C1/C2).
-        # Derived from `required` rather than written out again: the two
-        # lists have to agree, and the second one drifted - guides.py,
-        # gpuinfo.py, tray.py, capture.py, audio.py and dialogs.py were
-        # required to be PRESENT but never compared, so an uncommitted
-        # change to any of them shipped silently. guides.py is where the
-        # motion-vector validation lives.
-        compared = [f for f in required if f.endswith(".py")]
-        compared += ["README.md", "README.ru.md"]
-        for name in compared:
-            try:
-                head = subprocess.check_output(["git", "show", f"HEAD:{name}"],
-                                               cwd=ROOT)
-            except subprocess.CalledProcessError:
-                continue  # not in git - a new file, nothing to compare with
-            # The worktree files carry CRLF (core.autocrlf) while git show
-            # returns LF - compare the NORMALIZED bytes on both sides,
-            # otherwise every CRLF file trips the check (audit #4, C2).
-            crlf, lf = bytes([13, 10]), bytes([10])
-            got = z.read(name).replace(crlf, lf)
-            if got != head.replace(crlf, lf):
-                return False, f"{name} in the archive differs from HEAD"
-        # the config in the archive is the default one, not a personal one:
-        # personal values are written into the config legitimately, so we
-        # check ALL such fields against the committed HEAD config
-        cfg = json.loads(z.read("config.json"))
-        try:
-            head_cfg = json.loads(subprocess.check_output(
-                ["git", "show", "HEAD:config.json"]))
-        except Exception:
-            head_cfg = {}
-        leak = []
-        for key in personal_config_keys():
-            if key not in head_cfg:
-                continue
-            if cfg.get(key) != head_cfg[key]:
-                leak.append(f"{key}={cfg.get(key)!r} != HEAD {head_cfg[key]!r}")
-        if leak:
-            return False, "a personal config in the archive: " + ", ".join(leak)
-        # VERSION.txt must tell the truth (audit 10.09 H1): the commit is
-        # HEAD, the runtime sha matches the DLL inside, and the version
-        # matches the file name. A manifest that lies is worse than none.
-        vt = z.read("VERSION.txt").decode("utf-8", "replace")
-        head = subprocess.check_output(["git", "rev-parse", "HEAD"],
-                                       cwd=ROOT, text=True).strip()
-        if f"commit: {head}" not in vt:
-            return False, "VERSION.txt commit != HEAD - rebuilt from a dirty tree?"
-        zip_dll = z.read("native/nvngx_dlssnr.dll")
-        zsha = hashlib.sha256(zip_dll).hexdigest()
-        if f"sha256 {zsha}" not in vt:
-            return False, "VERSION.txt runtime sha != the DLL inside the archive"
-        packer = (ROOT / "build_release_zip.py").read_text(encoding="utf-8")
-        m = re.search(r'VERSION = "([^"]+)"', packer)
-        if not m:
-            return False, "build_release_zip.py has no VERSION"
-        if f"NeuralScreen {m.group(1)}" not in vt:
-            return False, f"VERSION.txt version does not match {m.group(1)}"
-    return True, f"{zpath.stat().st_size} bytes, all files, the hook, a default config, a truthful manifest"
+        return True, (f"schema {manifest['schema_version']}, {package_count} payload / "
+                      f"{runtime_count} runtime files pinned; ZIP waits for {tag}")
+
+    import verify_github as verifier
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+        encoding="utf-8", errors="replace",
+    ).strip()
+    failures = verifier.validate_release_set(
+        ROOT, tag=tag, tag_commit=commit, repo=ROOT,
+    )
+    if failures:
+        return False, "release ZIP: " + "; ".join(failures[:5])
+    return True, (f"{zpath.stat().st_size} bytes, exact {package_count}-file "
+                  "payload, tagged blobs and checksums verified")
 
 
 def gpuinfo_works():
@@ -504,7 +445,7 @@ def launch(overrides: dict | None = None):
     The worktree config.json is the user's live file - whatever they tweaked
     last (split, theme, profile, work_scale) leaks straight into every smoke
     and GUI check that launches the app "the way a user does". Tests want the
-    shipped defaults: git HEAD's config.json is copied to a disposable path
+    shipped defaults: git HEAD's config.default.json is copied to a disposable path
     and passed with --config. The path is cleaned up at quit_app time.
 
     overrides: a test that needs a specific launch state (menu open at
@@ -514,7 +455,7 @@ def launch(overrides: dict | None = None):
     import json
     global _test_config_path
     offset = log_offset()
-    head = subprocess.run(["git", "show", "HEAD:config.json"], cwd=ROOT,
+    head = subprocess.run(["git", "show", "HEAD:config.default.json"], cwd=ROOT,
                           capture_output=True)
     cfg = json.loads(head.stdout.decode("utf-8"))
     if overrides:

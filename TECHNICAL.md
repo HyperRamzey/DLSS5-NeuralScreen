@@ -94,6 +94,13 @@ only moves the windows.
   uses. Without that the audio track would simply be shorter than the video
   and everything after a pause would be out of sync.
 
+Stopping is a state transition, not a blocking `join()` on the UI thread.
+The encoder drains every accepted frame into `<name>.mp4.partial`, flushes and
+closes both streams, reopens the container and decodes a video frame, then
+publishes the final path with `os.replace`. Until that verification succeeds,
+the UI says *finalizing* and never reports the recording as saved. A failure
+keeps the recoverable `.partial` and reports the exact lifecycle stage.
+
 ### What recording costs, and why it is not the bitrate
 
 Recording used to halve the frame rate. Measured at 4K with `NS_PHASE=1`,
@@ -142,8 +149,14 @@ not.
 
 ## config.json
 
+`config.default.json` is the tracked product default and declares
+`schema_version`; the local `config.json` is generated/migrated per user and is
+ignored by Git. Loading merges validated user values over a fresh default, so
+a maintainer's GPU, paths or experimental switches cannot leak into a release.
+
 | Field | Meaning |
 |---|---|
+| `schema_version` | config contract version; older supported versions are migrated before validation |
 | `monitor` | stable display name saved from the menu; its flat UI index resolves to the owning adapter/output pair |
 | `width`, `height` | output resolution (**actual monitor resolution is used automatically when config is stale**) |
 | `fullscreen` | borderless fullscreen window |
@@ -158,6 +171,10 @@ not.
 | `capture_in_worker` | worker captures the desktop itself (DDA, `false` — dxcam in Python) |
 | `pixels_in_shm` | result pixels come back through a shared section instead of the pipe (`false` — pipe, as before) |
 | `flow_preset` | which DIS configuration estimates the motion field: `fast` (default, as shipped), `ultrafast`, `medium`. See "What the guides cost" |
+| `frame_limit_mode`, `frame_limit_custom` | active-pipeline cap: 30, 60, custom 15–240, or unlimited |
+| `frame_generation`, `frame_multiplier` | opt-in FG and ×2/×3/×4 requested multiplier; refusal turns it back off |
+| `recording_dir`, `screenshot_dir`, `screenshot_mode`, `screenshot_format` | persistent media destinations; screenshots use Save As or a quiet unique name, PNG or JPEG |
+| `spout`, `hdr`, `skip_static` | explicit opt-in output/capture optimisations; all default off |
 | `split` | 0–1, share of the frame left unprocessed for the before/after wipe; 0 — off |
 | `theme` | `light` / `dark` |
 | `open_menu_on_start` | open the menu on launch; `false` — a short alert instead |
@@ -174,6 +191,7 @@ They talk over stdin/stdout with a binary protocol:
 | Message | Purpose |
 |---|---|
 | `D5V3` | stream header: sizes, profile, NR parameters |
+| `CACK` | explicit result/category of the initial `CreateFeature`; SAFE PASSTHROUGH pixels are not evidence of support |
 | `SHMI` / `SACK` | shared-memory section name for the input frame |
 | `WNDO` / `WACK` | raise/close the worker's output window |
 | `MOTS` / `MACK` | motion arrives at reduced size, worker upscales it on GPU |
@@ -244,10 +262,13 @@ is filled with a chroma key and made transparent (`LWA_COLORKEY`). While the
 menu is open the window's global alpha (`LWA_ALPHA`) goes to 255, otherwise
 the bright frame underneath bleeds through the panel.
 
-**NR off (bypass).** `Num1` does not stop the pipeline anymore. Frames are
-sent with `FRAME_FLAG_BYPASS`: the worker skips the NGX evaluate and
-presents the raw capture instead. The overlay stays alive; everything is
-hidden only on real exit.
+**NR OFF.** With FG off and no recording or pending screenshot, the lifecycle
+closes DDA/WGC and presentation, sends no `FRM1` packets and hides the output;
+the worker stays warm but capture, motion, Evaluate and Present counters stop.
+Opening the menu needs only the transparent HUD layer. Turning NR back on — or
+starting FG/recording/a screenshot — rearms channels from a fresh source frame
+and cleared temporal history. Those explicit consumers use bypass frames while
+NR itself remains off.
 
 **Recording path.** Frames are requested from the worker with
 `FRAME_FLAG_WANT_PIXELS` (the same mechanism as screenshots), the open menu
@@ -266,6 +287,30 @@ Two constraints that look like quirks but are mandatory:
 Scale changes go through `RNSZ` (~60 ms, the worker recreates the NGX
 feature in-process). If `RNSZ` fails — fall back to a full worker restart.
 
+### Compatibility gate and diagnostics
+
+Before desktop capture or any presentation window exists, v1.13 runs one
+short-lived worker on three deterministic 640×360 RGBA8 frames with zero RG16F
+motion. The native worker sends `CACK` immediately after `CreateFeature`.
+Only category *unsupported* with the exact result `0xBAD00001` is durable
+UNSUPPORTED; stderr text, SAFE PASSTHROUGH output, `unknown`, `not run` and
+unexpected `SKIP` can never become PASS. All three Evaluate replies must have
+the expected dimensions, format and byte count.
+
+The cache key is for that canonical probe, not a claim that the current 4K/HDR
+desktop was exercised. It includes app version, worker hash, selected/resolved
+GPU, driver, Windows build and hashes/modes of every possible NR route: explicit
+`NS_NR_DLL`, BYO candidate plus bundled fallback, forwarder, core preload and
+via-core mode. A changed key reruns the probe. PASS and exact UNSUPPORTED are
+cached; timeout, crash, TDR or device loss receive a timed quarantine. Manual
+Retry clears the current record. Every production worker start/restart checks
+that its freshly reconstructed key still matches a PASS.
+
+The Program tab creates a deterministic support ZIP containing a bounded,
+scrubbed log tail and structured version/GPU/driver/display/runtime-signature,
+stage and HRESULT/SEH/DRED markers. It deliberately excludes config and the
+environment dump; usernames, secrets and absolute user paths are redacted.
+
 ## Performance
 
 Measured on RTX 5070 Ti, 4K desktop, `work_scale` 0.5 (1920×1080), pipeline
@@ -275,13 +320,20 @@ fully on the GPU (DDA + GRAY + WNDO + MOTS). Worker-side phase breakdown
 ```
                  acq   dda  upload   eval  present   frame     FPS
 NR ON            0.0   0.7     0.1   16.6      0.5    17.9      55
-NR OFF (bypass)  ~3    ~4      0.1      -      ~3      7.3  121-133
+NR OFF + consumer
+       (bypass)  ~3    ~4      0.1      -      ~3      7.3  121-133
 ```
 
 **NGX evaluation is 16.6 ms — 93% of an NR frame.** Everything else together
 costs 1.3 ms, so the practical ceiling on this hardware is set by NGX, not by
-the plumbing. In bypass mode NGX is skipped and the loop waits on the desktop
-actually changing (`acq`), which is why it runs several times faster.
+the plumbing. Bypass is used only while FG, recording or a screenshot explicitly
+needs frames with NR off; ordinary NR OFF is idle and therefore has no FPS.
+
+The active loop can be capped at 30, 60 or a custom 15–240 FPS on a monotonic
+deadline; a slow frame resets the schedule instead of causing a catch-up burst.
+The displayed NR rate counts only completed neural evaluations, the optional
+second rate is the FG presenter cadence, and the static-skip counter is separate.
+None of these labels claims to be the physical monitor refresh rate.
 
 An earlier revision of this section claimed "NGX itself is ~1 ms". That was a
 measurement error: the figure came from regressing round-trip time against
@@ -493,8 +545,26 @@ build drops into `native/libraries/`.
 
 ## Runtimes and the libraries folder
 
-The NR runtime ships in the archive; the optional FG one is user-supplied in
-`native/libraries/`, which takes priority over `native/` for every runtime
-the loader looks for. There is no network access: the former auto-updater was
-removed, and with it a latent defect where the `library_updates_enabled`
-toggle never persisted.
+The NR and FG runtimes ship in the archive. A user-supplied build in
+`native/libraries/` takes priority over `native/`; an NR BYO file is checked for
+an NVIDIA signature and product identity before it is mapped, otherwise the
+bundled copy remains the fallback. There is no network updater or downloader.
+
+## Reproducible release contract
+
+`build_release_zip.py v1.13.0` accepts only a clean checkout whose `HEAD` is the
+requested tag and whose version sources agree. The allowlist covers every
+shipped Python/C++/header/shader/resource, while `runtime-manifest.json` binds
+the package paths and hashes. Archive ordering, timestamps and metadata are
+fixed, so the same tagged inputs produce identical bytes. The package carries
+`THIRD-PARTY-NOTICES.md`, the manifest, `VERSION.txt` and `SHA256SUMS`.
+
+`verify_github.py` downloads no source-of-truth from the worktree: it checks the
+published asset, manifest and checksums against the tagged Git blobs and rejects
+missing, extra, absolute, drive-qualified or traversal paths. The test runner
+reports unit/static, WARP, GPU and GUI-E2E separately; a canonical `SKIP` with
+exit code 0 is counted as SKIP, never silently promoted to PASS.
+
+The menu has a cyclic Tab/Shift+Tab order, arrow-key editing, Enter/Space
+activation, focus auto-scroll and a contrast-tested focus ring. Window rows keep
+their HWND as hidden identity; duplicate titles and colons remain display text.

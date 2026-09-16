@@ -34,17 +34,21 @@ screen down the middle.*
 ## What you need
 
 - **Windows 11**, or Windows 10 — reported working.
-- **An NVIDIA RTX card:**
+- **An NVIDIA RTX card.** **Validated** = reproduced locally; **reported** = user evidence;
+  **unverified** = no successful run captured; **known failure** = the shipped runtime refuses or fails.
 
-  | Cards | Status |
-  |---|---|
-  | **RTX 50** / **RTX 40** / **RTX 30** | ✅ works |
-  | **RTX 20** (Turing) | ❌ below the minimum architecture — the program starts, the picture is not processed |
-  | **Hybrid laptops (Optimus)** | ✅ works; on the iGPU display the capture falls back to a slower path |
+  | Family | Neural Rendering | Frame Generation |
+  |---|---|---|
+  | **RTX 50** | **validated** (5070 Ti) | **validated** (5070 Ti) |
+  | **RTX 40** | **reported**, unresolved 4060 reports | **reported** (4080 Super ×2; 4060 needs retest) |
+  | **RTX 30** | **unverified** | **known failure** (below Ada) |
+  | **RTX 20** | **known failure** | **known failure** (below Ada) |
+
+  Hybrid laptops and multi-GPU systems remain experimental; capture may use a slower fallback when the display is attached to the iGPU.
 
 - **The latest NVIDIA driver, and Windows up to date.** Not a formality: the
-  neural runtime talks to the driver directly, and an old driver is the
-  commonest reason it refuses to start or the picture never appears.
+  neural runtime talks to the driver directly; an old driver is the commonest
+  reason it refuses to start or the picture never appears.
 - **Nothing installed.** The release archive brings its own Python.
 
 ## Install
@@ -130,12 +134,9 @@ on it, red when it is not.
   flips back off with a short notice** — no silent ON. Validated on RTX
   50-series; adapters beyond it are unconfirmed.
 
-Everything else is behind the sliders icon: which monitor is processed and
-which card does it, HDR compatibility, the screenshot folder, Spout2 output,
-the recording indicator, leaving an unchanged screen alone, the key
-assignments, the theme — and the language, of which there are **12**: English,
-Russian, French, German, Spanish, Italian, Portuguese, Polish, Ukrainian,
-Chinese, Japanese and Korean.
+Everything else is behind the sliders icon: monitor/GPU, a 30/60/custom/off
+frame limiter, HDR, media folders, Spout2, the recording indicator, static
+frame skipping, key assignments, keyboard navigation, theme and **12** languages.
 
 ## Swapping a runtime
 
@@ -145,13 +146,11 @@ bundled copy; `nr_dll` / `NS_NR_DLL` remain the NR override.
 
 ## Recording and screenshots
 
-**Num0** records what you see, with system sound, into an MP4 in
-`recordings`. **Num3** saves a screenshot. The menu appears in both if it is
-open, on purpose. A red dot with a timer sits in the corner while recording
-(it can be turned off in the settings).
-
-Screenshots freeze the processed frame before **Save As** opens, so the dialog
-cannot appear in the image. Set **Screenshot folder...** once to start there.
+**Num0** records to the configured folder. Stop is non-blocking: the encoder
+drains into a `.partial`, verifies the final MP4, then publishes it atomically
+and shows the codec, FPS, audio state and exact path. **Num3** freezes the
+processed frame before any dialog; choose **Save As** or quiet unique-name
+saving, plus PNG or JPEG, in settings. The open menu appears in both.
 
 **Recording externally:**
 
@@ -163,9 +162,11 @@ cannot appear in the image. Set **Screenshot folder...** once to start there.
 
 ## If something is not working
 
-**Nothing appears after launch.** Check `NeuralScreen.log` next to the
-program — it names the cause. The commonest is a missing
-`native\nvngx_dlssnr.dll`.
+**Nothing appears after launch.** v1.13 first runs three synthetic frames
+without desktop capture. A failed, unsupported or quarantined result blocks
+the overlay instead of entering a restart loop. Use **Create diagnostic
+package** on the Program tab (or the path in the failure dialog), then check
+`NeuralScreen.log`.
 
 **The overlay is invisible in a game.** True fullscreen cannot have anything
 drawn over it — a Windows rule. Switch the game to *borderless*.
@@ -183,7 +184,7 @@ settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR
 
 - **True fullscreen games** cannot have an overlay drawn over them — borderless or windowed only.
 - **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
-- **Windows 10 and multi-GPU systems are experimental** — v1.12 fixes adapter/output selection from user logs, not local hardware. Reports welcome.
+- **Windows 10 and multi-GPU systems are experimental** — adapter/output selection is covered by regression tests, but not by local multi-GPU hardware.
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
 - **Window mode:** panel blink and drag stutter were fixed in 1.11.0, taskbar

@@ -1,10 +1,11 @@
-"""Pin the 10-bit SDR capture contract from issue #86.
+"""Pin the 10-bit SDR capture contract from issues #86 and #89.
 
 The reporter's log alternates DDA source frames between BGRA8 and FP16. Each
-change rebuilds the cross-API bridge and produces visible flicker. This host
-cannot force the display driver into that condition, so the test verifies the
-load-bearing API contract: SDR asks IDXGIOutput5 for BGRA8 only, and falls back
-to legacy DuplicateOutput only when Output5 is unavailable or refuses it.
+change rebuilds the cross-API bridge and produces visible flicker. v1.12 asked
+DuplicateOutput1 for BGRA8 only, but two fresh logs prove that real drivers can
+still alternate formats after that call succeeds. This host cannot force the
+condition, so the test verifies the stronger contract: SDR uses the original
+DuplicateOutput conversion; DuplicateOutput1 is reserved for opt-in HDR.
 
 Run: runtime\\python.exe tests\\test_capture_format_stability.py
 """
@@ -24,27 +25,24 @@ def main() -> int:
     end = SOURCE.index("// The phase profiler", begin)
     dda = SOURCE[begin:end]
 
-    # One advertised SDR format is a format contract: DXGI converts any
-    # 10-bit/FP16 scan-out to it before AcquireNextFrame returns the surface.
-    pin = "const DXGI_FORMAT sdr_formats[] = {DXGI_FORMAT_B8G8R8A8_UNORM};"
-    if pin not in dda:
-        failures.append("OpenDda no longer pins SDR duplication to BGRA8")
-    if "g_dda_hdr_mode ? hdr_formats : sdr_formats" not in dda:
-        failures.append("the SDR format list is not selected when HDR compatibility is off")
-    if "DuplicateOutput1(g_dda_d11, 0, format_count, formats, &g_dda_dup)" not in dda:
-        failures.append("OpenDda does not use DuplicateOutput1 for the selected format list")
-    if "SDR capture pinned to BGRA8 (stable across 10-bit scan-out)" not in dda:
-        failures.append("the stable SDR path has no diagnostic for future issue reports")
-
-    # Legacy DDA is still a valid recovery path; it must sit after the
-    # Output5 attempt, not replace it on a normal Windows 10+ machine.
+    # SDR must take the documented 32-bit BGRA conversion path directly.  In
+    # particular it must not advertise FP16 to DuplicateOutput1 again.
     try:
-        output5 = dda.index("DuplicateOutput1(")
-        legacy = dda.index("output1->DuplicateOutput(")
-        if output5 > legacy:
-            failures.append("legacy DuplicateOutput runs before the stable Output5 path")
+        sdr = dda.index("if (!g_dda_hdr_mode)")
+        hdr = dda.index("else if (SUCCEEDED(output->QueryInterface", sdr)
+        sdr_branch = dda[sdr:hdr]
+        if "output1->DuplicateOutput(g_dda_d11, &g_dda_dup)" not in sdr_branch:
+            failures.append("SDR no longer uses DuplicateOutput's BGRA conversion")
+        if "DuplicateOutput1(" in sdr_branch:
+            failures.append("SDR still reaches the driver-dependent Output5 format path")
     except ValueError:
-        failures.append("one of the DDA duplication paths is missing")
+        failures.append("the SDR/HDR duplication split is missing")
+    if "DuplicateOutput1(g_dda_d11, 0, _countof(hdr_formats)" not in dda:
+        failures.append("HDR no longer requests FP16 through DuplicateOutput1")
+    if "if (g_dda_hdr_mode && FAILED(hr))" not in dda:
+        failures.append("HDR has no stable SDR fallback when Output5 refuses")
+    if "SDR capture fixed to BGRA8 through legacy duplication" not in dda:
+        failures.append("the stable SDR path has no diagnostic for future logs")
 
     # A genuinely legacy/driver-refused format change still rebuilds only the
     # bridge. Removing that guard would revive the old full DDA reopen storm.
@@ -56,7 +54,7 @@ def main() -> int:
         print("FAIL:", failure)
     if failures:
         return 1
-    print("OK: SDR DDA pins BGRA8 across 10-bit scan-out; legacy fallback stays bounded")
+    print("OK: SDR DDA uses stable BGRA8 conversion; Output5 is HDR-only")
     return 0
 
 

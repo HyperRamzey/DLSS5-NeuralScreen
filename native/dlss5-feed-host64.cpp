@@ -4239,48 +4239,42 @@ static bool OpenDda(UINT w, UINT hgt)
     g_dda_hdr_mode = HdrEnabled() && g_capture_display.enabled;
     IDXGIOutput5 *output5 = nullptr;
     hr = E_FAIL;
-    if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5), (void **)&output5)))
+    if (!g_dda_hdr_mode)
     {
-        // DuplicateOutput() has no format contract. On a 10-bit SDR desktop
-        // it can alternate FP16 and BGRA8 from one frame to the next (#86),
-        // which makes the shared bridge churn and the displayed picture blink.
-        // DuplicateOutput1 converts a format that is not listed here before
-        // AcquireNextFrame returns it. Keep SDR deliberately to one stable
-        // BGRA8 format; HDR compatibility retains the existing FP16-first
-        // path so it can preserve scRGB when the user explicitly asked for it.
+        // DuplicateOutput1 was meant to pin SDR to the one advertised BGRA8
+        // format. Real v1.12 logs from two drivers (#86 and #89) proved that
+        // contract insufficient here: AcquireNextFrame still alternated FP16
+        // and BGRA8 thousands of times although DuplicateOutput1 succeeded.
+        // The original DuplicateOutput has the stronger SDR behaviour we need:
+        // DXGI converts the desktop to 32-bit BGRA. Use it deliberately while
+        // HDR compatibility is off, so one driver quirk cannot rebuild the
+        // bridge on every mouse movement.
+        hr = output1->DuplicateOutput(g_dda_d11, &g_dda_dup);
+        if (SUCCEEDED(hr))
+            Log("[dda] SDR capture fixed to BGRA8 through legacy duplication");
+    }
+    else if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5),
+                                               (void **)&output5)))
+    {
+        // HDR compatibility is the only mode that needs a high-colour surface.
+        // Keep BGRA8 as the fallback format accepted by DuplicateOutput1.
         const DXGI_FORMAT hdr_formats[] = {
             DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
-        const DXGI_FORMAT sdr_formats[] = {DXGI_FORMAT_B8G8R8A8_UNORM};
-        const DXGI_FORMAT *formats = g_dda_hdr_mode ? hdr_formats : sdr_formats;
-        const UINT format_count = g_dda_hdr_mode ? _countof(hdr_formats)
-                                                  : _countof(sdr_formats);
-        hr = output5->DuplicateOutput1(g_dda_d11, 0, format_count, formats, &g_dda_dup);
+        hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(hdr_formats),
+                                       hdr_formats, &g_dda_dup);
         output5->Release();
         if (FAILED(hr))
-            Log(g_dda_hdr_mode
-                    ? "[hdr] FP16 duplication refused 0x%08X - capturing in SDR instead"
-                    : "[dda] BGRA8-pinned duplication refused 0x%08X - using legacy capture",
-                hr);
-        else if (!g_dda_hdr_mode)
-            Log("[dda] SDR capture pinned to BGRA8 (stable across 10-bit scan-out)");
+            Log("[hdr] FP16 duplication refused 0x%08X - capturing in SDR instead", hr);
     }
-    else if (g_dda_hdr_mode)
-        Log("[hdr] this Windows has no IDXGIOutput5 - capturing in SDR instead");
     else
-        Log("[dda] this Windows has no IDXGIOutput5 - legacy capture may change format");
-    if (FAILED(hr))
+        Log("[hdr] this Windows has no IDXGIOutput5 - capturing in SDR instead");
+    if (g_dda_hdr_mode && FAILED(hr))
     {
-        // SDR, and never silently: the first staged frame logs "capture=SDR"
-        // and the menu then says HDR is not being preserved (warn_hdr). The
-        // alternative - refusing to duplicate at all - turns a washed-out
-        // picture into no picture, which is the worse of the two on hardware
-        // nobody here can see.
-        //
-        // g_dda_hdr_mode stays as it is on purpose: it records what this
-        // capture was OPENED for, and DdaGrab compares it against what the
-        // desktop is doing now to notice a mode change. Lowering it here
-        // would make that comparison disagree every second and reopen the
-        // duplication forever.
+        // HDR was requested but Output5 could not provide it. Fall back to the
+        // stable SDR conversion, and never silently: the first staged frame
+        // logs "capture=SDR" and the menu warns that HDR is not preserved.
+        // g_dda_hdr_mode stays true so DdaGrab can still notice a real desktop
+        // HDR mode change without reopening the duplication every second.
         hr = output1->DuplicateOutput(g_dda_d11, &g_dda_dup);
     }
     output1->Release(); output->Release(); adapter->Release(); factory->Release();
@@ -4328,12 +4322,11 @@ static double PhaseNow();
 static void PhaseAdd(int idx, double t0);
 static bool PhaseEnabled();
 
-// FormatChanged is NOT SizeChanged. SDR DDA normally pins its output to
-// BGRA8 through DuplicateOutput1 (#86), so a 10-bit scan-out cannot alternate
+// FormatChanged is NOT SizeChanged. SDR DDA is converted to BGRA8 through the
+// original DuplicateOutput (#86/#89), so a 10-bit scan-out cannot alternate
 // FP16/BGRA8 and churn this bridge. The distinction remains load-bearing for
-// older Windows or a driver that refuses Output5: their legacy duplication can
-// still change format, and reopening the whole duplication for it costs far
-// more than rebuilding this bridge.
+// WGC and the HDR path: those sources can still change format, and reopening
+// the whole capture for it costs far more than rebuilding this bridge.
 enum class StageResult { Ok, SizeChanged, FormatChanged, Failed };
 
 // Everything between "a captured D3D11 texture" and "the bytes are in the

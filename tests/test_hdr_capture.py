@@ -3,7 +3,8 @@
 Requires the bundled NVIDIA runtime and an RTX GPU. On an HDR primary display
 checks FP16 WGC/DDA capture, scRGB presentation, bypass, neural processing, wipe,
 SDR pixel export, and switching from HDR capture back to SDR pipe input.
-Run with --run for WGC, or --desktop for full-screen desktop capture/present.
+Run with --run for WGC. --desktop runs full-screen DDA and, when Windows HDR is
+off, verifies the stable legacy BGRA8 path used to fix issues #86 and #89.
 """
 import ctypes
 import os
@@ -16,20 +17,12 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 import numpy as np
 import pygame
 import protocol as wire
-
-
-def exact(pipe, size):
-    data = bytearray()
-    while len(data) < size:
-        part = pipe.read(size - len(data))
-        if not part:
-            raise RuntimeError("worker exited during HDR test")
-        data.extend(part)
-    return data
+from worker_reply import read_exact, read_reply  # noqa: E402
 
 
 def run(desktop=False):
@@ -59,14 +52,17 @@ def run(desktop=False):
         worker.stdin.flush()
         if desktop:
             wire.send_dda(worker, width, height)
-            ack = struct.unpack(wire.DDA_ACK_FMT, exact(worker.stdout, struct.calcsize(wire.DDA_ACK_FMT)))
+            ack = struct.unpack(wire.DDA_ACK_FMT,
+                                read_reply(worker.stdout, struct.calcsize(wire.DDA_ACK_FMT)))
             assert ack[0] == wire.DDA_ACK_MAGIC and ack[1] == 1, ack
         else:
             wire.send_wgc(worker, hwnd)
-            ack = struct.unpack(wire.WGC_ACK_FMT, exact(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
+            ack = struct.unpack(wire.WGC_ACK_FMT,
+                                read_reply(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
             assert ack[:4] == (wire.WGC_ACK_MAGIC, 1, width, height), ack
         wire.send_window(worker, width, height)
-        ack = struct.unpack(wire.WINDOW_ACK_FMT, exact(worker.stdout, struct.calcsize(wire.WINDOW_ACK_FMT)))
+        ack = struct.unpack(wire.WINDOW_ACK_FMT,
+                            read_reply(worker.stdout, struct.calcsize(wire.WINDOW_ACK_FMT)))
         assert ack[0] == wire.WINDOW_ACK_MAGIC and ack[1] == 1, ack
         motion = np.zeros((work_h, work_w, 2), dtype=np.float16).tobytes()
         for index in range(12):
@@ -82,18 +78,20 @@ def run(desktop=False):
             worker.stdin.write(struct.pack(wire.FRAME_FMT, wire.FRAME_MAGIC, index, 1, flags, index))
             worker.stdin.write(motion)
             worker.stdin.flush()
-            ack = struct.unpack(wire.OUT_FMT, exact(worker.stdout, struct.calcsize(wire.OUT_FMT)))
+            ack = struct.unpack(wire.OUT_FMT,
+                                read_reply(worker.stdout, struct.calcsize(wire.OUT_FMT)))
             assert ack[0] == wire.OUT_MAGIC and ack[2] == 1, ack
             if ack[3]:
                 assert ack[3] == width * height * 4, ack
-                pixels = np.frombuffer(exact(worker.stdout, ack[3]), np.uint8)
+                pixels = np.frombuffer(read_exact(worker.stdout, ack[3]), np.uint8)
                 assert pixels.reshape(-1, 4)[:, :3].max() > 0, "empty SDR export"
                 results += 1
             time.sleep(.03)
         assert results >= 6, results
         # Disable native capture: the existing SDR pipe/present must still work.
         wire.send_wgc(worker, 0)
-        ack = struct.unpack(wire.WGC_ACK_FMT, exact(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
+        ack = struct.unpack(wire.WGC_ACK_FMT,
+                            read_reply(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
         assert ack[1] == 1, ack
         frame = np.full((height, width, 4), 128, dtype=np.uint8)
         frame[:, :, 3] = 255
@@ -102,9 +100,10 @@ def run(desktop=False):
         worker.stdin.write(frame.tobytes())
         worker.stdin.write(motion)
         worker.stdin.flush()
-        ack = struct.unpack(wire.OUT_FMT, exact(worker.stdout, struct.calcsize(wire.OUT_FMT)))
+        ack = struct.unpack(wire.OUT_FMT,
+                            read_reply(worker.stdout, struct.calcsize(wire.OUT_FMT)))
         assert ack[2] == 1 and ack[3] == frame.nbytes, ack
-        assert exact(worker.stdout, ack[3]) == frame.tobytes(), "HDR->SDR pipe regression"
+        assert read_exact(worker.stdout, ack[3]) == frame.tobytes(), "HDR->SDR pipe regression"
     finally:
         worker.stdin.close()
         try:
@@ -118,6 +117,11 @@ def run(desktop=False):
         log = b"".join(logs).decode("utf-8", "replace")
         print(log)
     assert worker.returncode == 0, worker.returncode
+    if desktop and "[dda] SDR capture fixed to BGRA8 through legacy duplication" in log:
+        assert "[cap] capture format 87 (BGRA8)" in log, "legacy DDA did not produce BGRA8"
+        assert " - rebuilding the bridge" not in log, "SDR DDA changed format during the smoke test"
+        print(f"PASS: DDA stable BGRA8 capture/present, NR, bypass, wipe and pixel export ({results} frames)")
+        return
     assert "capture=FP16 scRGB" in log, "HDR capture not exercised: run on an HDR primary display"
     assert "presentation=FP16 scRGB" in log, "HDR presentation not exercised"
     assert "presentation=8-bit SDR" in log, "HDR->SDR transition not exercised"

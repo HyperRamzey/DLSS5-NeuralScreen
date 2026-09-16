@@ -741,29 +741,41 @@ def drain_commands(st) -> bool:
                     opened = st.display.menu.toggle()
                 st.display.set_menu_opaque(opened)
                 st.display.set_menu_input(opened)
-                if opened and not was_open:
-                    # In one-window mode the HUD layer is the size of
-                    # the captured window - a menu near the edge would
-                    # be clipped by it. Expand the layer to the whole
-                    # monitor while the menu is open, so the menu is
-                    # always fully visible (user: menu lost outside a
-                    # small window). The saved offset is honoured -
-                    # layout() clamps it to the screen (user rule
-                    # 10.09: fixed position until the user drags it).
-                    if st.window_hwnd is not None:
-                        st.display.set_fullscreen_layer(st.mon_w, st.mon_h)
-                    # The mouse lands on the title bar, so the user
-                    # does not have to hunt for the pointer (user
-                    # request). The layout must be current for the
-                    # title rect to be valid.
-                    try:
-                        st.display.menu.layout(
-                            st.display.screen.get_width(),
-                            st.display.screen.get_height())
-                        cx, cy = st.display.menu.title_center()
-                        ctypes.windll.user32.SetCursorPos(cx, cy)
-                    except Exception:
-                        pass
+                if opened:
+                    if not was_open:
+                        # In one-window mode the HUD layer is the size of
+                        # the captured window - a menu near the edge would
+                        # be clipped by it. Expand the layer to the whole
+                        # monitor while the menu is open, so the menu is
+                        # always fully visible (user: menu lost outside a
+                        # small window). The saved offset is honoured -
+                        # layout() clamps it to the screen (user rule
+                        # 10.09: fixed position until the user drags it).
+                        if st.window_hwnd is not None:
+                            st.display.set_fullscreen_layer(st.mon_w, st.mon_h)
+                        # The mouse lands on the title bar, so the user
+                        # does not have to hunt for the pointer (user
+                        # request). The layout must be current for the
+                        # title rect to be valid.
+                        try:
+                            st.display.menu.layout(
+                                st.display.screen.get_width(),
+                                st.display.screen.get_height())
+                            cx, cy = st.display.menu.title_center()
+                            ctypes.windll.user32.SetCursorPos(cx, cy)
+                        except Exception:
+                            pass
+                    # Logical visibility is not physical visibility. After a
+                    # monitor/GPU rebuild or a shell/compositor disturbance the
+                    # log could say "opened" while the HWND stayed hidden or
+                    # below the native presenter (#87/#88). Every open/show is
+                    # therefore an explicit recovery operation; duplicate
+                    # taskbar activations remain idempotent.
+                    if not st.display.is_visible():
+                        st.display.reveal()
+                    st.display.set_visible(True)
+                    st.display.raise_topmost()
+                    st.display.draw_overlay(0.0)
                 else:
                     # The menu closed: put the HUD layer back on the
                     # captured window.

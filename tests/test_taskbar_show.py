@@ -39,11 +39,16 @@ class _Menu:
 
 
 class _Display:
-    def __init__(self, visible: bool):
-        self.menu = _Menu(visible)
+    def __init__(self, menu_visible: bool, window_visible: bool = True):
+        self.menu = _Menu(menu_visible)
         self.opaque = []
         self.input = []
         self.refreshes = 0
+        self.window_visible = window_visible
+        self.reveals = 0
+        self.visibility = []
+        self.raises = 0
+        self.draws = []
 
     def refresh_colorkey(self) -> None:
         self.refreshes += 1
@@ -54,10 +59,28 @@ class _Display:
     def set_menu_input(self, enabled: bool) -> None:
         self.input.append(enabled)
 
+    def is_visible(self) -> bool:
+        return self.window_visible
 
-def _state(visible: bool):
+    def reveal(self) -> None:
+        self.reveals += 1
+        self.window_visible = True
+
+    def set_visible(self, enabled: bool) -> None:
+        self.visibility.append(enabled)
+        self.window_visible = enabled
+
+    def raise_topmost(self) -> None:
+        self.raises += 1
+
+    def draw_overlay(self, interval: float) -> None:
+        self.draws.append(interval)
+
+
+def _state(visible: bool, *, window_visible: bool = True):
     return SimpleNamespace(
-        tray_commands=queue.Queue(), display=_Display(visible),
+        tray_commands=queue.Queue(),
+        display=_Display(visible, window_visible),
         window_hwnd=None, running=True, frame_index=0,
     )
 
@@ -82,15 +105,21 @@ def main() -> int:
             failures.append("show_settings did not reapply the layered attributes")
         if st.display.opaque != [True] or st.display.input != [True]:
             failures.append("show_settings did not retain menu opacity/input")
+        if st.display.visibility != [True] or st.display.raises != 1 \
+                or st.display.draws != [0.0]:
+            failures.append("duplicate show_settings did not physically re-show the menu")
 
-        # It must also open a genuinely closed menu.
-        st = _state(False)
+        # It must also open a genuinely closed menu and recover a hidden HWND.
+        st = _state(False, window_visible=False)
         st.tray_commands.put("show_settings")
         commands.drain_commands(st)
         if not st.display.menu.visible:
             failures.append("show_settings did not open a closed menu")
         if st.display.menu.toggle_calls:
             failures.append("show_settings used toggle() while opening")
+        if st.display.reveals != 1 or st.display.visibility != [True] \
+                or st.display.raises != 1 or st.display.draws != [0.0]:
+            failures.append("show_settings logged open without recovering the hidden HWND")
 
         # The existing hotkey/tray command retains its explicit toggle contract.
         st = _state(True)
@@ -100,6 +129,8 @@ def main() -> int:
             failures.append("settings no longer toggles the menu")
         if st.display.refreshes:
             failures.append("ordinary settings toggle unexpectedly used taskbar recovery")
+        if st.display.raises or st.display.draws:
+            failures.append("closing the menu unexpectedly raised or redrew it")
     finally:
         commands.settings_io.menu_payload = original_payload
         commands.settings_io.save_menu_layout = original_save

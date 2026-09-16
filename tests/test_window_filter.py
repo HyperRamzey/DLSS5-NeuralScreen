@@ -12,6 +12,7 @@ invariants (taskbar window, not the desktop, non-empty title, unique).
 import os
 import sys
 import importlib.util
+import inspect
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
@@ -23,10 +24,37 @@ sys.path.insert(0, ROOT)
 _spec = importlib.util.spec_from_file_location("ns_main", os.path.join(ROOT, "main.py"))
 ns_main = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ns_main)
+import winapi
 
 
 def main() -> int:
     failures = []
+
+    # The native presenter is ours even though it runs in the worker process.
+    # WindowFromPoint can return it through the layered click-through surface;
+    # without this identity rule Num5 captures NeuralScreen itself.
+    saved_pid = winapi._window_pid
+    saved_class = winapi._window_class_name
+    try:
+        winapi._window_pid = lambda _hwnd: os.getpid() + 100
+        winapi._window_class_name = lambda _hwnd: "NeuralScreenPresent"
+        if not winapi._is_our_window(1):
+            failures.append("the native presenter is not recognised as our window")
+        winapi._window_class_name = lambda _hwnd: "SomeGameWindow"
+        if winapi._is_our_window(1):
+            failures.append("a foreign window is recognised as ours")
+        winapi._window_pid = lambda _hwnd: os.getpid()
+        if not winapi._is_our_window(1):
+            failures.append("the Python UI process is not recognised as ours")
+    finally:
+        winapi._window_pid = saved_pid
+        winapi._window_class_name = saved_class
+
+    for fn, target in ((winapi.foreign_foreground, "hwnd"),
+                       (winapi.window_under_cursor, "top")):
+        if f"_is_our_window({target})" not in inspect.getsource(fn):
+            failures.append(f"{fn.__name__} bypasses the shared own-window filter")
+
     wins = ns_main.list_capturable_windows()
     print(f"live window list: {len(wins)} entries")
     if not isinstance(wins, list):
@@ -45,6 +73,8 @@ def main() -> int:
             failures.append(f"0x{hwnd:X} ({title}): not a taskbar window")
         if ns_main._is_desktop_window(hwnd):
             failures.append(f"0x{hwnd:X} ({title}): the desktop slipped through")
+        if winapi._is_our_window(hwnd):
+            failures.append(f"0x{hwnd:X} ({title}): a NeuralScreen window slipped through")
         if hwnd in seen:
             failures.append(f"0x{hwnd:X}: duplicate hwnd")
         seen.add(hwnd)

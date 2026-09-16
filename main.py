@@ -121,7 +121,7 @@ from settings_io import (  # noqa: F401
 # on purpose: main is where the rest of the program - and the tests - look
 # them up, and moving code must not move its callers.
 from winapi import (DWMWA_EXTENDED_FRAME_BOUNDS, _RECT,  # noqa: F401
-                    _is_desktop_window, _is_taskbar_window,
+                    _is_desktop_window, _is_our_window, _is_taskbar_window,
                     foreign_foreground, list_capturable_windows,
                     window_frame_rect, window_under_cursor)
 

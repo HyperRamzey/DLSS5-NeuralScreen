@@ -23,6 +23,32 @@ class _RECT(ctypes.Structure):
 
 
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
+OUR_NATIVE_WINDOW_CLASSES = frozenset({"NeuralScreenPresent"})
+
+
+def _window_pid(hwnd: int) -> int:
+    pid = ctypes.c_ulong(0)
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
+def _window_class_name(hwnd: int) -> str:
+    cls = ctypes.create_unicode_buffer(128)
+    if not ctypes.windll.user32.GetClassNameW(hwnd, cls, len(cls)):
+        return ""
+    return cls.value
+
+
+def _is_our_window(hwnd: int) -> bool:
+    """True for either Python-owned UI or the native presenter process.
+
+    The presenter deliberately lives in the worker process, so comparing its
+    PID with ``os.getpid()`` is not enough.  ``WindowFromPoint`` can still
+    return that layered click-through window; treating it as a foreign target
+    made window mode capture NeuralScreen's own output instead of the game.
+    """
+    return (_window_pid(hwnd) == os.getpid() or
+            _window_class_name(hwnd) in OUR_NATIVE_WINDOW_CLASSES)
 
 
 def window_frame_rect(hwnd: int):
@@ -56,9 +82,7 @@ def foreign_foreground() -> int:
     hwnd = user32.GetForegroundWindow()
     if not hwnd or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
         return 0
-    pid = ctypes.c_ulong(0)
-    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-    if pid.value == os.getpid():
+    if _is_our_window(hwnd):
         return 0
     if _is_desktop_window(hwnd):
         return 0
@@ -101,9 +125,7 @@ def window_under_cursor() -> int:
         top = hwnd
     if not user32.IsWindowVisible(top) or user32.IsIconic(top):
         return 0
-    pid = ctypes.c_ulong(0)
-    user32.GetWindowThreadProcessId(top, ctypes.byref(pid))
-    if pid.value == os.getpid():
+    if _is_our_window(top):
         return 0
     if _is_desktop_window(top):
         return 0
@@ -153,9 +175,7 @@ def list_capturable_windows() -> list[tuple[int, str]]:
     def cb(hwnd, _lparam):
         if not user32.IsWindowVisible(hwnd):
             return True
-        pid = ctypes.c_ulong(0)
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value == os.getpid():
+        if _is_our_window(hwnd):
             return True
         if _is_desktop_window(hwnd) or not _is_taskbar_window(hwnd):
             return True

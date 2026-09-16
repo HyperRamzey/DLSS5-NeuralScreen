@@ -38,6 +38,9 @@ recordings/
 # Release archives in the root (rebuilt at release time)
 *.zip
 
+# The outer checksum sidecar built next to the archive (rebuilt at release time)
+SHA256SUMS
+
 # Screenshots taken with the menu button
 screenshots/
 

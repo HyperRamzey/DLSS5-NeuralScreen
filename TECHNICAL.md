@@ -168,6 +168,7 @@ a maintainer's GPU, paths or experimental switches cannot leak into a release.
 | `lang` | 12 languages: `en` `ru` `fr` `de` `es` `it` `pt` `pl` `uk` `zh` `ja` `ko` |
 | `worker_present` | worker shows the frame in its own window (`false` — pygame output) |
 | `motion_on_gpu` | worker upscales the motion field (`false` — CPU) |
+| `motion_backend` | which estimator builds the motion field: `nvofa` (driver optical flow, the shipped default) or `cpu` (DIS). NVOFA falls back to CPU DIS by itself when the driver refuses |
 | `capture_in_worker` | worker captures the desktop itself (DDA, `false` — dxcam in Python) |
 | `pixels_in_shm` | result pixels come back through a shared section instead of the pipe (`false` — pipe, as before) |
 | `flow_preset` | which DIS configuration estimates the motion field: `fast` (default, as shipped), `ultrafast`, `medium`. See "What the guides cost" |

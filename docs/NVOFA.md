@@ -1,9 +1,12 @@
-# Experimental NVIDIA Optical Flow motion backend
+# NVIDIA Optical Flow motion backend
 
-Select **Settings → Capture → Motion estimation → NVOFA (experimental)**.
-Changing the selection restarts the worker. CPU DIS is the default. This is
-motion estimation for neural rendering, independent of Super Resolution,
-Frame Generation and the experimental GPU LK implementation.
+NVOFA is the **default** motion backend (since 1.13.1). It is selected
+automatically on a fresh install; **Settings → Capture → Motion estimation**
+switches between *NVOFA* and *CPU DIS*, and changing the selection restarts
+the worker. CPU DIS remains the automatic fallback when the driver refuses,
+and the explicit choice when you want it. This is motion estimation for
+neural rendering, independent of Super Resolution, Frame Generation and the
+experimental GPU LK implementation.
 
 The worker loads `nvofapi64.dll` from Windows System32, as installed by the
 NVIDIA display driver. No new runtime DLL or network request is needed.
@@ -12,9 +15,10 @@ If initialization or execution fails, the worker logs the reason and returns
 to CPU motion; the application displays a fallback notice. Select CPU and
 then NVOFA to retry with a fresh worker.
 
-For a manually launched worker, set `NS_MOTION_BACKEND=nvofa`. Unset or any
-other value keeps CPU motion. The normal launcher derives this environment
-variable from the saved `motion_backend` setting.
+For a manually launched worker, set `NS_MOTION_BACKEND=nvofa` explicitly: the
+worker checks that exact value, and the normal launcher always exports it from
+the saved `motion_backend` setting. Leaving it unset keeps CPU motion in a
+hand-launched worker, which is useful when debugging the DIS path.
 
 ## Data path
 

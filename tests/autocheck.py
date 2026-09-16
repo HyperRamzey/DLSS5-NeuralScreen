@@ -185,9 +185,12 @@ def shipped_config_defaults():
     if head.get("frame_generation") is not False:
         problems.append(f"frame_generation={head.get('frame_generation')!r} "
                         f"- a fresh install must be opt-in")
-    if head.get("motion_backend") != "cpu":
+    # NVOFA is the default since 1.13.1 (user rule 16.09): the driver path is
+    # the one the program is built around, and CPU DIS stays as the automatic
+    # fallback and an explicit choice.
+    if head.get("motion_backend") != "nvofa":
         problems.append(f"motion_backend={head.get('motion_backend')!r} "
-                        f"- cpu is the default")
+                        f"- nvofa is the default")
     for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
         if key not in head or head[key] is None:
             continue
@@ -199,7 +202,7 @@ def shipped_config_defaults():
             problems.append(f"{key}={head[key]!r} - Natural says {natural[key]}")
     if problems:
         return False, "HEAD config is not the product default: " + "; ".join(problems)
-    return True, "multiplier 2, FG off, CPU motion, Natural's four sliders"
+    return True, "multiplier 2, FG off, NVOFA motion, Natural's four sliders"
 
 
 def tests_isolate_user_config():

@@ -32,15 +32,21 @@ def main():
     assert "NS_NVOFA_COST='1'" in confidence, \
         "the confidence experiment reads cost files and must request the channel"
 
-    assert all(normalize_backend(v) == "cpu" for v in [None, {}, [], 1, "gpu", "CPU"])
-    assert normalize_backend("nvofa") == "nvofa"
-    assert _payload()["motion_backend"] == "cpu"
-    assert _payload(dict(GOOD, motion_backend="nvofa"))["motion_backend"] == "nvofa"
+    assert all(normalize_backend(v) == "nvofa" for v in [None, {}, [], 1, "gpu", "NVofa", "NVOFA", "CPU"])
+    assert normalize_backend("cpu") == "cpu"
+    assert _payload()["motion_backend"] == "nvofa"
+    assert _payload(dict(GOOD, motion_backend="cpu"))["motion_backend"] == "cpu"
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "config.json"
-        for value in (None, "nvofa", "obsolete"):
+        for value in (None, "cpu", "obsolete"):
             path.write_text(json.dumps(dict(GOOD, motion_backend=value)), encoding="utf-8")
             assert settings_io.load_config(path)["motion_backend"] == normalize_backend(value)
+    # A fresh install (no config at all) must come up on NVOFA: it is the
+    # shipped default now, CPU stays the automatic fallback (user rule 16.09).
+    with tempfile.TemporaryDirectory() as tmp:
+        fresh = Path(tmp) / "fresh" / "config.json"
+        fresh.parent.mkdir()
+        assert settings_io.load_config(fresh)["motion_backend"] == "nvofa"
     state = MotionBackendStatus()
     worker, replacement = object(), object()
     assert not state.update(worker, [])
@@ -83,7 +89,7 @@ def main():
     try:
         menu = build(); menu.page = "settings"; paint(menu)
         item = find(menu, "choice", "motion_backend")
-        assert item and item.payload == ["cpu", "nvofa"]
+        assert item and item.payload == ["nvofa", "cpu"]
         assert menu._pick("motion_backend", "nvofa") == [("motion_backend", "nvofa")]
     finally:
         pygame.quit()

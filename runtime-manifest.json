@@ -52,18 +52,18 @@
         "size": 2614
       },
       {
-        "git_blob": "c5e338543343bcef978f22fa3c774f8d67f45fe5",
+        "git_blob": "0e88d3401179f215fb2644efe8ee219eeaf3b7b3",
         "origin": "git",
         "path": "README.md",
-        "sha256": "96800e230d024c4e5f703fdb3ae4cc6867ccb0126d6376aab6a3dbf2322be689",
-        "size": 11023
+        "sha256": "069e91a51fa8ac03faffd19f36690ffb3ba306849d35cf300d0816c4f934fafc",
+        "size": 10911
       },
       {
-        "git_blob": "4e3a4b4ce6384a0e8d2bbd0782bd1f2836abb119",
+        "git_blob": "7a48311b713bf77faf33b923e7870ef0d6851c29",
         "origin": "git",
         "path": "README.ru.md",
-        "sha256": "a68dd08ea3606c41841e3be1858b3be80d32c0314d7fdaabac380f971cef2f68",
-        "size": 17880
+        "sha256": "863cf923b24a6ec92bd2b4f17789ee2822ec7d2d0b9f8f6864a2dbc04ae3ec96",
+        "size": 17696
       },
       {
         "git_blob": "e0d6313ba5970ecbb0715c997fa9455f62455c43",
@@ -264,13 +264,13 @@
       {
         "origin": "generated",
         "path": "native/nvngx.dll",
-        "sha256": "cb9e4110a6157e90810aa14604b2fe4b5c797d4d0a5d8f7e34fc3a0a030dc880",
+        "sha256": "43fee20d7967faea97b33f108ca19aa6df73c9f497f4594f75fd376c49d691b3",
         "size": 235008
       },
       {
         "origin": "generated",
         "path": "native/nvngx.dll_ns-forwarder.dll",
-        "sha256": "e0031f3f230d960c18b5dd3701162acc9646860814d2870335bdc785c0f62c4e",
+        "sha256": "9e26a98ae27e31d9a635af9e7f77b0ed08f8f640e9a2bc4936438600c8706170",
         "size": 10240
       },
       {
@@ -8164,7 +8164,7 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "78ae90f2960bdf2f825f8a1aa6b5531301e8e15163f5c08d033dc9be524cf248"
+    "tree_sha256": "d8eac8331f4b3aeb48b6279dc1ec69eef13c335d218ce3100a14461a787d2a96"
   },
   "product": "NeuralScreen",
   "runtime": {
@@ -8176,12 +8176,12 @@
       },
       {
         "path": "native/nvngx.dll",
-        "sha256": "cb9e4110a6157e90810aa14604b2fe4b5c797d4d0a5d8f7e34fc3a0a030dc880",
+        "sha256": "43fee20d7967faea97b33f108ca19aa6df73c9f497f4594f75fd376c49d691b3",
         "size": 235008
       },
       {
         "path": "native/nvngx.dll_ns-forwarder.dll",
-        "sha256": "e0031f3f230d960c18b5dd3701162acc9646860814d2870335bdc785c0f62c4e",
+        "sha256": "9e26a98ae27e31d9a635af9e7f77b0ed08f8f640e9a2bc4936438600c8706170",
         "size": 10240
       },
       {
@@ -14762,18 +14762,18 @@
       "size": 2614
     },
     {
-      "git_blob": "c5e338543343bcef978f22fa3c774f8d67f45fe5",
+      "git_blob": "0e88d3401179f215fb2644efe8ee219eeaf3b7b3",
       "path": "README.md",
       "role": "shipped-resource",
-      "sha256": "96800e230d024c4e5f703fdb3ae4cc6867ccb0126d6376aab6a3dbf2322be689",
-      "size": 11023
+      "sha256": "069e91a51fa8ac03faffd19f36690ffb3ba306849d35cf300d0816c4f934fafc",
+      "size": 10911
     },
     {
-      "git_blob": "4e3a4b4ce6384a0e8d2bbd0782bd1f2836abb119",
+      "git_blob": "7a48311b713bf77faf33b923e7870ef0d6851c29",
       "path": "README.ru.md",
       "role": "shipped-resource",
-      "sha256": "a68dd08ea3606c41841e3be1858b3be80d32c0314d7fdaabac380f971cef2f68",
-      "size": 17880
+      "sha256": "863cf923b24a6ec92bd2b4f17789ee2822ec7d2d0b9f8f6864a2dbc04ae3ec96",
+      "size": 17696
     },
     {
       "git_blob": "e0d6313ba5970ecbb0715c997fa9455f62455c43",

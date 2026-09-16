@@ -2,7 +2,15 @@
 
 
 def normalize_backend(value):
-    return "nvofa" if value == "nvofa" else "cpu"
+    """The motion backend name: NVOFA is the default, anything else is CPU.
+
+    Only the exact string "cpu" selects CPU DIS. Everything else - a missing
+    key, an old config that predates the field, junk - means the shipped
+    default, NVOFA (user rule 16.09). The worker path is what the program is
+    built around; CPU stays as the automatic fallback when the driver
+    refuses, and as an explicit choice in the menu.
+    """
+    return "cpu" if value == "cpu" else "nvofa"
 
 
 class MotionBackendStatus:

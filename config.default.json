@@ -20,7 +20,7 @@
   "nr_small": true,
   "nr_direct": false,
   "flow_preset": "fast",
-  "motion_backend": "cpu",
+  "motion_backend": "nvofa",
   "frame_generation": false,
   "frame_multiplier": 2,
   "frame_limit_mode": "unlimited",

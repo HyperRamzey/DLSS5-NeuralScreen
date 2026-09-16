@@ -625,7 +625,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # HDR compatibility, the same hand-off: the worker reads NS_HDR at
         # startup and main sets it from this flag. Experimental, off.
         "hdr": bool(cfg.get("hdr", False)),
-        "motion_backend": cfg.get("motion_backend", "cpu"),
+        "motion_backend": cfg.get("motion_backend", "nvofa"),
         # Which card runs the network and the capture. An index, as
         # DXGI enumerates adapters - the same number the worker takes
         # in NS_GPU and prints in its "[host] adapter N" lines.
@@ -1019,7 +1019,7 @@ def menu_payload(st) -> dict:
         "screenshot_format": str(st.cfg.get("screenshot_format", "png")),
         "spout": bool(st.cfg.get("spout", False)),
         "hdr": bool(st.cfg.get("hdr", False)),
-        "motion_backend": st.cfg.get("motion_backend", "cpu"),
+        "motion_backend": st.cfg.get("motion_backend", "nvofa"),
         "skip_static": bool(st.cfg.get("skip_static", False)),
         "frame_generation": bool(st.cfg.get("frame_generation", False)),
         "frame_multiplier": min(4, max(2, int(st.cfg.get("frame_multiplier", 2)))),

@@ -787,7 +787,12 @@ def apply_hdr(st, enabled: bool) -> None:
 def apply_motion_backend(st, value: str) -> None:
     from motion_backend import normalize_backend
     value = normalize_backend(value)
-    if value == normalize_backend(st.cfg.get("motion_backend")):
+    # Only a recorded choice that already matches is a no-op. A config that
+    # has no key yet (an old file, a synthetic state) must still take the
+    # value and persist it: with NVOFA as the shipped default, comparing a
+    # missing key against it made the first explicit selection do nothing.
+    current = st.cfg.get("motion_backend")
+    if current is not None and normalize_backend(current) == value:
         return
     st.cfg["motion_backend"] = value
     os.environ["NS_MOTION_BACKEND"] = value

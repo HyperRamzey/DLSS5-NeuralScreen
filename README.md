@@ -187,14 +187,9 @@ settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR
 - **Windows 10 and multi-GPU systems are experimental** — adapter/output selection is covered by regression tests, but not by local multi-GPU hardware.
 - **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
-- **Window/menu recovery:** v1.13 explicitly reveals, raises and redraws the
-  menu after taskbar, monitor or GPU reactivation; recovery from a full display
-  driver reset remains hardware-dependent.
-- **Lossless Scaling:** there is no supported direct hand-off between the two
-  programs. NeuralScreen's one-window mode uses a separate presenter surface,
-  so Lossless Scaling can still select the source HWND and produce two windows.
-- **Frame generation on RTX 20/30:** v1.13 has no FSR FG backend. It remains a
-  research candidate, not a promised compatibility mode.
+- **Window/menu recovery:** v1.13 re-shows, raises and redraws the menu after taskbar, monitor or GPU reactivation; a full driver reset remains hardware-dependent.
+- **Lossless Scaling:** there is no supported direct hand-off; one-window mode uses a separate presenter, so LS can still select the source HWND and show two windows.
+- **Frame generation on RTX 20/30:** v1.13 has no FSR FG backend; it is a research candidate, not a promised compatibility mode.
 
 ## License
 

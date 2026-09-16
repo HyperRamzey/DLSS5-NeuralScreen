@@ -66,11 +66,15 @@ def paint(menu):
 
 
 def click(menu, item):
-    # Near the top of the row, not at its centre: a hint under a toggle makes
-    # the row taller and the hint is a caption, not a hit target - a stray
-    # click on the explanation must not flip a switch that restarts the
-    # worker. The centre of a two-line hinted row lands in the caption.
-    pos = (item.rect.x + item.rect.w // 2, item.rect.y + 2)
+    """Click the CONTROL's own zone, not the row (user rule 16.09).
+
+    A toggle/slider/choice row spans the panel width and only the control
+    inside it reacts - the switch pill, the slider track, the select
+    field, the hotkey field. item.extra["hit"] is that zone; the tests
+    click it so they exercise the same target a user does.
+    """
+    zone = item.extra.get("hit") or item.rect
+    pos = zone.center
     out = menu.handle_event(pygame.event.Event(
         pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))
     menu.handle_event(pygame.event.Event(
@@ -176,9 +180,9 @@ def main() -> int:
         if tg is None:
             failures.append(f"no {tg_key} toggle on the settings page")
             continue
-        # A toggle with a hint is taller than its switch: click the top
-        # strip (the hint below is deliberately not a hit target).
-        pos = (tg.rect.centerx, tg.rect.y + menu._u(overlay_ui.CTRL_H) // 2)
+        # The control's own zone (the switch pill), not the row: only the
+        # switch reacts now (user rule 16.09).
+        pos = (tg.extra.get("hit") or tg.rect).center
         out = menu.handle_event(pygame.event.Event(
             pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))
         menu.handle_event(pygame.event.Event(
@@ -186,6 +190,23 @@ def main() -> int:
         if out != [("toggle", tg_key)]:
             failures.append(f"toggle {tg_key}: expected [('toggle', {tg_key!r})], "
                             f"got {out}")
+    # The label end of the row is a caption, not a hit target (user rule
+    # 16.09: only explicit switches and choices react). A click on the empty
+    # left half of a toggle row must emit nothing - it used to flip the
+    # switch.
+    menu.settings_tab = "rec"
+    menu.layout(3840, 2160)
+    paint(menu)
+    label_tg = find(menu, "toggle", "spout")
+    if label_tg is None:
+        failures.append("no spout toggle for the label hit-test")
+    else:
+        label_pos = (label_tg.rect.x + menu._u(8),
+                     label_tg.rect.y + menu._u(overlay_ui.CTRL_H) // 2)
+        out = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, {"pos": label_pos, "button": 1}))
+        if out:
+            failures.append(f"a click on the row label must not emit, got {out}")
     # The hint under a toggle is a caption, not a hit target: a click on
     # the explanation must emit nothing (the Spout2 toggle restarts the
     # worker, so a stray click there would freeze the screen for seconds).
@@ -230,10 +251,6 @@ def main() -> int:
         out = click(menu, prof)
         if out != []:
             failures.append(f"profile: expected open (no action), got {out}")
-        # The open list: pick the second profile. The option rows are built
-        # in layout, but their geometry (strip) is filled by the drawer - so
-        # paint twice: the first pass fills the strip, the second builds the
-        # rows.
         menu.layout(3840, 2160)
         paint(menu)
         paint(menu)

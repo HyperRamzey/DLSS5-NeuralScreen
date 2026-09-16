@@ -210,13 +210,11 @@ def check_menu(failures: list) -> None:
         if "nr_res" in items:
             failures.append("the resolution slider is on screen with Boost off, "
                             "where every position of it does the same thing")
-        # The switch itself, not the caption under it: a hint makes the row
-        # taller and is deliberately not a hit target, so that a stray click
-        # on the explanation cannot restart the worker.
+        # The switch itself, not the caption under it and not the label: only
+        # the control's own zone reacts (user rule 16.09).
+        boost_zone = items["boost"].extra.get("hit") or items["boost"].rect
         got = menu.handle_event(pygame.event.Event(
-            pygame.MOUSEBUTTONDOWN,
-            {"pos": (items["boost"].rect.x + 4, items["boost"].rect.y + 2),
-             "button": 1}))
+            pygame.MOUSEBUTTONDOWN, {"pos": boost_zone.center, "button": 1}))
         print(f"clicked Boost: {got}")
         if ("toggle", "boost") not in got:
             failures.append(f"the Boost switch emitted {got}, not a boost toggle")

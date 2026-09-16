@@ -175,7 +175,7 @@ def main() -> int:
             lang_failures.append(f"{lang}: no HDR switch on the settings page")
             continue
         if lang == "en":
-            pos = (row.rect.x + row.rect.w // 2, row.rect.y + 2)
+            pos = (row.extra.get("hit") or row.rect).center
             out = menu.handle_event(pygame.event.Event(
                 pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))
             menu.handle_event(pygame.event.Event(

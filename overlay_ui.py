@@ -843,13 +843,22 @@ class OverlayMenu:
             nonlocal cy
             if not show:
                 return
-            items.append(Item("slider", key,
+            item = Item("slider", key,
                               pygame.Rect(pad, cy, inner_w, label_h + ctrl_h),
                               lo=lo, hi=hi, value=value,
                               extra={"label": label, "hint": hint,
                                      "mark": mark, "ends": ends,
                                      "value_text": value_text,
-                                     "label_h": label_h}))
+                                     "label_h": label_h})
+            # The hit zone is the TRACK, not the row: a click on the label
+            # or on the blank space left of the track must not jump the
+            # value (user rule 16.09). The track's rect is computed
+            # exactly as _draw_slider computes it.
+            track_y = cy + label_h + self._u(10)
+            item.extra["hit"] = pygame.Rect(
+                pad, track_y - self._u(6), inner_w,
+                self._u(SLIDER_H) + self._u(12))
+            items.append(item)
             # End captions take the same line a hint would: a slider has
             # one or the other, never both (they would overprint).
             cy += label_h + ctrl_h + (self._u(SMALL_SIZE) + 4
@@ -872,10 +881,17 @@ class OverlayMenu:
                 # plain ones did.
                 hint_h = (self._u(8) + (str(hint).count("\n") + 1) * line_h
                           - self._u(4))
-            items.append(Item("choice", key,
+            item = Item("choice", key,
                               pygame.Rect(pad, cy, inner_w, label_h + ctrl_h + hint_h),
                               payload=list(options),
-                              extra=extra))
+                              extra=extra)
+            # The hit zone is the select FIELD, not the row: the label above
+            # it is a caption (user rule 16.09). _draw_choice writes the
+            # same rect back into extra["strip"], and the hint guard below
+            # uses it too.
+            item.extra["hit"] = pygame.Rect(pad, cy + label_h, inner_w,
+                                            self._u(CTRL_H))
+            items.append(item)
             cy += label_h + ctrl_h + hint_h + gap
 
         def segmented(key: str, label: str, current: str, options: list,
@@ -939,10 +955,23 @@ class OverlayMenu:
                 line_h = self._small_font.get_height() + self._u(4)
                 hint_h = (self._u(8) + (str(hint).count("\n") + 1) * line_h
                           - self._u(4))
+            # The hit zone is the SWITCH, not the row (user rule 16.09:
+            # "only explicit switches and choices should react"). A toggle
+            # row spans the whole panel width, and clicking its empty left
+            # half - or the label - used to flip the switch. The switch
+            # itself is drawn at the row's right end (_draw_toggle), so the
+            # zone is that pill plus a small margin for the fingertip; the
+            # label is a caption, not a control.
+            switch_size = self._u(20)
+            switch_w = int(switch_size * 1.8)   # the drawn pill (see _draw_toggle)
+            switch_x = pad + inner_w - switch_w
             items.append(Item("toggle", key,
                               pygame.Rect(pad, cy, inner_w, ctrl_h + hint_h),
                               value=1.0 if on else 0.0,
                               extra=extra))
+            items[-1].extra["hit"] = pygame.Rect(
+                switch_x - self._u(6), cy,
+                switch_w + self._u(12), ctrl_h)
             if inline_x is not None:
                 # The buttons: right-aligned against the switch's left edge,
                 # small pills in one line with the toggle.
@@ -1108,11 +1137,19 @@ class OverlayMenu:
             # once.
             field_h = self._u(CTRL_H)
             for cmd, label in HOTKEY_ROWS if show else ():
-                items.append(Item("hotkey", cmd,
-                                  pygame.Rect(pad, cy, inner_w, field_h),
-                                  extra={"label": s.get(label, label),
-                                         "key": self.hotkeys.get(cmd, "—"),
-                                         "capturing": self.capturing == cmd}))
+                hk = Item("hotkey", cmd,
+                          pygame.Rect(pad, cy, inner_w, field_h),
+                          extra={"label": s.get(label, label),
+                                 "key": self.hotkeys.get(cmd, "—"),
+                                 "capturing": self.capturing == cmd})
+                # Only the key FIELD reacts, not the whole row (user rule
+                # 16.09): the action label on the left is a caption.
+                # _draw_hotkey draws the field 170 units wide at the row's
+                # right end - the same rect.
+                hk.extra["hit"] = pygame.Rect(
+                    pad + inner_w - self._u(170), cy,
+                    self._u(170), field_h)
+                items.append(hk)
                 cy += field_h + self._u(6)
             # The caption belongs to the rows above it, not to the section
             # below: a full row gap on both sides left 96 px of nothing
@@ -1509,6 +1546,13 @@ class OverlayMenu:
             # they sit above the scroll area and used to travel with it under
             # the title bar.
             it.rect = it.rect.move(x, y if it.kind == "icon" else sy)
+            # The control's own hit zone travels with the row: without this
+            # a scrolled control kept its unscrolled zone and clicks landed
+            # on the wrong row (or nowhere). extra["hit"] is built in
+            # content coordinates, like it.rect was before this move.
+            zone = it.extra.get("hit")
+            if zone is not None:
+                it.extra["hit"] = zone.move(x, y if it.kind == "icon" else sy)
             if it.kind == "choice":
                 # The select field is computed here rather than at draw time:
                 # the layout of an expanded list is built before the first
@@ -1685,10 +1729,15 @@ class OverlayMenu:
                 for it in self.items:
                     # "info" is in the list for one row: the captured
                     # window, which opens the picker.
-                    if (it.kind in ("action", "hotkey", "button")
+                    # The hover follows the same CONTROL zone the click uses
+                    # (user rule 16.09): highlighting the whole row while
+                    # only the switch reacts promises a click target that is
+                    # not there.
+                    if (it.kind in ("action", "hotkey", "button",
+                                    "toggle", "slider", "choice")
                         or (it.kind == "info"
                             and it.key == "source_now")) and \
-                            it.rect.collidepoint(event.pos):
+                            (it.extra.get("hit") or it.rect).collidepoint(event.pos):
                         self.hover = f"{it.kind}:{it.key}"
                         break
             # The windows page rows: the row itself is highlighted too, like
@@ -2052,7 +2101,15 @@ class OverlayMenu:
         # the whole FG switch instead).
         best: "Item | None" = None
         for item in self.items:
-            if not item.rect.collidepoint(pos):
+            # Only the CONTROL reacts, not the whole row (user rule 16.09:
+            # "only explicit switches and choices should be clickable").
+            # A toggle/slider/choice row spans the panel width, and the
+            # label - or the empty space beside the control - used to
+            # activate it. extra["hit"] is the control's own rectangle
+            # (the switch pill, the slider track, the select field, the
+            # hotkey field), computed by layout.
+            zone = item.extra.get("hit") or item.rect
+            if not zone.collidepoint(pos):
                 continue
             # A hint under a toggle is a caption, not a hit target:
             # clicking it must not flip the switch (the Spout2 toggle
@@ -2065,8 +2122,8 @@ class OverlayMenu:
                 strip = item.extra.get("strip")
                 if strip is not None and pos[1] > strip.bottom:
                     continue
-            if best is None or item.rect.w * item.rect.h \
-                    < best.rect.w * best.rect.h:
+            if best is None or zone.w * zone.h < best.extra.get("hit", best.rect).w * \
+                    best.extra.get("hit", best.rect).h:
                 best = item
         return best
 
@@ -2202,12 +2259,45 @@ class OverlayMenu:
         if focused is not None and focused.kind != "icon":
             self._draw_focus_ring(surface, focused)
         surface.set_clip(prev_clip)
+        # The clickable zone of the control under the cursor (user rule
+        # 16.09: "only explicit switches and choices should react"). The
+        # rows are full-width, so without this the panel gives no hint that
+        # only the pill/slider/field reacts - the hover ring shows exactly
+        # what a click will hit. Drawn for the row controls only: buttons,
+        # the segmented switch and the icons are already sized to their
+        # own rectangles, and a ring on those would double the outline.
+        self._draw_hover_zone(surface)
         for item in self.items:
             if item.kind == "icon":
                 self._draw_icon(surface, item, s)
         if focused is not None and focused.kind == "icon":
             self._draw_focus_ring(surface, focused)
         self._draw_scrollbar(surface)
+
+    def _draw_hover_zone(self, surface) -> None:
+        """Outline the control zone under the cursor (toggle/slider/choice).
+
+        A toggle row is as wide as the panel and only its switch reacts;
+        the same for a slider's label line and a choice's caption. The
+        outline is the same rect `hit()` tests, so what is highlighted is
+        exactly what a click does.
+        """
+        hov = self.hover
+        if not isinstance(hov, str) or ":" not in hov:
+            return
+        kind, _, key = hov.partition(":")
+        if kind not in ("toggle", "slider", "choice"):
+            return
+        for item in self.items:
+            if item.kind != kind or item.key != key:
+                continue
+            zone = item.extra.get("hit")
+            if zone is None:
+                continue
+            pygame.draw.rect(surface, _rgb(self.c["accent"]), zone,
+                             max(1, self._u(1)),
+                             border_radius=self._u(RADIUS // 2))
+            return
 
     def _draw_focus_ring(self, surface, item: Item) -> None:
         """A high-contrast, theme-specific ring independent of hover state."""

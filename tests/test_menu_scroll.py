@@ -118,13 +118,18 @@ def main() -> int:
     else:
         print("  (nothing to check: no row moved out entirely)")
 
-    # 5. A visible row does take a click
+    # 5. A visible row's CONTROL does take a click (user rule 16.09: only
+    #    the control reacts, so the test targets the control's own zone).
     inside = [i for i in menu.items
-              if menu._viewport.collidepoint(i.rect.center)]
+              if menu._viewport.collidepoint((i.extra.get("hit") or i.rect).center)]
     if not inside:
         failures.append("no row is left in the visible area")
-    elif menu.hit(inside[0].rect.center) is None:
-        failures.append("a visible row does not take a click")
+    else:
+        probe = inside[0]
+        zone = probe.extra.get("hit") or probe.rect
+        if menu.hit(zone.center) is None:
+            failures.append(f"a visible row ({probe.kind}:{probe.key}) "
+                            f"does not take a click")
 
     # 5b. A header icon is clickable even though it lies outside the scroll area
     icons = [i for i in menu.items if i.kind == "icon"]

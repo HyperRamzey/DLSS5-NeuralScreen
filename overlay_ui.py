@@ -274,7 +274,7 @@ class OverlayMenu:
             # this dict is dropped by set_state in silence, and the toggle
             # then draws as off while the action behind it fires normally.
             "hdr": False,
-            "motion_backend": "cpu",
+            "motion_backend": "nvofa",
             # Skip static frames (processing section): no new capture frame -
             # the network idles instead of re-running.
             "skip_static": True,
@@ -394,6 +394,12 @@ class OverlayMenu:
         # (notably one row per window), so an index would silently jump to a
         # different control after a payload refresh.
         self.focus_token: tuple | None = None
+        # Keyboard focus draws a ring; a click does not. The ring is a
+        # keyboard affordance - with the mouse the user already knows what
+        # they pressed, and on a full-width row it wrapped the label and the
+        # control together (user: "an outline appears when I pick buttons or
+        # drag a slider - that is not needed").
+        self.focus_from_mouse = False
         self._layout_size: tuple[int, int] | None = None
 
     @property
@@ -565,8 +571,11 @@ class OverlayMenu:
         return next((item for item in self.items
                      if self._focus_id(item) == self.focus_token), None)
 
-    def _set_focus(self, item: Item | None) -> None:
+    def _set_focus(self, item: Item | None, *, from_mouse: bool = False) -> None:
         self.focus_token = self._focus_id(item) if item is not None else None
+        # A mouse click keeps the focus token (arrows still act on what was
+        # clicked) but must not paint the keyboard ring around it.
+        self.focus_from_mouse = from_mouse and item is not None
         if self.page == "windows":
             self.hover_window = (item.extra.get("hwnd")
                                  if item is not None
@@ -1055,8 +1064,9 @@ class OverlayMenu:
                    bool(self.state.get("hdr")),
                    hint=s.get("hdr_mode_hint", ""))
             choice("motion_backend", s.get("motion_backend", "Motion estimation"),
-                   self.state.get("motion_backend", "cpu"), ["cpu", "nvofa"],
-                   labels=["CPU DIS", s.get("motion_nvofa", "NVOFA (experimental)")],
+                   self.state.get("motion_backend", "nvofa"), ["nvofa", "cpu"],
+                   labels=[s.get("motion_nvofa", "NVOFA (experimental)"),
+                           "CPU DIS"],
                    hint=s.get("motion_hint", "Restarts the worker; CPU fallback if unavailable"))
             choice("screenshot_mode", s.get("screenshot_mode", "Screenshot saving"),
                    str(self.state.get("screenshot_mode", "ask")),
@@ -1783,7 +1793,7 @@ class OverlayMenu:
             # which returns immediately. So the icons are checked first.
             for it in self.items:
                 if it.kind == "icon" and it.rect.collidepoint(event.pos):
-                    self._set_focus(it)
+                    self._set_focus(it, from_mouse=True)
                     out.extend(self._activate_item(it))
                     return out
             if self._grip.collidepoint(event.pos):
@@ -1806,7 +1816,8 @@ class OverlayMenu:
                 self._drag_item = None
                 self.open_choice = None
                 return out
-            self._set_focus(item if self._is_focusable(item) else None)
+            self._set_focus(item if self._is_focusable(item) else None,
+                            from_mouse=True)
             if item.kind == "segmented":
                 cells = item.extra.get("cells") or []
                 for idx, cr in enumerate(cells):
@@ -2259,14 +2270,6 @@ class OverlayMenu:
         if focused is not None and focused.kind != "icon":
             self._draw_focus_ring(surface, focused)
         surface.set_clip(prev_clip)
-        # The clickable zone of the control under the cursor (user rule
-        # 16.09: "only explicit switches and choices should react"). The
-        # rows are full-width, so without this the panel gives no hint that
-        # only the pill/slider/field reacts - the hover ring shows exactly
-        # what a click will hit. Drawn for the row controls only: buttons,
-        # the segmented switch and the icons are already sized to their
-        # own rectangles, and a ring on those would double the outline.
-        self._draw_hover_zone(surface)
         for item in self.items:
             if item.kind == "icon":
                 self._draw_icon(surface, item, s)
@@ -2274,34 +2277,23 @@ class OverlayMenu:
             self._draw_focus_ring(surface, focused)
         self._draw_scrollbar(surface)
 
-    def _draw_hover_zone(self, surface) -> None:
-        """Outline the control zone under the cursor (toggle/slider/choice).
-
-        A toggle row is as wide as the panel and only its switch reacts;
-        the same for a slider's label line and a choice's caption. The
-        outline is the same rect `hit()` tests, so what is highlighted is
-        exactly what a click does.
-        """
-        hov = self.hover
-        if not isinstance(hov, str) or ":" not in hov:
-            return
-        kind, _, key = hov.partition(":")
-        if kind not in ("toggle", "slider", "choice"):
-            return
-        for item in self.items:
-            if item.kind != kind or item.key != key:
-                continue
-            zone = item.extra.get("hit")
-            if zone is None:
-                continue
-            pygame.draw.rect(surface, _rgb(self.c["accent"]), zone,
-                             max(1, self._u(1)),
-                             border_radius=self._u(RADIUS // 2))
-            return
-
     def _draw_focus_ring(self, surface, item: Item) -> None:
-        """A high-contrast, theme-specific ring independent of hover state."""
-        rect = item.rect
+        """The keyboard focus ring - never drawn for a mouse click.
+
+        With the mouse the user already knows what they pressed, and on a
+        full-width row the ring wrapped the label and the control together
+        (user rule 16.09: "an outline appears when I pick buttons or drag a
+        slider - that is not needed"). Keyboard focus still shows it: there
+        the ring is the only thing telling the user where they are.
+        """
+        if self.focus_from_mouse:
+            return
+        # The ring marks the CONTROL, not its row: a slider's row carries the
+        # label and the value, and wrapping those in the ring is what the
+        # user saw as "a big outline over the labels and the bar" (16.09).
+        # extra["hit"] is exactly the rect a click tests, so the ring and the
+        # click target agree.
+        rect = item.extra.get("hit") or item.rect
         if item.kind == "choice":
             rect = item.extra.get("strip") or rect
         elif item.kind == "hotkey":

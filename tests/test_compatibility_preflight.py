@@ -144,7 +144,9 @@ class CompatibilityPreflightTests(unittest.TestCase):
         self.assertEqual(payload["worker_sha256"], digest(b"worker-v1"))
 
         variants = [
-            make_key(self.fs, version="1.13.1"),
+            # A version change alone must move the digest: the variant uses
+            # the previous release, which is exactly an app upgrade.
+            make_key(self.fs, version="1.13.0"),
             make_key(self.fs, gpu=1),
             make_key(self.fs, driver="601.00"),
             make_key(self.fs, hz=60),

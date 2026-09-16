@@ -93,13 +93,11 @@ class TaskbarWindow:
             # A click on the taskbar button arrives as WA_ACTIVE here (not
             # WA_CLICKACTIVE - measured on Win11 26200). System activations
             # (another window minimized/closed, Alt+Tab, Win+D) arrive the
-            # same way, so wparam alone cannot tell them apart. The reliable
-            # cue is the cursor: a click on the taskbar button happens IN the
-            # taskbar rectangle; system activations leave the cursor
-            # elsewhere (user: menu popped up by itself when another program
-            # was minimized).
-            if wparam == WA_CLICKACTIVE or (
-                    wparam == WA_ACTIVE and self._cursor_over_taskbar()):
+            # same way, so wparam alone cannot tell them apart - and neither
+            # can the cursor position alone, because switching to another
+            # app also happens with the cursor over the taskbar (#93). The
+            # full test lives in _is_user_click.
+            if self._is_user_click(wparam):
                 self._emit("show_settings")
             return 0
         if msg == WM_NCACTIVATE:
@@ -109,7 +107,13 @@ class TaskbarWindow:
             # over the taskbar and nothing else). Without handling it the
             # second click was dead (user: "залипает"). wparam=0 is a
             # deactivation - never a user click, ignore it.
-            if wparam == 1 and self._cursor_over_taskbar():
+            #
+            # Our window must still be the foreground one: when the user
+            # clicks another app's icon, this message arrives for that
+            # activation too, and showing our menu then is the reported
+            # bug (#93).
+            if wparam == 1 and self._cursor_over_taskbar() and \
+                    self._is_foreground_ours():
                 self._emit("show_settings")
             return 0
         if msg == WM_SYSCOMMAND and (wparam & 0xFFF0) in (SC_MINIMIZE, SC_RESTORE):
@@ -136,9 +140,6 @@ class TaskbarWindow:
     def _cursor_over_taskbar(self) -> bool:
         """Whether the cursor is inside a taskbar rectangle.
 
-        The only reliable way to tell a taskbar-button click (WA_ACTIVE with
-        the cursor over the taskbar) from a system activation (WA_ACTIVE with
-        the cursor anywhere else): the two are indistinguishable by wparam.
         The primary taskbar is Shell_TrayWnd; on Windows 11 a secondary
         monitor's taskbar is a separate top-level window, Shell_SecondaryTrayWnd
         - both are checked (audit 10.09 F1: multi-monitor users could not use
@@ -161,6 +162,46 @@ class TaskbarWindow:
             return False
         except Exception:
             return False
+
+    def _is_foreground_ours(self) -> bool:
+        """Whether our own 1x1 window currently owns the foreground.
+
+        Used together with the cursor test: a click on another application's
+        taskbar icon also leaves the cursor over the taskbar, so the
+        foreground window is what tells the two apart (#93).
+        """
+        try:
+            fg = user32.GetForegroundWindow()
+            return bool(fg) and self._hwnd is not None and fg == self._hwnd
+        except Exception:
+            return False
+
+    def _is_user_click(self, wparam: int) -> bool:
+        """Whether this activation is a click on OUR taskbar button.
+
+        wparam alone cannot say it: Windows reports a click on our button and
+        a system activation (another window minimized, Alt+Tab, Win+D) the
+        same way (WA_ACTIVE). The cursor-over-taskbar test separates those,
+        but it is not enough on its own: clicking ANOTHER app's taskbar icon
+        also happens with the cursor over the taskbar, and the menu used to
+        pop up when the user was just switching programs (issue #93, user
+        Saymoin: "the mouse is on the taskbar, expanding any minimized
+        application").
+
+        The distinguishing fact is WHICH window ends up in the foreground:
+        a click on our button activates our own 1x1 window, while a click on
+        a foreign icon activates that application. So a WA_ACTIVE activation
+        counts only when our window is still the foreground one AND the
+        cursor is over the taskbar. WA_CLICKACTIVE stays an unconditional
+        click (Windows sends it only for a real click on this window).
+        """
+        if wparam == WA_CLICKACTIVE:
+            return True
+        if wparam != WA_ACTIVE or not self._cursor_over_taskbar():
+            return False
+        # A different application took the foreground: this was a click on
+        # ITS icon, not on ours.
+        return self._is_foreground_ours()
 
     def _emit(self, command: str) -> None:
         """Queue a command, deduped: one click can deliver both

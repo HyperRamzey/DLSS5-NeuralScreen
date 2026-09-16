@@ -80,6 +80,7 @@ def main() -> int:
                             f"taskbar) must not emit anything, got {got}")
 
         win._cursor_over_taskbar = lambda: True
+        win._is_foreground_ours = lambda: True
         time.sleep(0.6)
         user32.SendMessageW(hwnd, taskbar.WM_ACTIVATE, taskbar.WA_ACTIVE, 0)
         time.sleep(0.2)
@@ -89,7 +90,26 @@ def main() -> int:
         print(f"commands after taskbar activate (cursor over it): {got}")
         if "show_settings" not in got:
             failures.append("a taskbar click (WA_ACTIVE with the cursor over "
-                            "the taskbar) should emit show_settings")
+                            "the taskbar and our window in the foreground) "
+                            "should emit show_settings")
+
+        # 2b. A click on ANOTHER application's taskbar icon also leaves the
+        #     cursor over the taskbar, but the other app takes the
+        #     foreground - that must NOT open our menu (issue #93: the menu
+        #     popped up while the user was just switching programs).
+        win._cursor_over_taskbar = lambda: True
+        win._is_foreground_ours = lambda: False
+        time.sleep(0.6)
+        user32.SendMessageW(hwnd, taskbar.WM_ACTIVATE, taskbar.WA_ACTIVE, 0)
+        time.sleep(0.2)
+        got = []
+        while not commands.empty():
+            got.append(commands.get_nowait())
+        print(f"commands after a foreign-icon click: {got}")
+        if got:
+            failures.append("clicking another app's taskbar icon must not "
+                            f"emit anything, got {got}")
+        win._is_foreground_ours = lambda: True
 
         # 3. SC_MINIMIZE / SC_RESTORE: the taskbar button sends these on a
         #    minimize/restore request. The 1x1 window must not actually

@@ -63,7 +63,16 @@ def main() -> int:
 
     # The branch has to END the command. A bare `if` body that just logs and
     # writes the failure ack then falls through is exactly the bug.
-    if not re.search(r"\b(continue|return\s+\d+)\s*;", branch):
+    #
+    # The search is anchored to the LAST release call in the branch, not to the
+    # branch's start: `if (!WriteExact(...)) return 3;` sits four lines above
+    # the real terminator, so a branch-wide search for `continue|return N;` was
+    # satisfied by that unrelated return. Deleting the actual `continue;`
+    # re-introduced the audit-B2 fall-through and the test still printed OK.
+    last_release = max(branch.rfind("ReleaseVideoTextures(v)"),
+                       branch.rfind("SafeReleaseFeature(h.feature)"))
+    tail = branch[last_release:] if last_release >= 0 else branch
+    if not re.search(r"\b(continue|return\s+\d+)\s*;", tail):
         failures.append("the failure branch does not stop the command - it "
                         "falls through into CreateFeature and then writes a "
                         "SUCCESS ack, so the client believes a resize it "

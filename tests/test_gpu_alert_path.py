@@ -38,21 +38,24 @@ def main() -> int:
     # Where refresh_gpu_ok is defined and what calls it.
     if "def refresh_gpu_ok" not in settings_src:
         failures.append("refresh_gpu_ok is gone - re-check the finding")
-    callers = [name for name in ("main.py",) if "refresh_gpu_ok" in
-               (BASE / name).read_text(encoding="utf-8")]
-    # menu_payload is the only in-code caller?
+
+    # A real CALL in main.py, not the mention of it in a comment: the old
+    # check was `"refresh_gpu_ok" in main.py`, and the explanatory comment two
+    # lines above the call satisfied it. Deleting the call left the test green.
+    main_calls = re.findall(r"^\s*settings_io\.refresh_gpu_ok\(", main_src,
+                            re.M)
     in_menu_payload = bool(re.search(
         r"def menu_payload\(st[^)]*\).*?refresh_gpu_ok\(st\)",
         settings_src, re.S))
     print(f"    refresh_gpu_ok called from menu_payload: {in_menu_payload}")
-    print(f"    refresh_gpu_ok referenced directly in main.py: "
-          f"{bool(callers)}")
+    print(f"    settings_io.refresh_gpu_ok(...) calls in main.py: "
+          f"{len(main_calls)}")
 
     # menu_payload is only built while the menu is visible / at startup.
     guarded = "if st.display.menu.visible" in main_src
     print(f"    menu_payload guarded by menu.visible in the loop: {guarded}")
 
-    if in_menu_payload and guarded and not callers:
+    if in_menu_payload and guarded and not main_calls:
         failures.append(
             "F12: the verdict (and its alert) is only evaluated inside "
             "menu_payload, which the loop builds only while the menu is "

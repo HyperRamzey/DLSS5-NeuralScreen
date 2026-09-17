@@ -101,11 +101,11 @@
         "size": 11912
       },
       {
-        "git_blob": "a7e33ccc06f71fe10100b8231d9880f49c55f6af",
+        "git_blob": "0afb20537b4f70570abd19b92f4fa5c0f38e83d9",
         "origin": "git",
         "path": "commands.py",
-        "sha256": "df408f4ca3bc869a0354885c3efa005d2a333b5be06c27c18309f6e4ada64195",
-        "size": 48065
+        "sha256": "3410d1532179867ceffb5fec712b04e896fd05aefb800c89157ede409c5eb66e",
+        "size": 48723
       },
       {
         "git_blob": "eca1a784b1c4fc5477cfec1f5c36ee2c37abcf37",
@@ -213,11 +213,11 @@
         "size": 17761
       },
       {
-        "git_blob": "59466a2800b73bf4016df3d9e815f404c56894bb",
+        "git_blob": "bc092e2afd82230b5e7ec58432f9c89fad7f0d11",
         "origin": "git",
         "path": "i18n.py",
-        "sha256": "33e89f655d979fbf9bc413d274d4a057b67fe5e8b54c22160c62385ac6ff8697",
-        "size": 111157
+        "sha256": "886e474b4c6078bf07bb954aa1b2af5b8185de870be5bd360439cec94fe2580d",
+        "size": 111275
       },
       {
         "git_blob": "862fc40315d076d33d1861fb264650c0452e0db7",
@@ -8171,7 +8171,7 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "f0723f1c1521b0496430150780b9f249b5796850261aef55bd4ac12f09214f89"
+    "tree_sha256": "be884c4941c343963f18c57bacca0a25f326e62980e8ed1083c71455984a77a0"
   },
   "product": "NeuralScreen",
   "runtime": {
@@ -14832,11 +14832,11 @@
       "size": 11912
     },
     {
-      "git_blob": "a7e33ccc06f71fe10100b8231d9880f49c55f6af",
+      "git_blob": "0afb20537b4f70570abd19b92f4fa5c0f38e83d9",
       "path": "commands.py",
       "role": "shipped-resource",
-      "sha256": "df408f4ca3bc869a0354885c3efa005d2a333b5be06c27c18309f6e4ada64195",
-      "size": 48065
+      "sha256": "3410d1532179867ceffb5fec712b04e896fd05aefb800c89157ede409c5eb66e",
+      "size": 48723
     },
     {
       "git_blob": "eca1a784b1c4fc5477cfec1f5c36ee2c37abcf37",
@@ -14944,11 +14944,11 @@
       "size": 17761
     },
     {
-      "git_blob": "59466a2800b73bf4016df3d9e815f404c56894bb",
+      "git_blob": "bc092e2afd82230b5e7ec58432f9c89fad7f0d11",
       "path": "i18n.py",
       "role": "shipped-resource",
-      "sha256": "33e89f655d979fbf9bc413d274d4a057b67fe5e8b54c22160c62385ac6ff8697",
-      "size": 111157
+      "sha256": "886e474b4c6078bf07bb954aa1b2af5b8185de870be5bd360439cec94fe2580d",
+      "size": 111275
     },
     {
       "git_blob": "862fc40315d076d33d1861fb264650c0452e0db7",

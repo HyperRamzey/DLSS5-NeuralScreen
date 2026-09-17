@@ -75,17 +75,24 @@ def main() -> int:
         print("FAIL: the worker source is not readable")
         return 1
 
-    # 1. The bit depth must be read and stored, not assumed.
+    # 1. The display's high-colour capability must be read and gate the path.
     if "g_capture_deep_bits" not in src:
-        failures.append("g_capture_deep_bits does not exist - the bit depth "
-                        "is not read, so the path cannot depend on it")
+        failures.append("g_capture_deep_bits does not exist - the scan-out "
+                        "depth is not read")
     else:
         if "g_capture_deep_bits = d1.BitsPerColor" not in src:
-            failures.append("the bit depth is never assigned from "
+            failures.append("the scan-out depth is never assigned from "
                             "IDXGIOutput6's BitsPerColor")
         if "g_capture_deep_bits > 8" not in src:
-            failures.append("nothing tests the bit depth against 8 - the "
-                            "10-bit case cannot be distinguished")
+            failures.append("nothing tests the scan-out depth against 8")
+    # The reporter's own log line is `output colour space 12, 8 bits per
+    # colour`: an HDR-capable display can report 8 bits, so the bit depth
+    # alone is not the trigger. The advanced-colour capability has to be read
+    # too, or the exact reported case is missed.
+    if "g_capture_display.enabled" not in src:
+        failures.append("the display's advanced-colour capability is not read "
+                        "- an HDR-capable display reporting 8 bits per colour "
+                        "(the #89 log) would not be detected")
 
     body = _open_dda_body(src)
     if not body:

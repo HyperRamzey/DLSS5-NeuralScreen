@@ -4251,22 +4251,32 @@ static bool OpenDda(UINT w, UINT hgt)
     hr = E_FAIL;
     const bool has_output5 = SUCCEEDED(output->QueryInterface(
         __uuidof(IDXGIOutput5), (void **)&output5));
-    // Is the captured display's scan-out deeper than 8 bits per colour? A
-    // 10-bit output hands the duplicated desktop back as FP16 sometimes and
-    // BGRA8 other times, and the legacy DuplicateOutput below does NOT pin it:
-    // a real v1.13.1 log (#89) shows `[dda] SDR capture fixed to BGRA8 through
-    // legacy duplication` followed by 1955 FP16<->BGRA8 flips in 133 s, each
-    // one tearing down and rebuilding the whole capture bridge. The same log
-    // shows the storm stops completely (0 flips in the remaining session) once
-    // the IDXGIOutput5 path is taken, because DuplicateOutput1 accepts the
-    // high-colour format instead of refusing it.
-    if (!g_dda_hdr_mode && has_output5 && g_capture_deep_bits > 8)
+    // The display can produce a high-colour surface - HDR-capable, or a
+    // scan-out deeper than 8 bits per colour. That combination is what makes
+    // the legacy DuplicateOutput below alternate FP16 and BGRA8: a real v1.13.1
+    // log (#89, an HDR-capable display with HDR compatibility OFF) shows
+    // `[dda] SDR capture fixed to BGRA8 through legacy duplication` followed by
+    // 1955 FP16<->BGRA8 flips in 133 s, each one tearing the whole capture
+    // bridge down, and `grab 43.0ms` against `NR 18.3 fps`. The same log shows
+    // the storm stops completely - 0 flips for the rest of the session, and
+    // `grab 3.0ms` against `NR 48.6 fps` - once the IDXGIOutput5 path is taken,
+    // because DuplicateOutput1 accepts the high-colour format instead of
+    // letting the compositor choose per frame.
+    //
+    // Note the reporter's log line: `output colour space 12, 8 bits per
+    // colour`. The bit depth alone is NOT the trigger - an HDR-capable display
+    // can report 8 - so the test is the display's own advanced-colour
+    // capability, which is the same fact that made FP16 available at all.
+    const bool high_colour_display = g_capture_display.enabled
+                                     || g_capture_deep_bits > 8;
+    if (!g_dda_hdr_mode && has_output5 && high_colour_display)
     {
-        // 10-bit scan-out with HDR compatibility off: ask for FP16 FIRST
-        // through DuplicateOutput1. The capture shader already converts FP16
-        // to SDR (isFloat), so the picture stays what the user asked for -
-        // HDR compatibility still governs the PRESENTATION, not the capture
-        // format. Accepting BGRA8 as the second format keeps a driver that
+        // High-colour display with HDR compatibility off: ask for FP16 FIRST
+        // through DuplicateOutput1. The capture shader already converts FP16 to
+        // SDR (isFloat), so the picture stays what the user asked for - HDR
+        // compatibility still governs the PRESENTATION, not the capture format,
+        // and the log says so: `capture=FP16 (10-bit output) - presented as
+        // SDR`. Accepting BGRA8 as the second format keeps a driver that
         // refuses FP16 working.
         const DXGI_FORMAT deep_formats[] = {
             DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};

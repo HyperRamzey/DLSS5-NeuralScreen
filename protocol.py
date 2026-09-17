@@ -245,6 +245,11 @@ class SharedFrameBuffer:
 
     def put(self, rgba: np.ndarray, motion: np.ndarray) -> None:
         """Put the frame and motion into the mapping (one memcpy each)."""
+        if self._buf is None:
+            # The buffer was closed. Say so: this used to fall through to a
+            # bare "NoneType is not subscriptable" from the copyto below, which
+            # says nothing about what actually happened (audit H3).
+            raise ValueError("the shared frame buffer is closed")
         color = rgba.reshape(-1)
         if color.nbytes > self.color_capacity:
             raise ValueError(f"a frame of {color.nbytes} B does not fit into "
@@ -259,6 +264,14 @@ class SharedFrameBuffer:
 
     def close(self) -> None:
         self.negotiated = False
+        # Every section this object opened, in one place (audit H3). close()
+        # used to release the input and the gray channel only, and the reverse
+        # pixel channel (ON by default, opened once per pipeline build) stayed
+        # mapped: one 33 MB named section plus its mapping per rebuild, ~264 MB
+        # after eight monitor/window switches, none of it readable or
+        # releasable. close_out() already did the right thing - it just had no
+        # caller in the program.
+        self.close_out()
         self.close_gray()
         self._buf = None  # numpy holds the buffer: without the reset mmap.close() raises BufferError
         try:

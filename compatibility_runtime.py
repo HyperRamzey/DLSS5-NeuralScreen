@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 
+import compatibility
 from compatibility import (
     CompatibilityCache,
     CompatibilityKey,
@@ -64,9 +65,20 @@ def runtime_path() -> Path:
 
 
 def _fingerprint(path: Path) -> dict[str, Any]:
-    """Fingerprint an optional route component without persisting its path."""
+    """Fingerprint an optional route component without persisting its path.
+
+    Goes through the module, not the name imported here: this is the file that
+    sha256_file's digest cache is keyed on, and a bound local name would route
+    around it and re-read the 165 MB runtime on every key build (audit H2).
+
+    The existence check comes first so an absent optional component (the BYO
+    candidate is absent unless the user dropped a DLL there) costs a stat
+    instead of a raised FileNotFoundError on every call.
+    """
     try:
-        return {"present": True, "sha256": sha256_file(path)}
+        if not path.is_file():
+            return {"present": False, "sha256": ""}
+        return {"present": True, "sha256": compatibility.sha256_file(path)}
     except OSError:
         return {"present": False, "sha256": ""}
 

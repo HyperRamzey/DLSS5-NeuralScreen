@@ -254,17 +254,28 @@ def zip_integrity():
                       f"{runtime_count} runtime files pinned; ZIP waits for {tag}")
 
     import verify_github as verifier
-    commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+    # The archive is built from the TAGGED commit - the builder refuses to run
+    # anywhere else - so the tag is what it has to match. Resolving HEAD here
+    # instead reported a fault on every working tree that had moved on since
+    # the release (a test fix, a documentation line), because the commit
+    # compiled into VERSION.txt is the tag's, not HEAD's. That is the normal
+    # state of a checkout after a release, so the check read as broken while
+    # the archive was perfectly correct.
+    tag_commit = subprocess.run(
+        ["git", "rev-list", "-n", "1", tag],
+        cwd=ROOT, capture_output=True, text=True,
         encoding="utf-8", errors="replace",
-    ).strip()
+    ).stdout.strip()
+    if not tag_commit:
+        return False, (f"a release ZIP exists but tag {tag} does not - the "
+                       f"archive cannot be matched to a release")
     failures = verifier.validate_release_set(
-        ROOT, tag=tag, tag_commit=commit, repo=ROOT,
+        ROOT, tag=tag, tag_commit=tag_commit, repo=ROOT,
     )
     if failures:
         return False, "release ZIP: " + "; ".join(failures[:5])
     return True, (f"{zpath.stat().st_size} bytes, exact {package_count}-file "
-                  "payload, tagged blobs and checksums verified")
+                  f"payload, blobs and checksums verified against {tag}")
 
 
 def gpuinfo_works():

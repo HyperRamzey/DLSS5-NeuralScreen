@@ -843,8 +843,8 @@ def drain_commands(st) -> bool:
                             channels.forget_present(st)
                             channels.forget_dda(st)
                             channels.forget_out(st)
-                            # The manual revive is a restart_worker() call like
-                            # any other, so the feature-18 verdict has to die
+                            # The manual revive restarts the worker like any
+                            # other path, so the feature-18 verdict has to die
                             # with the worker that gave it (channels.py's
                             # contract). It was the one path that skipped this,
                             # so a card that started working kept the red dot

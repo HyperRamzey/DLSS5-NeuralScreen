@@ -792,6 +792,18 @@ def drain_commands(st) -> bool:
                         if rect is not None:
                             st.display.set_window_layer(*rect)
                     settings_io.save_menu_layout(st)
+                    # Whatever route closed the menu, the keyboard comes back
+                    # (audit H2). Only the close button used to resume, so a
+                    # hotkey field that was waiting for a key left the global
+                    # hotkeys unregistered for the rest of the session when the
+                    # menu was closed from the tray or the taskbar: Num0-Num7
+                    # and Ctrl+Alt+Q all dead, with no way back but a restart.
+                    # The menu's own capturing flag goes with it - otherwise
+                    # the next open silently swallows the first keydown as a
+                    # remap. resume() on a controller that was never suspended
+                    # is harmless (it posts a message nobody acts on).
+                    st.hotkeys.resume()
+                    st.display.menu.capturing = None
                 print(f"[main] overlay menu {'opened' if opened else 'closed'}")
             elif cmd == "toggle":
                 st.paused = not st.paused

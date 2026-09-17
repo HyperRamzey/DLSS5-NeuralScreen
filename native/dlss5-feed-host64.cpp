@@ -4315,16 +4315,19 @@ static bool OpenDda(UINT w, UINT hgt)
             DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
         hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(hdr_formats),
                                        hdr_formats, &g_dda_dup);
-        output5->Release();
         if (FAILED(hr))
             Log("[hdr] FP16 duplication refused 0x%08X - capturing in SDR instead", hr);
     }
     else
         Log("[hdr] this Windows has no IDXGIOutput5 - capturing in SDR instead");
-    // The HDR branch above releases output5 itself; the 10-bit SDR branch does
-    // not, so a successful 10-bit open would leak the interface. Release once,
-    // here, for both.
-    if (has_output5 && g_capture_deep_bits > 8 && !g_dda_hdr_mode)
+    // The QueryInterface above is what creates the reference, and it runs on
+    // whichever path is taken - so this release has to as well. Keeping the
+    // release inside a branch (which is how this read before the high-colour
+    // path existed) leaks one reference on every path that branch does not
+    // cover: an 8-bit display never enters the HDR branch, and an HDR-capable
+    // display reporting 8 bits per colour (#89) is not covered by a "deeper
+    // than 8 bits" test either.
+    if (has_output5)
         output5->Release();
     if (g_dda_hdr_mode && FAILED(hr))
     {

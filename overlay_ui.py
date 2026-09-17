@@ -2607,7 +2607,11 @@ class OverlayMenu:
 
     def _draw_choice(self, surface, item: Item, s: dict) -> None:
         label_h = item.extra.get("label_h", self._u(LABEL_H))
-        label = self._font.render(item.extra.get("label", item.key), True, _rgb(self.c["text"]))
+        # Clipped like every other label (audit M1): "the captions are short"
+        # is not a rule that survives a translation.
+        label = self._clip(self._font,
+                           str(item.extra.get("label", item.key)),
+                           _rgb(self.c["text"]), item.rect.w)
         surface.blit(label, (item.rect.x, item.rect.y))
 
         # The field is the CONTROL, not the rest of the row. A row with a
@@ -2626,8 +2630,14 @@ class OverlayMenu:
         labels = item.extra.get("labels") or item.payload or []
         if cur_val in (item.payload or []):
             cur_val = str(labels[item.payload.index(cur_val)])
-        cur = self._font.render(cur_val, True,
-                                _rgb(self.c["text"]))
+        # Clipped to the space the field actually leaves (audit M1). The value
+        # used to be rendered at full width: the GPU picker's is
+        # "<i>: <name>" plus " - <no_nr>" for an adapter that was already
+        # refused, so at 1080p/ja it measured 566 px against 460 px of field -
+        # it ran under the drop-down arrow and past the border. The arrow is
+        # 16 px from the right edge and the text starts 12 px from the left.
+        cur = self._clip(self._font, cur_val, _rgb(self.c["text"]),
+                         strip.w - self._u(12) - self._u(16))
         surface.blit(cur, (strip.x + self._u(12),
                            strip.centery - cur.get_height() // 2))
         cx = strip.right - self._u(16)
@@ -2737,8 +2747,21 @@ class OverlayMenu:
         the accent under the pointer so that it reads as one.
         """
         value = str(item.extra.get("value") or "")
-        val = self._mono_small.render(value, True, _rgb(self.c["muted"]))
-        room = item.rect.w - val.get_width() - self._u(12)
+        # The value is clipped too, and the label keeps a floor (audit M1). A
+        # recording path is the user's folder plus a fixed tail
+        # (neuralscreen-YYYYMMDD-HHMMSS-mmm.mp4), so it is routinely longer
+        # than the row: measured at 1080p, 492 px of value in a 365 px row, and
+        # the label was handed `room = item.rect.w - value_w - 12` - a NEGATIVE
+        # width, so _clip returned an empty surface and the caption vanished as
+        # well. Both now share the row: the value takes what it needs up to a
+        # share of the row, the label keeps the rest with a readable floor.
+        label_floor = self._u(90) if value else 0
+        val_room = max(self._u(60),
+                       item.rect.w - label_floor - self._u(12)) if value else 0
+        val = (self._clip(self._mono_small, value, _rgb(self.c["muted"]),
+                          val_room) if value else None)
+        room = item.rect.w - (val.get_width() if val is not None else 0) \
+            - self._u(12)
         hot = (item.key == "source_now"
                and self.hover == f"info:{item.key}")
         label = self._clip(self._font, str(item.extra.get("label") or ""),
@@ -2746,7 +2769,7 @@ class OverlayMenu:
                            room)
         y = item.rect.centery
         surface.blit(label, (item.rect.x, y - label.get_height() // 2))
-        if value:
+        if value and val is not None:
             surface.blit(val, (item.rect.right - val.get_width(),
                                y - val.get_height() // 2))
 

@@ -1201,11 +1201,31 @@ def main() -> int:
                 st.recording_finalizer.close()
             except Exception as exc:
                 print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
-            commands.poll_recording_finalizer(st)
+            try:
+                commands.poll_recording_finalizer(st)
+            except Exception as exc:
+                print(f"[main] failed to poll the recording finalizer: {exc}",
+                      file=sys.stderr)
+        # The worker and the shared section are the two calls here without a
+        # guard, and a raise from either skips every step below it - capture,
+        # window, hotkeys, tray and taskbar all stay live, with the borderless
+        # topmost overlay still on screen and no loop left to feed it (audit
+        # H4). shutdown_worker prints and closes a pipe, and on a pythonw
+        # process stdout is the log file: a write into a log that has become
+        # unwritable raises out of print and took the whole teardown with it.
+        # Keep the order, guard each call.
         if st.worker is not None:
-            shutdown_worker(st.worker, st.worker_stop)
+            try:
+                shutdown_worker(st.worker, st.worker_stop)
+            except Exception as exc:
+                print(f"[main] failed to shut down the worker: {exc}",
+                      file=sys.stderr)
         if st.shm is not None:
-            st.shm.close()
+            try:
+                st.shm.close()
+            except Exception as exc:
+                print(f"[main] failed to close the shared memory: {exc}",
+                      file=sys.stderr)
         try:
             settings_io.save_menu_layout(st)
         except Exception:

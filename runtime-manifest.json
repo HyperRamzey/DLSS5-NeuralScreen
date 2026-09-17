@@ -264,13 +264,13 @@
       {
         "origin": "generated",
         "path": "native/nvngx.dll",
-        "sha256": "f6ccad5dbeccfe52c4827140a6d9ca92a20a2e4fa5fa809ffa249a359f9e5d86",
+        "sha256": "a4815b406d770c3eb8bcc46af53eed2c02099c70b486ee988d11c3c28c7e865b",
         "size": 236032
       },
       {
         "origin": "generated",
         "path": "native/nvngx.dll_ns-forwarder.dll",
-        "sha256": "6eb156a60bbeefcf8bc2900a60f2ab8f78e0a56bf728dcc73d0816d47bc729d0",
+        "sha256": "b0ba9c0d68fb86b09ebb27313d176e040750ca3c1c8baaf1fb2b048d8172e769",
         "size": 10240
       },
       {
@@ -8171,7 +8171,7 @@
         "size": 7258
       }
     ],
-    "tree_sha256": "9660df894e08fe9eef345a1c53386b5d2761a2798c9c89222bce6510c659ca0e"
+    "tree_sha256": "f0723f1c1521b0496430150780b9f249b5796850261aef55bd4ac12f09214f89"
   },
   "product": "NeuralScreen",
   "runtime": {
@@ -8183,12 +8183,12 @@
       },
       {
         "path": "native/nvngx.dll",
-        "sha256": "f6ccad5dbeccfe52c4827140a6d9ca92a20a2e4fa5fa809ffa249a359f9e5d86",
+        "sha256": "a4815b406d770c3eb8bcc46af53eed2c02099c70b486ee988d11c3c28c7e865b",
         "size": 236032
       },
       {
         "path": "native/nvngx.dll_ns-forwarder.dll",
-        "sha256": "6eb156a60bbeefcf8bc2900a60f2ab8f78e0a56bf728dcc73d0816d47bc729d0",
+        "sha256": "b0ba9c0d68fb86b09ebb27313d176e040750ca3c1c8baaf1fb2b048d8172e769",
         "size": 10240
       },
       {
@@ -14986,11 +14986,11 @@
       "size": 10424
     },
     {
-      "git_blob": "9e3af7a03cae2c2339300e6248d2db18f850ec9e",
+      "git_blob": "1227f546aecb746b84e663d997e275a2b2358dde",
       "path": "native/dlss5-feed-host64.cpp",
       "role": "native-source",
-      "sha256": "4fdd9b682b19f41312ee7328cca21b6c8fb38fe0581cec29bacdb4062c03ca0e",
-      "size": 338442
+      "sha256": "518e8187d95e362bba74d186830f174a39982e18f493605b2b428216b5994d40",
+      "size": 338683
     },
     {
       "git_blob": "3e1200cadf2c94579d6071babe27de104ebb61e9",

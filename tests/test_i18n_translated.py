@@ -20,6 +20,7 @@ the user reads must be in the user's language. Two things keep it honest:
 
 Run:  runtime\\python.exe tests\\test_i18n_translated.py
 """
+import re
 import sys
 from pathlib import Path
 
@@ -42,6 +43,10 @@ LANG_KEYS = {key for key in STRINGS["en"] if key.startswith("lang_")}
 #: Numbers with a unit: "30 fps" is the same in every language here.
 NUMERIC = {"frame_limit_30", "frame_limit_60"}
 
+#: Languages whose script is not Latin. A Latin word in one of these is the
+#: untranslated English source (abbreviations excepted - see the rule below).
+NON_LATIN_LANGS = frozenset({"ru", "uk", "zh", "ja", "ko"})
+
 SKIP = TERMS | LANG_KEYS | NUMERIC
 
 
@@ -58,17 +63,45 @@ def main() -> int:
         if key in SKIP or not isinstance(value, str) or not value.strip():
             continue
         same = [lang for lang in langs if STRINGS[lang].get(key) == value]
-        # English itself is the source; "identical in 11 of 11" means never
-        # translated. One language left out is a miss for that language.
-        if len(same) == len(langs) and len(langs) > 1:
-            failures.append(
-                f"{key!r} is verbatim English in all {len(langs)} languages: "
-                f"{value[:50]!r}")
-        elif len(same) >= max(2, len(langs) - 1) and len(langs) > 3:
-            failures.append(
-                f"{key!r} is English in {len(same)} of {len(langs)} languages "
-                f"({', '.join(same[:6])}{'...' if len(same) > 6 else ''}) - "
-                f"a translation was missed for those: {value[:40]!r}")
+        if not same:
+            continue
+        # A miss is a miss for the language that missed it, and the old rule
+        # could not see one that missed fewer than ten of eleven: the two
+        # multi-word strings below were English in seven and four languages
+        # respectively while the suite stayed green.
+        #
+        # One-word strings are compared against the language's own vocabulary:
+        # "Monitor" IS German, "Menu" IS French, "Format" IS Polish - those
+        # are correct translations, not misses. Asking a one-word string to
+        # differ from English would demand a wrong translation, so only
+        # multi-word strings are held to it.
+        if len(value.split()) < 2:
+            # One word in a script that does not use Latin letters cannot be
+            # the English source unless it is an abbreviation ("GPU", "NR",
+            # "HDR" are the same everywhere). Without this half, replacing
+            # "Тема" with "Theme" in the Russian table left the check green.
+            #
+            # The value checked is the translation THIS language has, not the
+            # English source: a language can legitimately translate a word the
+            # English table spells differently.
+            if len(same) == len(langs):
+                continue
+            for lang in same:
+                if lang not in NON_LATIN_LANGS:
+                    continue
+                translated = STRINGS[lang].get(key)
+                if isinstance(translated, str) and re.search(
+                        r"[A-Za-z]", translated) and not re.fullmatch(
+                        r"[A-Z0-9]+", translated):
+                    failures.append(
+                        f"{lang}/{key}: {translated[:40]!r} is Latin text in a "
+                        f"language that does not use it - the English string "
+                        f"was never translated")
+            continue
+        failures.append(
+            f"{key!r} is verbatim English in {len(same)} of {len(langs)} "
+            f"languages ({', '.join(same[:6])}{'...' if len(same) > 6 else ''}) "
+            f"- a translation was missed for those: {value[:40]!r}")
 
     # Placeholders must survive translation, or an alert raises at runtime.
     for key, value in sorted(en.items()):

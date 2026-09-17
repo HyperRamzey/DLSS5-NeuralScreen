@@ -26,7 +26,7 @@ DEFAULT_LANG = "en"
 # --- Localization: EVERY UI + HUD/alert string ---------------------------
 STRINGS = {
     "en": {
-        "theme": "Theme",
+        "theme": "Тема",
         "monitor": "Monitor",
         "gpu": "GPU",
         "gpu_switched": "GPU switched - the worker restarted",
@@ -176,7 +176,7 @@ STRINGS = {
         "lang_ko": "한국어",
     },
     "ru": {
-        "theme": "Тема",
+        "theme": "Theme",
         "monitor": "Монитор",
         "gpu": "Видеокарта",
         "gpu_switched": "Видеокарта переключена - воркер перезапущен",
@@ -395,7 +395,7 @@ STRINGS = {
         "style_2": "Cinéma",
         "theme_light": "Clair",
         "theme_dark": "Sombre",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering marche/arrêt",
         "hk_menu": "Menu",
         "hk_shot": "Capture d'écran",
         "hk_record": "Enregistrement",
@@ -695,7 +695,7 @@ STRINGS = {
         "style_2": "Cine",
         "theme_light": "Claro",
         "theme_dark": "Oscuro",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering activar/desactivar",
         "hk_menu": "Menú",
         "hk_shot": "Captura de pantalla",
         "hk_record": "Grabación",
@@ -845,7 +845,7 @@ STRINGS = {
         "style_2": "Cinema",
         "theme_light": "Chiaro",
         "theme_dark": "Scuro",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering attiva/disattiva",
         "hk_menu": "Menu",
         "hk_shot": "Screenshot",
         "hk_record": "Registrazione",
@@ -995,7 +995,7 @@ STRINGS = {
         "style_2": "Cinema",
         "theme_light": "Claro",
         "theme_dark": "Escuro",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering ligar/desligar",
         "hk_menu": "Menu",
         "hk_shot": "Captura de tela",
         "hk_record": "Gravação",
@@ -1885,7 +1885,7 @@ STRINGS["ru"].update({
 
 })
 
-STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicateur de trames de sortie'})
 
 for _strings in STRINGS.values():
     _strings.update({
@@ -1905,17 +1905,17 @@ STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multip
 
 STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
 
-STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplikator der Ausgabebilder'})
 
-STRINGS['es'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['es'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de fotogramas de salida'})
 
-STRINGS['it'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['it'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Moltiplicatore di fotogrammi in uscita'})
 
-STRINGS['pt'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['pt'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de quadros de saída'})
 
-STRINGS['pl'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['pl'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Mnożnik klatek wyjściowych'})
 
-STRINGS['uk'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['uk'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множник кадрів виходу'})
 
 STRINGS['zh'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '帧倍率'})
 

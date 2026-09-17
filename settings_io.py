@@ -441,7 +441,16 @@ def _validate_config(cfg: dict) -> dict:
                   file=sys.stderr)
         cfg[key] = pulled
     # work_scale: 0.1..1.0 - the NGX processing resolution relative to the output
-    scale = float(cfg.get("work_scale", 1.0))
+    try:
+        scale = float(cfg.get("work_scale", 1.0))
+    except (TypeError, ValueError, OverflowError):
+        # A word or a dict here used to raise straight out of load_config, so
+        # the launch died before a window existed (audit H5).
+        print(f"[main] config.json: work_scale {cfg.get('work_scale')!r} is "
+              f"not a number; using 1.0", file=sys.stderr)
+        scale = 1.0
+    if scale != scale or scale in (float("inf"), float("-inf")):
+        scale = 1.0
     cfg["work_scale"] = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, scale))
     # lang: the language of the HUD/alerts/menu (en/ru, DEFAULT_LANG by default)
     lang = str(cfg.get("lang", DEFAULT_LANG))
@@ -472,6 +481,129 @@ def _validate_config(cfg: dict) -> dict:
     screenshot_format = str(cfg.get("screenshot_format", "png")).lower()
     cfg["screenshot_format"] = (screenshot_format
                                 if screenshot_format in ("png", "jpg") else "png")
+
+    # --- Values startup reads with a bare int()/float()/attribute access ----
+    # (audit H5). The rule is the one this validator already uses for a stale
+    # profile and a shrunken parameter range: a value that cannot be used
+    # falls back to the default and says so. Refusing to start is reserved for
+    # a file that is not a config at all - configure() runs before any window
+    # exists, so a raise here is a modal box with a Python message in it and
+    # not one word about which field is wrong, and the program does not start
+    # until the user hand-edits the file again.
+    def _fallback(key: str, value, default, why: str) -> None:
+        print(f"[main] config.json: {key} {value!r} {why}; using {default!r}",
+              file=sys.stderr)
+        cfg[key] = default
+
+    def _as_int(key: str, value, default, *, minimum=None):
+        """The value as an int, or the default when it cannot be one."""
+        if value is None:
+            return default
+        if isinstance(value, bool) or isinstance(value, (dict, list, tuple)):
+            _fallback(key, value, default, "is not a number")
+            return default
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError):
+            _fallback(key, value, default, "is not a number")
+            return default
+        if minimum is not None and number < minimum:
+            _fallback(key, value, default, f"is below {minimum}")
+            return default
+        return number
+
+    # monitor: the DXGI devicename (a str, resolved by startup) or an output
+    # index. Anything else reached `int(monitor_cfg)` and took the launch down.
+    monitor = cfg.get("monitor", 0)
+    if isinstance(monitor, str):
+        pass                                  # resolve_output_idx handles it
+    elif monitor is None or isinstance(monitor, (bool, dict, list, tuple)) or \
+            not isinstance(monitor, int):
+        try:
+            monitor = int(monitor)            # a numeric string is fine
+        except (TypeError, ValueError, OverflowError):
+            _fallback("monitor", cfg.get("monitor"), 0,
+                      "is neither a devicename nor an output index")
+            monitor = 0
+    cfg["monitor"] = monitor
+
+    # gpu: an adapter index, or None to let the worker choose. The worker's
+    # NS_GPU string is built with str(int(gpu)).
+    gpu = cfg.get("gpu")
+    if gpu is not None:
+        if isinstance(gpu, bool) or isinstance(gpu, (dict, list, tuple)):
+            _fallback("gpu", gpu, None,
+                      "is not an adapter index (use null to let the worker "
+                      "choose)")
+        else:
+            try:
+                cfg["gpu"] = int(gpu)
+            except (TypeError, ValueError, OverflowError):
+                _fallback("gpu", gpu, None,
+                          "is not an adapter index (use null to let the "
+                          "worker choose)")
+
+    # menu_offset: the saved [x, y] pair, read as [int(...), int(...)].
+    offset = cfg.get("menu_offset")
+    if offset is not None:
+        ok = (isinstance(offset, (list, tuple)) and len(offset) == 2
+              and not any(isinstance(v, (dict, list, tuple, bool))
+                          for v in offset))
+        if ok:
+            try:
+                cfg["menu_offset"] = [int(offset[0]), int(offset[1])]
+            except (TypeError, ValueError, OverflowError):
+                ok = False
+        if not ok:
+            _fallback("menu_offset", offset, [0, 0],
+                      "is not an [x, y] pair - the panel is placed at the "
+                      "default position")
+
+    # menu_scale / menu_height: the panel's own size, read with float()/int().
+    menu_scale = cfg.get("menu_scale", 1.0)
+    if isinstance(menu_scale, bool) or isinstance(menu_scale, (dict, list, tuple)):
+        _fallback("menu_scale", menu_scale, 1.0, "is not a number")
+        menu_scale = 1.0
+    else:
+        try:
+            menu_scale = float(menu_scale)
+        except (TypeError, ValueError, OverflowError):
+            _fallback("menu_scale", menu_scale, 1.0, "is not a number")
+            menu_scale = 1.0
+    if menu_scale != menu_scale or menu_scale in (float("inf"), float("-inf")):
+        menu_scale = 1.0
+    cfg["menu_scale"] = min(3.0, max(0.5, menu_scale))
+
+    menu_height = cfg.get("menu_height")
+    if menu_height is not None:
+        cfg["menu_height"] = _as_int("menu_height", menu_height, None,
+                                     minimum=1)
+
+    # theme: light | dark, anything else is the default.
+    theme = cfg.get("theme")
+    if theme is not None and theme not in ("light", "dark"):
+        _fallback("theme", theme, None, "is not light or dark")
+
+    # hotkeys: a {command: "Ctrl+Alt+Q"} mapping, read by build_bindings with
+    # .get() per value and .strip() on each. A list or a bare string used to
+    # reach it and raise an AttributeError out of startup.
+    hotkeys = cfg.get("hotkeys")
+    if hotkeys is not None:
+        clean: dict = {}
+        usable = isinstance(hotkeys, dict)
+        if usable:
+            for command, binding in hotkeys.items():
+                if not isinstance(command, str) or not isinstance(binding, str):
+                    usable = False
+                    break
+                clean[command] = binding
+        if usable:
+            if clean != hotkeys:
+                cfg["hotkeys"] = clean
+        else:
+            _fallback("hotkeys", hotkeys, {},
+                      "is not a {command: combination} mapping - the default "
+                      "bindings are used")
     return cfg
 
 

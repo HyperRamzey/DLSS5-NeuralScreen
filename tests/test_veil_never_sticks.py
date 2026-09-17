@@ -103,6 +103,26 @@ def main() -> int:
         failures.append("the hold cap did not take the veil down - a veil "
                         "whose frame never comes outlives the session")
 
+    # 4b. The exit path alone (audit M6): exit_switch_mode starts the fade, and
+    #     the fade is advanced only by a draw. If the worker dies between the
+    #     exit and the first draw, nothing draws - and the veil used to sit at
+    #     full strength until something else happened to draw, which may be
+    #     never. The hold cap is what ends it.
+    disp4 = _display()
+    disp4.enter_switch_mode(FRAME, 640, 360)
+    disp4.exit_switch_mode()
+    if disp4._switch_phase != "out":
+        failures.append(f"exit_switch_mode left the phase at "
+                        f"{disp4._switch_phase!r}, expected 'out'")
+    # No draws at all, only time passing.
+    disp4._finish_switch_if_due(time.monotonic() + D.SWITCH_HOLD_MAX + 1.0)
+    if disp4.is_switch_active():
+        failures.append("the veil stayed up after exit_switch_mode with no "
+                        "draw ever coming - a worker that dies between the "
+                        "exit and the first frame leaves it at full strength "
+                        "for the rest of the session")
+    disp4.drop_switch_mode()  # no-op, must not raise
+
     # 5. The idle branch must actually call them. It is a closure inside
     #    main(), so read the source and check the calls are in the function.
     src = (BASE / "main.py").read_text(encoding="utf-8")

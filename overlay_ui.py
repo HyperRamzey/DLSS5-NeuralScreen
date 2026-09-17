@@ -423,9 +423,49 @@ class OverlayMenu:
 
     def toggle(self) -> bool:
         self.visible = not self.visible
-        if not self.visible:
-            self._drag_item = None
         return self.visible
+
+    @property
+    def visible(self) -> bool:
+        """Whether the panel is up. Setting it False ends any interaction.
+
+        The setter is the ONE place that closes the menu, and closing it has
+        to finish whatever the pointer started (audit H3). A drag begun on the
+        title bar holds SetCapture and a live anchor in `_move_from`; if the
+        menu is closed before the button comes up - the min icon, Num2, Esc,
+        the tray, the taskbar - the matching MOUSEBUTTONUP is dropped by
+        handle_event's own `if not self.visible: return []` guard. The drag
+        then never ends: `dragging` stays True, so the main loop skips the
+        whole per-frame payload refresh (FPS, REC, the GPU verdict, the
+        profile all freeze), and the next buttonless MOUSEMOTION applies the
+        anchor, teleporting the panel by the distance the cursor travelled
+        meanwhile (measured: offset [0, 0] -> [-460, 153]).
+
+        Routes that assign the attribute directly are covered by this too;
+        they used to leave the panel dragging forever.
+        """
+        return self._visible
+
+    @visible.setter
+    def visible(self, value: bool) -> None:
+        value = bool(value)
+        if not value and getattr(self, "_visible", False):
+            self._end_interaction()
+        self._visible = value
+
+    def _end_interaction(self) -> None:
+        """Cancel every pointer interaction the menu is holding.
+
+        Called when the menu goes away underneath the pointer: the drags and
+        resizes lose their anchor, and the window gives up the mouse capture
+        it took for them - otherwise clicks keep being routed to a menu the
+        user can no longer see.
+        """
+        self._drag_item = None
+        self._move_from = None
+        self._resize_from = None
+        self._resize_h_from = None
+        self._capture_mouse(False)
 
     @property
     def dragging(self) -> bool:

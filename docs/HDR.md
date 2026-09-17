@@ -97,10 +97,27 @@ runtime\python.exe tests\test_hdr_capture.py --run
 runtime\python.exe tests\test_hdr_capture.py --desktop
 ```
 
-All four are in `tests\run_tests.py` as well. `test_hdr_shaders.py` is
-`native\test-hdr.bat` under a name the suite picks up; `test_hdr_capture.py`
-with no argument asks Windows whether the primary display is in HDR and runs
-the WGC variant when it is, rather than skipping in silence.
+Run in the suite (`tests\run_tests.py`) with no flags:
+
+- `test_hdr_shaders.py` - `native\test-hdr.bat` under a name the suite picks
+  up; compiles and runs the production HLSL on WARP, so it needs no NVIDIA
+  runtime and no HDR display;
+- `test_hdr_switch.py`, `test_bypass.py`;
+- `test_hdr_capture.py` with no argument asks Windows whether the primary
+  display is in HDR and runs the WGC variant when it is, rather than skipping
+  in silence.
+
+Run by hand, because they take the screen or need hardware the suite cannot
+assume:
+
+```bat
+runtime\python.exe tests\test_hdr_capture.py --run
+runtime\python.exe tests\test_hdr_capture.py --desktop
+```
+
+Those two are in `run_tests.py` as listed tests, but the runner passes no
+flags, so they report SKIP there - the hand-run above is what actually executes
+them.
 
 `test-hdr.bat` compiles and executes the **production HLSL** on WARP using GPU
 readback. It covers non-multiple-of-8 dimensions, HDR highlight separation, signed

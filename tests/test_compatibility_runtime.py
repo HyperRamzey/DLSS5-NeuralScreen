@@ -25,7 +25,7 @@ from protocol import (  # noqa: E402
 
 
 KEY = CompatibilityKey(
-    "1.13.1", "a" * 64, "b" * 64,
+    "1.14.0", "a" * 64, "b" * 64,
     {"index": 0}, "driver", {"width": 640, "height": 360},
 )
 

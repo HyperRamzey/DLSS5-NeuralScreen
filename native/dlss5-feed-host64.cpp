@@ -3583,6 +3583,11 @@ static ID3D11Fence            *g_dda_signal11 = nullptr;
 static HANDLE                  g_dda_fence_ev = nullptr;  // event wait for the D3D11 copy
 static UINT64                  g_dda_fence_value = 1;
 static bool                    g_dda_ready = false;      // current frame is in v.color
+// Bits per colour of the captured display's scan-out, read from IDXGIOutput6
+// when the capture opens. Above 8 the duplicated desktop alternates
+// FP16/BGRA8 through the legacy DuplicateOutput, so the capture is pinned to
+// FP16 through DuplicateOutput1 instead (#89).
+static UINT                    g_capture_deep_bits = 8;
 // The WGCW command, filled by the dispatcher and read by its handler.
 static VideoWgcCmd             g_wgc_cmd = {};
 // Gray downsample (GRAY): write luminance (flow size) into a client mapping.
@@ -4225,6 +4230,11 @@ static bool OpenDda(UINT w, UINT hgt)
                 Log("[dda] output colour space %d, %u bits per colour%s",
                     (int)d1.ColorSpace, d1.BitsPerColor,
                     hdr ? " - HDR IS ON for the captured display" : "");
+                // The bit depth decides the duplication path below: a scan-out
+                // deeper than 8 bits alternates FP16/BGRA8 through the legacy
+                // DuplicateOutput, so that case is pinned to FP16 through
+                // DuplicateOutput1 instead (#89).
+                g_capture_deep_bits = d1.BitsPerColor;
             }
             out6->Release();
         }
@@ -4239,7 +4249,41 @@ static bool OpenDda(UINT w, UINT hgt)
     g_dda_hdr_mode = HdrEnabled() && g_capture_display.enabled;
     IDXGIOutput5 *output5 = nullptr;
     hr = E_FAIL;
-    if (!g_dda_hdr_mode)
+    const bool has_output5 = SUCCEEDED(output->QueryInterface(
+        __uuidof(IDXGIOutput5), (void **)&output5));
+    // Is the captured display's scan-out deeper than 8 bits per colour? A
+    // 10-bit output hands the duplicated desktop back as FP16 sometimes and
+    // BGRA8 other times, and the legacy DuplicateOutput below does NOT pin it:
+    // a real v1.13.1 log (#89) shows `[dda] SDR capture fixed to BGRA8 through
+    // legacy duplication` followed by 1955 FP16<->BGRA8 flips in 133 s, each
+    // one tearing down and rebuilding the whole capture bridge. The same log
+    // shows the storm stops completely (0 flips in the remaining session) once
+    // the IDXGIOutput5 path is taken, because DuplicateOutput1 accepts the
+    // high-colour format instead of refusing it.
+    if (!g_dda_hdr_mode && has_output5 && g_capture_deep_bits > 8)
+    {
+        // 10-bit scan-out with HDR compatibility off: ask for FP16 FIRST
+        // through DuplicateOutput1. The capture shader already converts FP16
+        // to SDR (isFloat), so the picture stays what the user asked for -
+        // HDR compatibility still governs the PRESENTATION, not the capture
+        // format. Accepting BGRA8 as the second format keeps a driver that
+        // refuses FP16 working.
+        const DXGI_FORMAT deep_formats[] = {
+            DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
+        hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(deep_formats),
+                                       deep_formats, &g_dda_dup);
+        if (SUCCEEDED(hr))
+            Log("[dda] 10-bit scan-out: FP16 duplication pinned through "
+                "IDXGIOutput5 (no format flips)");
+        else
+            Log("[dda] FP16 duplication refused 0x%08X on a %u-bit output - "
+                "falling back to legacy SDR", hr, g_capture_deep_bits);
+    }
+    if (SUCCEEDED(hr))
+    {
+        // Already opened above: the 10-bit path pinned the format itself.
+    }
+    else if (!g_dda_hdr_mode)
     {
         // DuplicateOutput1 was meant to pin SDR to the one advertised BGRA8
         // format. Real v1.12 logs from two drivers (#86 and #89) proved that
@@ -4253,8 +4297,7 @@ static bool OpenDda(UINT w, UINT hgt)
         if (SUCCEEDED(hr))
             Log("[dda] SDR capture fixed to BGRA8 through legacy duplication");
     }
-    else if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5),
-                                               (void **)&output5)))
+    else if (has_output5)
     {
         // HDR compatibility is the only mode that needs a high-colour surface.
         // Keep BGRA8 as the fallback format accepted by DuplicateOutput1.
@@ -4268,6 +4311,11 @@ static bool OpenDda(UINT w, UINT hgt)
     }
     else
         Log("[hdr] this Windows has no IDXGIOutput5 - capturing in SDR instead");
+    // The HDR branch above releases output5 itself; the 10-bit SDR branch does
+    // not, so a successful 10-bit open would leak the interface. Release once,
+    // here, for both.
+    if (has_output5 && g_capture_deep_bits > 8 && !g_dda_hdr_mode)
+        output5->Release();
     if (g_dda_hdr_mode && FAILED(hr))
     {
         // HDR was requested but Output5 could not provide it. Fall back to the
@@ -4438,12 +4486,19 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
             return StageResult::SizeChanged;
         if (sd.Format != fd.Format)
         {
-            // Same surface, different format: only the bridge is wrong. Tear
-            // down exactly what fail_capture tears down - the source (dup,
-            // ctx, d11) stays up - and the next frame rebuilds the channel
-            // for the new format. The HDR resources go with it because they
-            // are chosen from the capture format; CloseDda used to take them
-            // on this path and they must not survive it.
+            // The incoming frame's format differs from the shared texture's.
+            // Through the pinned DuplicateOutput1 path above this cannot
+            // happen; it is the legacy path on a driver that alternates
+            // FP16/BGRA8 regardless (#86/#89).
+            //
+            // This teardown is what turned that into a storm: 1955 rebuilds in
+            // 133 s in one real log, each one allocating a 3840x2160
+            // cross-device texture plus its fences and losing the frame -
+            // measured there as `grab 43.0ms` against 18.3 fps. The rebuild
+            // itself is what makes the following frames valid, so it stays:
+            // the fix for the storm is upstream, in pinning the duplication to
+            // one format. A driver that flips anyway still gets correct
+            // frames, at the cost this always had.
             Log("[cap] capture format %u -> %u - rebuilding the bridge",
                 (unsigned)sd.Format, (unsigned)fd.Format);
             CloseCaptureBridge();

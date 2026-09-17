@@ -1636,8 +1636,15 @@ class OverlayMenu:
                     # the panel cannot be stretched down). Prefer opening
                     # down; flip up when the space below the strip cannot
                     # hold at least two rows and the space above can.
+                    # The room above is measured to the VIEWPORT, not to the
+                    # panel: the panel's first band is the title bar, which is
+                    # the drag handle and carries no content. Rows laid out
+                    # into it were drawn over the title text, could not be
+                    # clicked (the title bar takes the press, or hit() rejects
+                    # them) and could not be reached from the keyboard either -
+                    # visible but unreachable (audit H4).
                     down_room = self.panel_rect.bottom - strip.bottom - self._u(8)
-                    up_room = strip.top - self.panel_rect.top - self._u(8)
+                    up_room = strip.top - self._viewport.top - self._u(8)
                     open_up = (down_room < 2 * oh and up_room > down_room)
                     room = up_room if open_up else down_room
                     max_rows = max(1, room // oh)

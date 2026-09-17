@@ -2433,19 +2433,44 @@ class OverlayMenu:
             skipped = max(0, int(st.get("skipped_static", 0) or 0))
             readings.append(f"{s.get('skipped_short', 'SKIP')} {skipped}")
             readings.append(str(st.get("resolution", "—")))
+
+        name = str(self.state.get("gpu_text") or "")
+        # The card the network runs on gets its room FIRST (audit M4). The
+        # readings used to be laid out from the right and the name took
+        # whatever was left - measured 72 px at 1080p and 74 px at 4K, because
+        # the reading block grows with the font while the panel scale stops at
+        # 1.2. So "NVIDIA GeForce RTX 5070 Ti" came out as "NVIDIA…", and in
+        # German at 4K (room 38 px, below the old 40-unit floor) the name was
+        # not drawn at all. The name is the one value here that says which
+        # hardware is running, so it is placed first and the readings are
+        # elided into what remains: a shortened "NR 144.0" still reads, a
+        # missing card name does not.
+        name_x = lx + label.get_width() + self._u(14)
+        name_room = 0
+        if name:
+            # Never more than a third of the bar: the readings matter too, and
+            # a name that eats the line is as unhelpful as one that vanishes.
+            name_room = max(self._u(24),
+                            min(rect.w // 3, self._small_font.size(name)[0]))
+            name_room = min(name_room, max(0, rect.right - pad - name_x
+                                           - self._u(60)))
+            if name_room > 0:
+                img = self._clip(self._small_font, name,
+                                 _rgb(self.c["muted"]), name_room)
+                surface.blit(img, (name_x, cyr - img.get_height() // 2))
+                name_room = img.get_width()
+
         x = rect.right - pad
+        limit = name_x + name_room + self._u(14) if name_room else lx + label.get_width() + self._u(14)
         for value in reversed(readings):
             img = self._mono_small.render(value, True, _rgb(self.c["muted"]))
+            # Drop a reading that cannot fit beside the name: a clipped number
+            # is worse than a missing one, and the resolution is the longest.
+            if x - img.get_width() < limit:
+                continue
             x -= img.get_width()
             surface.blit(img, (x, cyr - img.get_height() // 2))
             x -= self._u(14)
-
-        name = str(self.state.get("gpu_text") or "")
-        room = x - (lx + label.get_width() + self._u(14))
-        if name and room > self._u(40):
-            img = self._clip(self._small_font, name, _rgb(self.c["muted"]), room)
-            surface.blit(img, (x - img.get_width(),
-                               cyr - img.get_height() // 2))
 
     def _rec_text(self, s: dict) -> str:
         """Recording state: the duration is more useful than a bare "on"."""

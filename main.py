@@ -485,7 +485,18 @@ def main() -> int:
             st.perf[key].append((time.perf_counter() - t0) * 1000.0)
 
         def _service_idle_overlay() -> None:
-            """Keep the settings menu usable without waking the frame loop."""
+            """Keep the settings menu usable without waking the frame loop.
+
+            No frame will ever arrive in this state, so a mode-switch veil
+            raised by a rebuild started from here (Spout2 / HDR / motion
+            backend / monitor / GPU) has nothing to wait for - and while it
+            is up draw_overlay refuses to paint anything, so the menu the
+            user just used stops being drawn and the screen stays frozen
+            under the assemble mark (issues #89/#96: "the window becomes
+            invisible, then it may reappear to disappear"). Every other way
+            down lives in the frame path, which this branch never reaches.
+            Both calls below are no-ops when no veil is up.
+            """
             if st.display.menu.visible:
                 for ev in pygame.event.get():
                     for action in st.display.menu.handle_event(ev):
@@ -503,8 +514,15 @@ def main() -> int:
                     st.display.reveal()
                     st.display.set_visible(True)
                 st.display.raise_topmost()
+                # With the menu up draw_overlay advances the veil's fade-out
+                # itself, so a fade started here finishes in ~SWITCH_FADE_OUT.
+                st.display.exit_switch_mode()
                 st.display.draw_overlay()
             else:
+                # Nothing is being drawn on this path, so a fade could never
+                # advance: end the veil outright. Only reachable when a
+                # rebuild raised it and the menu was closed in between.
+                st.display.drop_switch_mode()
                 st.display.set_visible(False)
 
         while st.running:

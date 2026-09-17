@@ -134,6 +134,16 @@ SWITCH_ALPHA = 170                 # mode-switch overlay: the live desktop shows
 # animated by the loop. Seconds.
 SWITCH_FADE_IN = 0.21
 SWITCH_FADE_OUT = 0.26
+# A veil that has been up this long is no longer a transition: the frame
+# that normally takes it down never came. That is the NR-OFF rebuild path -
+# the loop takes the low-cost branch, no frame is ever received, and while
+# the veil is up draw_overlay refuses to paint the menu, so a stuck veil
+# hides the whole interface (issues #89/#96: "the window becomes
+# invisible"). This is a BACKSTOP, not the main way down: main's idle
+# branch takes the veil down itself. It must stay behind the worker
+# watchdog (a 5 s silent-recv timeout plus a restart) so a slow-but-alive
+# worker still gets its veil. Seconds.
+SWITCH_HOLD_MAX = 8.0
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 
 # Chroma key for HUD mode: pixels of exactly this colour are not drawn at all
@@ -389,6 +399,10 @@ class Display:
         self._switch_alpha = 0.0     # current veil alpha, 0..SWITCH_ALPHA
         self._switch_alpha0 = 0.0    # the alpha the fade-out started from
         self._switch_ramp_t0 = 0.0   # when the fade-out started
+        # The veil must never outlive an honest transition: past this
+        # monotonic deadline it is dropped outright, whatever phase it is
+        # in. Armed by enter_switch_mode, cleared by the teardown.
+        self._switch_deadline = 0.0
         self._switch_ret = (0, 0)  # layer size to restore on exit
         self._switch_pending = None  # deferred resize (w, h) while active
 
@@ -1091,6 +1105,7 @@ class Display:
             # full instead of letting it dissolve under the rebuild.
             self._switch_phase = "on"
             self._switch_alpha = float(SWITCH_ALPHA)
+            self._switch_deadline = time.monotonic() + SWITCH_HOLD_MAX
             if last_frame is not None:
                 self._freeze_switch_frame(last_frame, *self.screen.get_size())
             self._apply_switch_window_alpha()
@@ -1102,6 +1117,7 @@ class Display:
         self._switch_active = True
         self._switch_phase = "on"
         self._switch_mark_t0 = time.monotonic()
+        self._switch_deadline = self._switch_mark_t0 + SWITCH_HOLD_MAX
         self._switch_ret = (cw, ch)
         self._switch_alpha = 0.0
         print(f"[main] switch overlay ON (layer {cw}x{ch} -> {fw}x{fh}, "
@@ -1254,6 +1270,18 @@ class Display:
         fading out. The layer belongs to the veil until this is False."""
         return self._switch_active
 
+    def drop_switch_mode(self) -> None:
+        """Take the veil down without waiting for a fade or a frame.
+
+        The fade is advanced by draw_overlay, so a caller that is not
+        drawing (the idle branch with the menu closed, where no frame will
+        ever arrive to end the transition honestly) has to end it here.
+        No-op when no veil is up.
+        """
+        if self._switch_active:
+            print("[main] switch overlay dropped (no frame to end it)")
+            self._drop_switch_now()
+
     def _finish_switch_if_due(self, now: float) -> None:
         """Complete a fade ramp and, for the out phase, tear the veil down.
 
@@ -1262,21 +1290,41 @@ class Display:
         still comes down. The teardown is the old instant path - restore
         the pipeline size, the layered attributes, the cursor - now run
         once the fade is over.
+
+        The hold cap is checked first: a veil past SWITCH_HOLD_MAX is
+        dropped even with no frame and no draw on the way (the NR-OFF
+        rebuild path), because nothing else would ever take it down.
         """
         if not self._switch_active:
+            return
+        if self._switch_deadline and now >= self._switch_deadline:
+            self._drop_switch_now()
             return
         if self._switch_phase == "out":
             frac = (now - self._switch_ramp_t0) / SWITCH_FADE_OUT
             self._switch_alpha = max(0.0, self._switch_alpha0 * (1.0 - frac))
             self._apply_switch_window_alpha()
             if self._switch_alpha <= 0.0:
-                self._switch_active = False
-                self._switch_phase = "off"
-                self._switch_alpha = 0.0
-                self._switch_dim_soft = None
-                self._switch_base = None
-                self._switch_fill = None
-                self._teardown_switch_overlay()
+                self._drop_switch_now()
+
+    def _drop_switch_now(self) -> None:
+        """Take the veil down at once, whatever phase it is in.
+
+        The honest way down is exit_switch_mode() plus a drawn frame, but
+        the NR-OFF rebuild path has neither: the loop sits in the idle
+        branch, no frame is received, and draw_overlay refuses to paint
+        anything while the veil is up - so the menu stays covered by the
+        frozen picture and is unreachable (issues #89/#96). Called from
+        the fade completion and from the hold cap.
+        """
+        self._switch_active = False
+        self._switch_phase = "off"
+        self._switch_alpha = 0.0
+        self._switch_deadline = 0.0
+        self._switch_dim_soft = None
+        self._switch_base = None
+        self._switch_fill = None
+        self._teardown_switch_overlay()
 
     def _freeze_switch_frame(self, last_frame, fw: int, fh: int) -> None:
         """Build the veil's two layers from the last picture.

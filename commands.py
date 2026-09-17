@@ -170,7 +170,18 @@ def open_save_dialog(st) -> None:
         else ".jpg"
     default_name = f"neuralscreen-{time.strftime('%Y%m%d-%H%M%S')}{suffix}"
     shot_dir = st.cfg.get("screenshot_dir")
-    initial_dir = str(shot_dir) if isinstance(shot_dir, str) and shot_dir.strip() else None
+    # The folder the dialog opens in has to exist, or the dialog silently falls
+    # back to the library's own default location and the user's choice looks
+    # lost (audit M2). A deleted folder, or one on a drive that is not
+    # connected right now, is not an error - it just cannot be the start point.
+    initial_dir = None
+    if isinstance(shot_dir, str) and shot_dir.strip():
+        candidate = Path(shot_dir)
+        if candidate.is_dir():
+            initial_dir = str(candidate)
+        else:
+            print(f"[main] the configured screenshot folder is not available "
+                  f"({shot_dir}) - opening the dialog at the default")
 
     def _run() -> None:
         try:

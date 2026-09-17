@@ -236,12 +236,25 @@ def zip_integrity():
     import settings_io
     version = settings_io.APP_VERSION
     tag = f"v{version}"
+    # The manifest pins the RELEASE, so it is checked against the tag - not
+    # against HEAD. It lists every shipped file with its git blob, and a
+    # checkout that has moved on since the release (a test fix, a translation,
+    # a comment) differs from it by design; comparing with HEAD reported that
+    # normal state as a broken contract. If the tag is missing, fall back to
+    # HEAD so a pre-release tree is still validated.
+    git_ref = subprocess.run(
+        ["git", "rev-list", "-n", "1", tag],
+        cwd=ROOT, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    ).stdout.strip()
+    if not git_ref:
+        git_ref = "HEAD"
     try:
         manifest, _raw = release.validate_runtime_manifest(
             ROOT,
             version=version,
             expected_tag=tag,
-            git_ref="HEAD",
+            git_ref=git_ref,
         )
     except release.ReleaseContractError as exc:
         return False, f"release manifest: {exc}"

@@ -143,12 +143,43 @@ def main() -> int:
     if st.display.visible is not True:
         failures.append("resume did not reveal the output layer")
 
-    # Structural guarantee: the main loop leaves before the grab/send path.
-    src = (BASE / "main.py").read_text(encoding="utf-8")
-    idle = src.find("if low_cost_off:")
-    grab = src.find("frame = _safe_grab()", idle)
-    if idle < 0 or grab < 0 or "continue" not in src[idle:grab]:
-        failures.append("main has no early continue between low-cost OFF and capture")
+    # Structural guarantee: the low-cost branch itself leaves before the
+    # grab/send path. The old check scanned from `if low_cost_off:` to the
+    # grab and looked for any `continue` - and that window contains an
+    # UNRELATED one (the follow-window branch's), so removing the low-cost
+    # branch's own exit left the test green (audit: WEAK). The branch's body
+    # is now isolated by its own indentation, and the exit has to be in it.
+    lines = (BASE / "main.py").read_text(encoding="utf-8").splitlines()
+    at = next((i for i, l in enumerate(lines)
+               if l.strip() == "if low_cost_off:"), None)
+    if at is None:
+        failures.append("main has no `if low_cost_off:` branch at all")
+    else:
+        indent = len(lines[at]) - len(lines[at].lstrip())
+        body = []
+        for l in lines[at + 1:]:
+            if not l.strip():
+                body.append(l)
+                continue
+            cur = len(l) - len(l.lstrip())
+            if cur <= indent:
+                break
+            body.append(l)
+        if not body:
+            failures.append("the low-cost branch is empty")
+        elif not any(l.strip().startswith("continue") for l in body):
+            failures.append(
+                "the low-cost branch does not leave the frame loop - it falls "
+                "into the capture path with NR off, which is the cost the "
+                "branch exists to avoid")
+        else:
+            print(f"    low-cost branch: lines {at + 1}..{at + len(body)}, "
+                  f"own exit present")
+        # And the grab must still be outside it.
+        grab_at = next((i for i, l in enumerate(lines)
+                        if "_safe_grab()" in l and i > at), None)
+        if grab_at is not None and grab_at < at + len(body):
+            failures.append("the capture call sits inside the low-cost branch")
 
     for failure in failures:
         print("FAIL:", failure)

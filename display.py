@@ -73,6 +73,33 @@ class CURSORINFO(ctypes.Structure):
 CURSOR_SHOWING = 0x00000001
 
 
+def window_can_cover(rect, virtual: tuple[int, int, int, int],
+                     min_px: int = 16) -> bool:
+    """Whether a window's rect could be covering our layer on the desktop.
+
+    The z-order guard (`Display._top_real_window`) walks the stack and needs
+    to skip helper windows: invisible 0x0 IME/MSCTFIME entries, a 1x1 dwm
+    thumbnail helper, an off-screen Narrator helper at -40000,-40000. A
+    window counts only when it is big enough in both dimensions AND its rect
+    intersects the VIRTUAL desktop - every monitor, not the primary one.
+
+    The virtual bounds matter on more than one monitor: on a second screen
+    to the LEFT of the primary a full-screen window is (-2560, 0, 0, 1440),
+    and a primary-only test (`rect.right > 0`) rejected it, so the guard
+    found no real window and the HUD was never re-asserted above the picture
+    - the panel stayed hidden while still being baked into screenshots
+    (issue #89).
+
+    Extracted from the walk so the rule can be tested without a second
+    monitor: `virtual` is a plain (x, y, w, h) tuple.
+    """
+    left, top, right, bottom = (rect.left, rect.top, rect.right, rect.bottom)
+    if right - left < min_px or bottom - top < min_px:
+        return False
+    vx, vy, vw, vh = virtual
+    return right > vx and left < vx + vw and bottom > vy and top < vy + vh
+
+
 def system_cursor_visible() -> bool:
     """Is there a mouse pointer on screen right now? (Nothing uses this yet.)
 
@@ -1055,33 +1082,60 @@ class Display:
 
         A window counts only if it can actually be covering our layer:
         visible, at least HELPER_MIN_PX in both dimensions, and its rect
-        intersecting the virtual screen (the Narrator helper lives at
-        -40000,-40000).
+        intersecting the VIRTUAL desktop - not the primary screen. On a
+        second monitor to the left of the primary every window has a
+        negative x (a full-screen window on it is (-2560, 0, 0, 1440)), and
+        the old test `rect.right > 0 and rect.left < screen_w` rejected it:
+        the walk found no real window, the HUD was never re-asserted above
+        the picture, and the panel stayed hidden while still being drawn
+        (#89 - visible in a screenshot, invisible on screen). The Narrator
+        helper lives at -40000,-40000, so it still fails the intersection
+        with the virtual bounds.
         """
         HELPER_MIN_PX = 16
         try:
-            screen_w = user32.GetSystemMetrics(0)    # SM_CXSCREEN
-            screen_h = user32.GetSystemMetrics(1)    # SM_CYSCREEN
-            if screen_w <= 0:
-                screen_w = 3840
-            if screen_h <= 0:
-                screen_h = 2160
             hwnd = user32.GetTopWindow(None)
             for _ in range(16):        # bounded walk - the stack is shallow
                 if not hwnd:
                     return None
+                ok = False
                 if user32.IsWindowVisible(hwnd):
                     rect = wintypes.RECT()
-                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)) and \
-                            (rect.right - rect.left) >= HELPER_MIN_PX and \
-                            (rect.bottom - rect.top) >= HELPER_MIN_PX and \
-                            rect.right > 0 and rect.bottom > 0 and \
-                            rect.left < screen_w and rect.top < screen_h:
-                        return hwnd
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        ok = window_can_cover(rect, self._virtual_screen(),
+                                              HELPER_MIN_PX)
+                if ok:
+                    return hwnd
                 hwnd = user32.GetWindow(hwnd, 2)   # GW_HWNDNEXT
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _virtual_screen() -> tuple[int, int, int, int]:
+        """The whole desktop as (x, y, w, h) - negative origins included.
+
+        SM_XVIRTUALSCREEN..SM_CYVIRTUALSCREEN cover every monitor; the plain
+        screen metrics answer for the PRIMARY one only, which is why a window
+        on a left-hand monitor (negative x) used to be invisible to the
+        z-order guard (#89).
+        """
+        try:
+            vx = user32.GetSystemMetrics(76)      # SM_XVIRTUALSCREEN
+            vy = user32.GetSystemMetrics(77)      # SM_YVIRTUALSCREEN
+            vw = user32.GetSystemMetrics(78)      # SM_CXVIRTUALSCREEN
+            vh = user32.GetSystemMetrics(79)      # SM_CYVIRTUALSCREEN
+            if vw > 0 and vh > 0:
+                return vx, vy, vw, vh
+            if vw <= 0:
+                vx, vw = 0, 1
+            if vh <= 0:
+                vy, vh = 0, 1
+            return vx, vy, vw, vh
+        except Exception:
+            # A headless or odd session: an empty desktop is the safe answer
+            # (the guard then skips nothing, which is what it did before).
+            return 0, 0, 0, 0
 
     def enter_switch_mode(self, last_frame: "np.ndarray | None" = None,
                           full_w: int = 0, full_h: int = 0) -> None:

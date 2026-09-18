@@ -96,10 +96,11 @@ def main() -> int:
         failures.append("the failure path sets g_fg.failed before the retry "
                         "check - a refused multiplier still kills FG")
 
-    # The presenter must name the step it really runs: with a silent clamp the
-    # old line claimed "displayed N FPS" for a count that never ran.
-    if not re.search(r"\[fg\] %ux: displayed", src):
-        failures.append("the FPS line does not name the multiplier it ran at")
+    # The presenter must name the step it really runs - but the "[fg] displayed"
+    # prefix is a contract: settings_io parses it for the HUD counter.
+    if not re.search(r"\[fg\] displayed %.1f FPS .*%ux", src):
+        failures.append("the FPS line either drops the multiplier it ran at "
+                        "or breaks the '[fg] displayed' prefix the HUD parses")
 
     # --- it compiles ------------------------------------------------------
     vswhere = Path(os.environ.get("ProgramFiles(x86)",

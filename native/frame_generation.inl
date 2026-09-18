@@ -281,8 +281,13 @@ static void FgPresenter()
         const double elapsed = std::chrono::duration<double>(start - report).count();
         if (elapsed >= 2.0)
         {
-            Log("[fg] %ux: displayed %.1f FPS (real + generated); experimental flat-depth guides",
-                chosen->count + 1, shown / elapsed);
+            // The "[fg] displayed" prefix is a contract: settings_io parses it
+            // for the HUD counter. The step is appended, not prefixed, so that
+            // parser keeps working and the line still names the multiplier it
+            // really ran at (a silent clamp used to claim a step that never
+            // ran).
+            Log("[fg] displayed %.1f FPS (real + generated, %ux); experimental flat-depth guides",
+                shown / elapsed, chosen->count + 1);
             shown = 0; report = start;
         }
     }

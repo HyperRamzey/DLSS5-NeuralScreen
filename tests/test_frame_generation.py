@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import protocol as wire
+from worker_reply import read_reply
 
 
 def exact(pipe, count):
@@ -28,6 +29,19 @@ def exact(pipe, count):
             raise RuntimeError("worker exited before replying")
         result.extend(chunk)
     return result
+
+
+def reply(pipe, count):
+    """One reply, with the asynchronous CACK after the video header eaten.
+
+    The worker emits a 24-byte CACK right after the D5V3 header is accepted,
+    before any command reply. Reading stdout directly (as this test did) took
+    that CACK for the WACK it was waiting on and every later read was four
+    bytes out of phase. The shared helper is what the neighbouring direct
+    tests use for exactly this reason; it also raises instead of hiding a
+    failed CreateFeature.
+    """
+    return read_reply(pipe, count)
 
 
 def run(hdr=False, dynamic=False, check_pixels=False):
@@ -63,10 +77,10 @@ def run(hdr=False, dynamic=False, check_pixels=False):
         worker.stdin.flush()
         if hdr:
             wire.send_wgc(worker, hwnd)
-            ack = struct.unpack(wire.WGC_ACK_FMT, exact(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
+            ack = struct.unpack(wire.WGC_ACK_FMT, reply(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
             assert ack[0] == wire.WGC_ACK_MAGIC and ack[1] == 1, ack
         wire.send_window(worker, w, h)
-        ack = struct.unpack(wire.WINDOW_ACK_FMT, exact(worker.stdout, struct.calcsize(wire.WINDOW_ACK_FMT)))
+        ack = struct.unpack(wire.WINDOW_ACK_FMT, reply(worker.stdout, struct.calcsize(wire.WINDOW_ACK_FMT)))
         assert ack[0] == wire.WINDOW_ACK_MAGIC and ack[1] == 1, ack
         motion = np.zeros((work_h, work_w, 2), dtype=np.float16)
         motion[:, :, 0] = -4 * work_w / w
@@ -91,7 +105,7 @@ def run(hdr=False, dynamic=False, check_pixels=False):
                 pygame.display.flip()
                 worker.stdin.write(struct.pack(wire.FRAME_FMT, wire.CAPTURE_MAGIC, i, 0, 0, i))
                 worker.stdin.flush()
-                prepared = struct.unpack(wire.OUT_FMT, exact(worker.stdout, struct.calcsize(wire.OUT_FMT)))
+                prepared = struct.unpack(wire.OUT_FMT, reply(worker.stdout, struct.calcsize(wire.OUT_FMT)))
                 assert prepared[1] == i and prepared[2] == 1
                 flags |= wire.FRAME_FLAG_NO_COLOR | wire.FRAME_FLAG_PREPARED
             worker.stdin.write(struct.pack(wire.FRAME_FMT, wire.FRAME_MAGIC, i,
@@ -100,7 +114,7 @@ def run(hdr=False, dynamic=False, check_pixels=False):
                 worker.stdin.write(frame.tobytes())
             worker.stdin.write(motion.tobytes())
             worker.stdin.flush()
-            ack = struct.unpack(wire.OUT_FMT, exact(worker.stdout, struct.calcsize(wire.OUT_FMT)))
+            ack = struct.unpack(wire.OUT_FMT, reply(worker.stdout, struct.calcsize(wire.OUT_FMT)))
             assert ack[0] == wire.OUT_MAGIC and ack[2] == 1, ack
             if ack[3]:
                 output = exact(worker.stdout, ack[3])
@@ -109,14 +123,14 @@ def run(hdr=False, dynamic=False, check_pixels=False):
             time.sleep(max(0, 1/60 - (time.monotonic() - started)))
         if hdr:
             wire.send_wgc(worker, 0)
-            ack = struct.unpack(wire.WGC_ACK_FMT, exact(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
+            ack = struct.unpack(wire.WGC_ACK_FMT, reply(worker.stdout, struct.calcsize(wire.WGC_ACK_FMT)))
             assert ack[1] == 1, ack
             worker.stdin.write(struct.pack(wire.FRAME_FMT, wire.FRAME_MAGIC, total, 1,
                 wire.FRAME_FLAG_BYPASS | wire.FRAME_FLAG_WANT_PIXELS, total))
             worker.stdin.write(frame.tobytes())
             worker.stdin.write(motion.tobytes())
             worker.stdin.flush()
-            ack = struct.unpack(wire.OUT_FMT, exact(worker.stdout, struct.calcsize(wire.OUT_FMT)))
+            ack = struct.unpack(wire.OUT_FMT, reply(worker.stdout, struct.calcsize(wire.OUT_FMT)))
             assert ack[2] == 1 and ack[3] == frame.nbytes, ack
             assert exact(worker.stdout, ack[3]) == frame.tobytes(), "HDR to SDR export changed"
     finally:

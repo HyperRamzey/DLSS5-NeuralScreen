@@ -148,6 +148,7 @@ static const char *NgxResultName(NVSDK_NGX_Result r)
     switch (static_cast<unsigned>(r))
     {
     case 0x1:        return "Success";
+    case 0xBAD00000: return "Fail";
     case 0xBAD00001: return "FeatureNotSupported";
     // What the feature library answers when the call did not leave a module
     // whose path contains "nvngx.dll" - the commonest way for a broken
@@ -156,12 +157,23 @@ static const char *NgxResultName(NVSDK_NGX_Result r)
     case 0xBAD00003: return "FeatureAlreadyExists";
     case 0xBAD00004: return "FeatureNotFound";
     case 0xBAD00005: return "InvalidParameter";
+    case 0xBAD00006: return "ScratchBufferTooSmall";
     case 0xBAD00007: return "NotInitialized";
     case 0xBAD00008: return "UnsupportedInputFormat";
+    case 0xBAD00009: return "RWFlagMissing";
     case 0xBAD0000A: return "MissingInput";
     case 0xBAD0000B: return "UnableToInitializeFeature";
+    // The values in nvsdk_ngx_defs.h are DECIMAL, so `Fail | 12` is 0x0C,
+    // not 0x12 - the two were conflated once and the log named both as "?".
+    // 0x0C is the one a user with an older driver hits on the feature
+    // requirements query (raycornea's log), 0x12 is NotImplemented.
+    case 0xBAD0000C: return "OutOfDate";
     case 0xBAD0000D: return "OutOfGPUMemory";
     case 0xBAD0000E: return "UnsupportedFormat";
+    case 0xBAD0000F: return "UnableToWriteToAppDataPath";
+    case 0xBAD00010: return "UnsupportedParameter";
+    case 0xBAD00011: return "Denied";
+    case 0xBAD00012: return "NotImplemented";
     default:         return "?";
     }
 }
@@ -1516,10 +1528,11 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
     // for this query; the bitmask meanings come from the NGX header
     // (1 check absent, 2 driver, 4 adapter, 8 OS, 16 not implemented).
     // Measured on the bundled 310.8.0 runtime: the query itself returns
-    // FAIL_OutOfDate (0xBAD00012) - discovery for feature 18 is newer than
-    // this build. The query is diagnostic only: the create's own result
-    // stays the truth, and a NEWER BYO runtime (310.9+) answers it - which
-    // is exactly the BYO UX case this is for.
+    // FAIL_NotImplemented (0xBAD00012 - the header's literals are decimal,
+    // so `Fail | 18` is 0x12; `Fail | 12`, OutOfDate, is 0x0C and is the
+    // code an older driver answers). The query is diagnostic only: the
+    // create's own result stays the truth, and a NEWER BYO runtime
+    // (310.9+) answers it - which is exactly the BYO UX case this is for.
     {
         wchar_t data_path[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, data_path, MAX_PATH);
@@ -1561,7 +1574,8 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
             }
         }
         else
-            Log("[host] feature requirements query failed 0x%08X - continuing with the create", qrr);
+            Log("[host] feature requirements query failed 0x%08X (%s) - continuing with the create",
+                qrr, NgxResultName(qrr));
     }
 
     if (TestFailureOnce("create"))

@@ -235,6 +235,9 @@ class OverlayMenu:
             "display_fps": None,
             "frame_generation": False,
             "frame_multiplier": 2,
+            # The step the presenter really runs, when it differs from the
+            # pick above (issue #100: a refused 4x steps down to 2x).
+            "frame_multiplier_active": None,
             "frame_limit_mode": "unlimited",
             "frame_limit_custom": 90,
             "screen_size": "",
@@ -1320,7 +1323,20 @@ class OverlayMenu:
             # preference for the next attempt, not a live control - locking it
             # behind the switch deadlocked a 40-series card (caps at 2x) when
             # the first attempt refused and flipped itself back off.
-            toggle("frame_generation", "DLSS 4.5 FG", fg,
+            # The live step, when the runtime refused the pick and the worker
+            # stepped down (issue #100). The buttons show the PREFERENCE (they
+            # stay where the user put them, so the next attempt asks for it
+            # again); this hint says what is actually running, so a 4x pick on
+            # a 2x-capable card does not silently differ from the FPS counter.
+            live = self.state.get("frame_multiplier_active")
+            fg_hint = ""
+            if fg and isinstance(live, int) and live != multiplier:
+                fg_hint = s.get(
+                    "fg_capped",
+                    "the runtime caps this card at x{live} - FG runs there, "
+                    "your x{want} is asked for again on the next attempt"
+                ).format(live=live, want=multiplier)
+            toggle("frame_generation", "DLSS 4.5 FG", fg, hint=fg_hint,
                    inline_right=[("frame_multiplier:2", "×2"),
                                  ("frame_multiplier:3", "×3"),
                                  ("frame_multiplier:4", "×4")])

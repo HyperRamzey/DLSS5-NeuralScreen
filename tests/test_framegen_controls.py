@@ -202,6 +202,48 @@ def _fg_verdict_checks() -> None:
           "a step-down do not")
 
 
+def _fg_active_multiplier_checks() -> None:
+    """Issue #100: the panel must be able to say which step really runs.
+
+    A card whose runtime stops at 2x answers 3x/4x with a refusal; the worker
+    steps down instead of failing, so the pick and the live step differ. The
+    presenter names the step it ran in the FPS line, and this parser is what
+    the panel reads - it must report what HAPPENED, never the request.
+    """
+    from types import SimpleNamespace
+
+    def mult(lines):
+        return settings_io._fg_active_multiplier(
+            SimpleNamespace(worker_logs=list(lines)))
+
+    cases = [
+        (["[fg] displayed 149.7 FPS (real + generated, 4x); experimental"], 4),
+        (["[fg] displayed 118.5 FPS (real + generated, 2x); experimental"], 2),
+        (["[fg] displayed 90.0 FPS (real + generated, 3x); experimental"], 3),
+        # FG off: no live step to report.
+        (["[fg] UI: off, 2x"], None),
+        # The newest line wins: the step-down story, as the worker logs it.
+        (["[fg] UI: on, 4x",
+          "[fg] 4x refused 0xBAD00005; stepping down to 2x",
+          "[fg] UI: on, 2x (capped by the runtime ceiling)",
+          "[fg] displayed 118.5 FPS (real + generated, 2x); experimental"], 2),
+        # An older format (before the step was in the line) reads as unknown,
+        # not as a wrong number.
+        (["[fg] displayed 87.1 FPS (real + generated); experimental"], None),
+    ]
+    for lines, want in cases:
+        got = mult(lines)
+        assert got == want, (lines[-1], got, want)
+
+    # The FPS parser must keep working beside it (same line, same contract).
+    st = SimpleNamespace(worker_logs=[
+        "[fg] displayed 149.7 FPS (real + generated, 4x); experimental"])
+    assert settings_io._fg_displayed_fps(st) == 149.7, "the rate parser broke"
+    print("    fg_multiplier: the live step is read from the presenter's own "
+          "line, never from the request")
+
+
 if __name__ == "__main__":
     main()
     _fg_verdict_checks()
+    _fg_active_multiplier_checks()

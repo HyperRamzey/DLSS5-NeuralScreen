@@ -1885,7 +1885,7 @@ STRINGS["ru"].update({
 
 })
 
-STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicateur de trames de sortie'})
+STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicateur de trames de sortie', 'fg_capped': 'this card caps at x{live}; x{want} is retried next time'})
 
 for _strings in STRINGS.values():
     _strings.update({
@@ -1901,27 +1901,27 @@ STRINGS["ru"].update({
     "hk_framegen": "Генерация кадров вкл/выкл",
 })
 
-STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множитель кадров'})
+STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множитель кадров', 'fg_capped': 'карта ограничена до x{live}; x{want} - в следующий раз'})
 
-STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier', 'fg_capped': 'cette carte plafonne a x{live}; x{want} sera retente'})
 
-STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplikator der Ausgabebilder'})
+STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplikator der Ausgabebilder', 'fg_capped': 'diese Karte kann nur x{live}; x{want} wird erneut versucht'})
 
-STRINGS['es'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de fotogramas de salida'})
+STRINGS['es'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de fotogramas de salida', 'fg_capped': 'esta tarjeta llega a x{live}; x{want} se reintenta luego'})
 
-STRINGS['it'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Moltiplicatore di fotogrammi in uscita'})
+STRINGS['it'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Moltiplicatore di fotogrammi in uscita', 'fg_capped': 'questa scheda arriva a x{live}; x{want} verra ritentato'})
 
-STRINGS['pt'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de quadros de saída'})
+STRINGS['pt'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de quadros de saída', 'fg_capped': 'esta placa chega a x{live}; x{want} sera retentado'})
 
-STRINGS['pl'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Mnożnik klatek wyjściowych'})
+STRINGS['pl'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Mnożnik klatek wyjściowych', 'fg_capped': 'ta karta to maks. x{live}; x{want} zostanie powtorzone'})
 
-STRINGS['uk'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множник кадрів виходу'})
+STRINGS['uk'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множник кадрів виходу', 'fg_capped': 'карта обмежена до x{live}; x{want} - наступного разу'})
 
-STRINGS['zh'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '帧倍率'})
+STRINGS['zh'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '帧倍率', 'fg_capped': '此显卡上限为 x{live}；x{want} 下次重试'})
 
-STRINGS['ja'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'フレーム倍率'})
+STRINGS['ja'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'フレーム倍率', 'fg_capped': 'このカードは x{live} まで；x{want} は次回再試行'})
 
-STRINGS['ko'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '프레임 배수'})
+STRINGS['ko'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '프레임 배수', 'fg_capped': '이 카드는 x{live}까지; x{want}는 다음에 재시도'})
 
 for _strings in STRINGS.values():
     _strings.update({

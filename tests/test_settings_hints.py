@@ -52,6 +52,12 @@ STATE = {
     "gpus": ["0: RTX 5070 Ti", "1: RTX 2060"], "gpu": "0: RTX 5070 Ti",
     "hdr": False, "spout": False, "rec_indicator": True, "skip_static": True,
     "windows": ["1A2B3C: Notepad"], "window_current": "1A2B3C: Notepad",
+    # Frame Generation ON with the runtime refusing the pick: this is the one
+    # state that adds the "this card caps at x2" hint to the FG row (issue
+    # #100), so the state must be exercised or that hint escapes the length
+    # check below.
+    "frame_generation": True, "frame_multiplier": 4,
+    "frame_multiplier_active": 2,
 }
 
 

@@ -995,9 +995,10 @@ def _gpu_label(index) -> str:
 def _fg_displayed_fps(st) -> float | None:
     """The frame rate the presenter actually shows (real + generated).
 
-    The worker reports it every two seconds - "[fg] displayed 87.1 FPS".
-    The pipeline counter stays the honest network rate; this is what the
-    screen really shows with Frame Generation on. None while FG is off.
+    The worker reports it every two seconds - "[fg] displayed 87.1 FPS
+    (real + generated, 2x)". The pipeline counter stays the honest network
+    rate; this is what the screen really shows with Frame Generation on.
+    None while FG is off.
     """
     for line in reversed(st.worker_logs[-200:]):
         if "[fg] displayed" in line:
@@ -1006,6 +1007,29 @@ def _fg_displayed_fps(st) -> float | None:
             except (ValueError, IndexError):
                 return None
         # A marker line for FG-off resets the reading - the toggle logs one.
+        if "[fg] UI: off" in line:
+            return None
+    return None
+
+
+def _fg_active_multiplier(st) -> int | None:
+    """The multiplier the presenter is REALLY running, or None while unknown.
+
+    A card whose runtime stops at 2x answers a request for 3x/4x with a
+    refusal, and the worker steps the multiplier down instead of failing
+    (issue #100). The panel then showed the user's pick while a lower step
+    ran, so the only way to notice was the FPS counter. The presenter names
+    the step it runs in the same line as the rate, which makes this the
+    honest source - it reports what happened, not what was requested.
+    """
+    for line in reversed(st.worker_logs[-200:]):
+        if "[fg] displayed" in line:
+            try:
+                tail = line.split("real + generated", 1)[1]
+                value = tail.split(",", 1)[1].split("x", 1)[0].strip()
+                return int(value)
+            except (ValueError, IndexError):
+                return None
         if "[fg] UI: off" in line:
             return None
     return None
@@ -1165,6 +1189,11 @@ def menu_payload(st) -> dict:
         "skip_static": bool(st.cfg.get("skip_static", False)),
         "frame_generation": bool(st.cfg.get("frame_generation", False)),
         "frame_multiplier": min(4, max(2, int(st.cfg.get("frame_multiplier", 2)))),
+        # The step the presenter is REALLY running, when the runtime refused
+        # the requested one and the worker stepped down (issue #100). None
+        # until the worker says so; the panel marks the difference so the
+        # user is not left comparing FPS numbers.
+        "frame_multiplier_active": _fg_active_multiplier(st),
         "frame_limit_mode": (str(st.cfg.get("frame_limit_mode", "unlimited"))
                              if str(st.cfg.get("frame_limit_mode", "unlimited"))
                              in FRAME_LIMIT_MODES else "unlimited"),

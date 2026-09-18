@@ -11,6 +11,7 @@ invariants (taskbar window, not the desktop, non-empty title, unique).
 """
 import os
 import sys
+import ctypes
 import importlib.util
 import inspect
 
@@ -25,6 +26,19 @@ _spec = importlib.util.spec_from_file_location("ns_main", os.path.join(ROOT, "ma
 ns_main = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ns_main)
 import winapi
+
+
+def _cloaked_with(value: int):
+    """A stand-in for DwmGetWindowAttribute(hwnd, 14, ...) writing `value`."""
+    def call(hwnd, attr, ptr, size):
+        if attr == 14:
+            ctypes.cast(ptr, ctypes.POINTER(ctypes.c_int))[0] = value
+        return 0    # S_OK
+    return call
+
+
+_cloaked_ok = _cloaked_with(1)      # DWM_CLOAKED_SHELL: hidden from the taskbar
+_cloaked_clear = _cloaked_with(0)   # a normal visible window
 
 
 def main() -> int:
@@ -81,6 +95,45 @@ def main() -> int:
 
     for hwnd, title in wins:
         print(f"  {hwnd:X}: {title[:60]}")
+
+    # The list is already filtered by the product, so walking it can only
+    # confirm the filter AGREES with itself - it says nothing about whether
+    # the filter rejects anything. These drive the rule directly, through the
+    # real user32/dwmapi calls the product makes (audit: WEAK).
+    user32 = ctypes.windll.user32
+    dwmapi = ctypes.windll.dwmapi
+
+    real_getwindow = user32.GetWindow
+    real_getlong = user32.GetWindowLongW
+    real_dwm = dwmapi.DwmGetWindowAttribute
+    try:
+        # An owned window (a background helper's) must be refused.
+        user32.GetWindow = lambda hwnd, what: 0x1234 if what == 4 else 0
+        user32.GetWindowLongW = lambda hwnd, what: 0
+        dwmapi.DwmGetWindowAttribute = lambda *a: 1          # not success
+        if winapi._is_taskbar_window(1):
+            failures.append("an OWNED window passed the taskbar filter - that "
+                            "is the \"сторонние процессы\" report")
+        # A tool window must be refused.
+        user32.GetWindow = lambda hwnd, what: 0
+        user32.GetWindowLongW = lambda hwnd, what: 0x00000080  # WS_EX_TOOLWINDOW
+        if winapi._is_taskbar_window(1):
+            failures.append("a TOOL window passed the taskbar filter")
+        # A DWM-cloaked window (TextInputHost and friends) must be refused.
+        user32.GetWindowLongW = lambda hwnd, what: 0
+        dwmapi.DwmGetWindowAttribute = _cloaked_ok
+        if winapi._is_taskbar_window(1):
+            failures.append("a DWM-CLOAKED window passed the taskbar filter")
+        # And a plain top-level unowned window is accepted.
+        dwmapi.DwmGetWindowAttribute = _cloaked_clear
+        if not winapi._is_taskbar_window(1):
+            failures.append("a plain top-level window was refused by the "
+                            "taskbar filter")
+        print("    the filter: owned/tool/cloaked refused, plain accepted")
+    finally:
+        user32.GetWindow = real_getwindow
+        user32.GetWindowLongW = real_getlong
+        dwmapi.DwmGetWindowAttribute = real_dwm
 
     print("=" * 60)
     if failures:

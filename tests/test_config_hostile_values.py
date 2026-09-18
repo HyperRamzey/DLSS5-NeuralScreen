@@ -78,64 +78,48 @@ HOSTILE = {
 # bare int() traceback for a field the validator never looked at.
 
 
-def _reads_startup_does(cfg: dict) -> list:
-    """What startup.configure/bring_up do with the validated dict.
+def _reads_startup_does(cfg: dict, cfg_path=None) -> list:
+    """Actually run startup.configure on a config path - no hand-copied reads.
+
+    The old version re-typed the reads (`int(cfg["width"])`,
+    `str(int(gpu))`, `build_bindings(...)`, ...) and never imported startup,
+    so a read added to startup.configure with no validator behind it would
+    not be caught here (audit: WEAK). configure() is safe to call in-process:
+    it reads the config, applies the environment and enumerates monitors; it
+    does not open capture or create a window.
 
     Returns the failures, so the caller can report them per case.
     """
+    import types
+
+    import startup
+
+    if cfg_path is None:
+        # The caller has already validated this dict; write it out so the
+        # real load_config inside configure() sees exactly the same bytes.
+        cfg_path = Path(tempfile.mkdtemp(prefix="ns-cfg-hostile-run-")) / "config.json"
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
     bad = []
+    st = types.SimpleNamespace(cfg_path=str(cfg_path))
     try:
-        int(cfg["width"])
-        int(cfg["height"])
-        int(cfg["warmup"])
+        startup.configure(st)
     except Exception as exc:
-        bad.append(f"size/warmup: {type(exc).__name__}: {exc}")
-    try:
-        monitor = cfg["monitor"]
-        if isinstance(monitor, str):
-            pass                     # resolve_output_idx handles the devicename
-        else:
-            int(monitor)
-    except Exception as exc:
-        bad.append(f"monitor: {type(exc).__name__}: {exc}")
-    try:
-        gpu = cfg.get("gpu")
-        if gpu is not None:
-            str(int(gpu))
-    except Exception as exc:
-        bad.append(f"gpu: {type(exc).__name__}: {exc}")
-    try:
-        offset = cfg.get("menu_offset")
-        if isinstance(offset, (list, tuple)) and len(offset) == 2:
-            [int(offset[0]), int(offset[1])]
-    except Exception as exc:
-        bad.append(f"menu_offset: {type(exc).__name__}: {exc}")
-    try:
-        float(cfg.get("menu_scale", 1.0))
-    except Exception as exc:
-        bad.append(f"menu_scale: {type(exc).__name__}: {exc}")
-    try:
-        height = cfg.get("menu_height")
-        if height is not None:
-            int(height)
-    except Exception as exc:
-        bad.append(f"menu_height: {type(exc).__name__}: {exc}")
-    try:
-        build_bindings(cfg.get("hotkeys"))
-    except Exception as exc:
-        bad.append(f"hotkeys: {type(exc).__name__}: {exc}")
-    try:
-        settings_io.resolve_params(cfg)
-    except Exception as exc:
-        bad.append(f"resolve_params: {type(exc).__name__}: {exc}")
-    try:
-        settings_io.load_presets(cfg)
-    except Exception as exc:
-        bad.append(f"load_presets: {type(exc).__name__}: {exc}")
-    try:
-        float(cfg.get("work_scale", 1.0))
-    except Exception as exc:
-        bad.append(f"work_scale: {type(exc).__name__}: {exc}")
+        bad.append(f"configure: {type(exc).__name__}: {exc}")
+        return bad
+
+    # The values configure is expected to have produced. A read that is
+    # present but silently wrong (a fallback that never fires) shows up here.
+    for name, want in (("width", int), ("height", int), ("warmup", int),
+                       ("work_scale", float), ("lang", str)):
+        if not hasattr(st, name):
+            bad.append(f"configure did not set st.{name} - a config read "
+                       f"vanished")
+        elif not isinstance(getattr(st, name), want):
+            bad.append(f"st.{name} is {getattr(st, name)!r} "
+                       f"({type(getattr(st, name)).__name__}), expected {want.__name__}")
+    if hasattr(st, "monitor") and not isinstance(st.monitor, int):
+        bad.append(f"st.monitor is {st.monitor!r}, expected an int")
     return bad
 
 
@@ -155,7 +139,7 @@ def main() -> int:
                             f"{type(exc).__name__}: {exc} - the launch dies "
                             f"before a window exists")
             continue
-        bad = _reads_startup_does(loaded)
+        bad = _reads_startup_does(loaded, cfg_path=path)
         if bad:
             failures.append(f"{label}: startup's own reads fail on the "
                             f"validated config: {'; '.join(bad)}")

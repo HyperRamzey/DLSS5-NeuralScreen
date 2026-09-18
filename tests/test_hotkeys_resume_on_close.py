@@ -185,6 +185,13 @@ def main() -> int:
 
     # 3. The collapse button (overlay_ui's own header) and the settings-page
     #    back button must not leave a suspended controller behind either.
+    #
+    #    Each route is driven ON ITS OWN: the old version called
+    #    apply_menu_action(st, ("button", "close")) unconditionally after the
+    #    route's own actions, and that call resumes the hotkeys by itself - so
+    #    whatever the route did or did not emit, the assertion below saw a
+    #    resumed controller (audit: WEAK). The routes that really do close the
+    #    menu through a close action get that action from their own handler.
     for label, key in (("collapse", "min"), ("back from settings", "close"),
                        ("footer back", "back")):
         st = _state()
@@ -195,11 +202,24 @@ def main() -> int:
             else st.display.menu._action_click(key)
         for action in actions:
             commands.apply_menu_action(st, action)
+        # Close the menu the way THIS route closes it, without borrowing the
+        # close button's own resume.
         st.display.menu.visible = False
-        # The close route emits ("button", "close"); the others just close.
-        commands.apply_menu_action(st, ("button", "close"))
         if st.hotkeys.suspended:
-            failures.append(f"closing via {label} left the hotkeys suspended")
+            # Only the close action may still be needed: if the route did not
+            # emit one, the menu is closed and the keyboard is still held -
+            # which is the bug this loop is about.
+            emitted_close = any(a[0] == "button" and a[1] == "close"
+                                for a in actions)
+            if emitted_close:
+                for action in actions:
+                    commands.apply_menu_action(st, action)
+            if st.hotkeys.suspended:
+                failures.append(
+                    f"closing via {label} left the hotkeys suspended "
+                    f"(actions: {actions})")
+        else:
+            print(f"    {label}: hotkeys resumed by the route itself")
 
     # 4. The menu's capturing flag is cleared on the tray route, or the next
     #    open silently eats the first keydown as a remap.

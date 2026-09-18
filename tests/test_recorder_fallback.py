@@ -53,7 +53,11 @@ class FakeCtx:
 
     def open(self) -> None:
         if self.fail:
-            raise av.FFmpegError("no NVENC capable devices found")
+            # PyAV's FFmpegError takes (code, message). One argument is a
+            # TypeError, which is what this used to raise - so the test was
+            # exercising a Python signature error rather than the shape it
+            # names (audit: WEAK).
+            raise av.FFmpegError(1, "no NVENC capable devices found")
 
 
 class FakeStream:
@@ -78,7 +82,7 @@ class FakeProbe:
 
     def add_stream(self, name, rate=None, **kwargs):
         if name in self.fail_at_add:
-            raise av.FFmpegError(f"no encoder named {name}")
+            raise av.FFmpegError(1, f"no encoder named {name}")
         return FakeStream(fail=name in self.fail_at_open)
 
 

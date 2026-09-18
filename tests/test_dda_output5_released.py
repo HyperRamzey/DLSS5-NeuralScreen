@@ -24,6 +24,11 @@ The test counts the acquisition and the release in the DDA open path. Both must
 be present, the release must not sit inside a conditional, and the acquire must
 be the one that actually guards it.
 
+Counting strings is not enough on its own: a `return` inserted between the
+acquire and the release leaks the reference while every count above still
+balances (audit: WEAK). So the span between the two is also checked for an
+exit, which is the shape the leak would actually take.
+
 Run: runtime\\python.exe tests\\test_dda_output5_released.py
 """
 from __future__ import annotations
@@ -44,7 +49,8 @@ def dda_open() -> str:
 
 def main() -> int:
     failures = []
-    body = dda_open()
+    body = dda_open().replace("\r\n", "\n")
+    lines = body.split("\n")
 
     # 1. The reference exists exactly once - acquired unconditionally.
     acquires = body.count("__uuidof(IDXGIOutput5)")
@@ -52,7 +58,7 @@ def main() -> int:
         failures.append(f"the IDXGIOutput5 interface is acquired {acquires} "
                         f"times - the release count below assumes one")
     if "SUCCEEDED(output->QueryInterface(\n        __uuidof(IDXGIOutput5)" \
-            not in body.replace("\r\n", "\n"):
+            not in body:
         failures.append("the IDXGIOutput5 acquisition is no longer the "
                         "unconditional QueryInterface this test expects - a "
                         "conditional acquisition needs a matching conditional "
@@ -80,7 +86,32 @@ def main() -> int:
         failures.append("an IDXGIOutput5 release sits before the unconditional "
                         "one, i.e. inside a capture-mode branch")
 
-    # 5. The other interfaces in the same function keep their pairs, so a fix
+    # 5. Between the acquire and the release the only way out must not exist:
+    #    a `return` there leaks the reference on that path while every count
+    #    above still balances. This is the check the earlier version lacked.
+    acq_at = next((i for i, l in enumerate(lines)
+                   if "has_output5 = SUCCEEDED(output->QueryInterface(" in l), None)
+    rel_at = next((i for i, l in enumerate(lines)
+                   if "output5->Release()" in l and "has_output5" not in l), None)
+    if acq_at is None or rel_at is None or rel_at < acq_at:
+        failures.append("the acquisition or the unconditional release could "
+                        "not be located in the DDA open path")
+    else:
+        span = lines[acq_at + 1:rel_at]
+        exits = [(i + acq_at + 2, l.strip())
+                 for i, l in enumerate(span)
+                 if re.search(r"\b(return|goto)\b", l)
+                 and not l.strip().startswith("//")]
+        if exits:
+            failures.append(
+                "the DDA open path can leave between the IDXGIOutput5 "
+                "acquisition and its release (" +
+                "; ".join(f"line {n}: {t}" for n, t in exits[:3]) +
+                ") - every such exit leaks the interface")
+        print(f"    acquire at line {acq_at + 1}, release at {rel_at + 1}, "
+              f"{len(span)} lines between, {len(exits)} early exit(s)")
+
+    # 6. The other interfaces in the same function keep their pairs, so a fix
     #    here cannot quietly unbalance them.
     for name in ("out6", "output1", "output", "adapter", "factory"):
         if f"{name}->Release()" not in body:
@@ -92,7 +123,7 @@ def main() -> int:
     if failures:
         return 1
     print("OK: the IDXGIOutput5 reference is acquired and released on the "
-          "same, unconditional, path")
+          "same, unconditional, path, with no exit in between")
     return 0
 
 

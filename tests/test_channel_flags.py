@@ -10,6 +10,11 @@ or a shape mismatch through guides' guard).
 Expected: the set of flags reset in rebuild_pipeline equals the set the
 loop's negotiation block reads. [audit python-core F8]
 
+This used to fail on gray_active alone and merely PRINT the other eight, so
+a regression in any of them passed (audit: WEAK). The flags are a set: one
+of them missing is the same class of bug, and the print is not a check.
+The assertion is now over the whole set.
+
 Run:  runtime\\python.exe tests\\test_channel_flags.py
 """
 import re
@@ -44,21 +49,35 @@ def main() -> int:
     missing = [f for f in LOOP_FLAGS if f not in reset]
     print(f"    reset in rebuild_pipeline: {sorted(reset & set(LOOP_FLAGS))}")
     print(f"    missing: {missing}")
-    if "gray_active" in missing:
+
+    # Every flag the loop reads must be reset, not just gray_active. Each
+    # missing one leaves the loop reading the NEW worker's channel with a
+    # state flag set by the OLD one - gray_active reads a section that was
+    # never opened, present_mode/dda_mode make the loop take a channel it
+    # has not negotiated yet.
+    if missing:
         failures.append(
-            "F8: gray_active is not reset by rebuild_pipeline - after a "
-            "rebuild the loop reads st.shm.read_gray() on a section the new "
-            "worker has not opened")
-    # The rest are informational; only gray_active is the audited gap.
-    others = [f for f in missing if f != "gray_active"]
-    if others:
-        print(f"    note: also not explicitly reset (check each): {others}")
+            "F8: rebuild_pipeline does not reset " + ", ".join(missing) +
+            " - the loop's negotiation block reads a flag the old worker "
+            "set, on the new worker's channels")
+
+    # attempt flags are the pair of their mode flag: if the mode flag is
+    # reset but its attempt flag is not (or the other way round), the loop
+    # skips a channel it still has to negotiate.
+    for mode, attempt in (("present_mode", "present_attempted"),
+                          ("dda_mode", "dda_attempted"),
+                          ("motion_small", "motion_attempted"),
+                          ("out_shm", "out_attempted")):
+        if (mode in reset) != (attempt in reset):
+            failures.append(
+                f"F8: {mode}/{attempt} were not reset as a pair "
+                f"(one of them is missing)")
 
     for f in failures:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: rebuild_pipeline resets the channel flags the loop reads")
+    print("OK: rebuild_pipeline resets every channel flag the loop reads")
     return 0
 
 

@@ -498,7 +498,7 @@ NR- и FG-рантаймы идут в архиве. Пользовательс�
 
 ## Воспроизводимый контракт релиза
 
-`build_release_zip.py v1.14.0` принимает только чистый checkout, где `HEAD`
+`build_release_zip.py v1.15.0` принимает только чистый checkout, где `HEAD`
 совпадает с запрошенным тегом, а источники версии согласованы. Allowlist
 охватывает все поставляемые Python/C++/headers/shaders/resources, а
 `runtime-manifest.json` фиксирует пути и SHA. Порядок, timestamps и метаданные

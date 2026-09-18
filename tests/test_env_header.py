@@ -46,27 +46,74 @@ def main() -> int:
     if "Num Lock:" not in text:
         failures.append("the Num Lock line is missing")
 
-    # 2. A broken probe must not crash the caller: the whole function is
-    #    wrapped, so a raising probe leaves the rest of the header intact.
+    # 2. A broken probe must not crash the caller: the probes after it still
+    #    run. Two things were wrong with the old check (audit: WEAK):
+    #    - it looked for "NeuralScreen", and that banner is printed BEFORE any
+    #      probe, so it passed even if everything after it died;
+    #    - it raised OSError, which the probe's OWN inner `except OSError`
+    #      already catches - so the outer wrapper was never exercised at all.
+    #    Raise something only the outer `except Exception` can catch, and read
+    #    the LAST line, which only prints if every probe survived.
+    class _ProbeBoom(RuntimeError):
+        pass
+
     real_winreg = None
     try:
         import winreg
         real_winreg = winreg.OpenKey
-        winreg.OpenKey = lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
+        winreg.OpenKey = lambda *a, **k: (_ for _ in ()).throw(_ProbeBoom("boom"))
     except ImportError:
         pass
     buf2 = io.StringIO()
     sys.stdout = buf2
+    raised = None
     try:
         ns_main._log_environment({})
+    except Exception as exc:
+        raised = exc
     finally:
         sys.stdout = real_stdout
         if real_winreg is not None:
             import winreg
             winreg.OpenKey = real_winreg
     text2 = buf2.getvalue()
-    if "NeuralScreen" not in text2:
-        failures.append("a broken probe killed the whole header")
+    if raised is not None:
+        failures.append(f"a raising winreg probe escaped the header "
+                        f"({type(raised).__name__}: {raised}) - a user's log "
+                        f"then stops mid-header")
+    if "[env] Num Lock:" not in text2:
+        failures.append("a raising winreg probe stopped the header - the "
+                        "lines after it never printed")
+    if "[env] NeuralScreen" not in text2:
+        failures.append("the version banner itself was lost")
+
+    # 3. Same guarantee for a different call: the point is the wrapper, not
+    #    winreg.
+    real_platform = None
+    try:
+        import platform as _plat
+        real_platform = _plat.platform
+        _plat.platform = lambda *a, **k: (_ for _ in ()).throw(_ProbeBoom("boom"))
+    except Exception:
+        pass
+    buf3 = io.StringIO()
+    sys.stdout = buf3
+    raised = None
+    try:
+        ns_main._log_environment({"lang": "en"})
+    except Exception as exc:
+        raised = exc
+    finally:
+        sys.stdout = real_stdout
+        if real_platform is not None:
+            import platform as _plat
+            _plat.platform = real_platform
+    text3 = buf3.getvalue()
+    if raised is not None:
+        failures.append(f"a raising platform probe escaped the header "
+                        f"({type(raised).__name__}: {raised})")
+    if "[env] Num Lock:" not in text3:
+        failures.append("a raising platform probe stopped the header")
 
     print("=" * 60)
     if failures:

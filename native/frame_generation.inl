@@ -43,6 +43,37 @@ static struct FgState {
 
 static int g_fg_ui_enabled = -1;
 static unsigned g_fg_count = 1;
+// What we actually ask the runtime for, 0-based: 1 = 2x, 3 = 4x.
+//
+// It starts at the DLSS 4 ceiling and drops only when a create or evaluation
+// is actually refused - the runtime itself answered "not that step". Two
+// refusals on a card that stops at 2x (4x, then 3x) land it on 2x and Frame
+// Generation keeps running; before this, the first refusal killed the feature
+// outright. Switching FG off and on re-arms the user's choice, so a newer
+// stock provider or driver update gets a fair try without a restart.
+static unsigned g_fg_count_limit = 3;
+// Set when a refusal was answered by stepping the multiplier down: that frame
+// is a retry, not a failure. FgPresent reads and clears it.
+static bool g_fg_retry = false;
+
+// Report-only: what the runtime says its own ceiling is, through
+// DLSSG.MultiFrameCountMax (3 = 4x, 1 = 2x only). It is advisory and never
+// clamps the request - the step-down below is what adapts, because it is
+// driven by an answer this run actually got. The value is logged so that a
+// log from a card which stops at 2x names the reason on the first attempt.
+static unsigned g_fg_cap_reported = 0;
+
+// Step the multiplier down after a refusal. True when a lower step remains to
+// try; false when 2x itself was refused, which is the real "cannot run here".
+static bool FgStepDown(unsigned refused)
+{
+    if (g_fg_count <= 1) return false;
+    Log("[fg] %ux refused 0x%08X; stepping down to %ux",
+        g_fg_count + 1, refused, g_fg_count);
+    g_fg_count_limit = g_fg_count - 1;
+    g_force_next_frame = true;
+    return true;
+}
 
 static bool FgRequested()
 {
@@ -250,7 +281,8 @@ static void FgPresenter()
         const double elapsed = std::chrono::duration<double>(start - report).count();
         if (elapsed >= 2.0)
         {
-            Log("[fg] displayed %.1f FPS (real + generated); experimental flat-depth guides", shown / elapsed);
+            Log("[fg] %ux: displayed %.1f FPS (real + generated); experimental flat-depth guides",
+                chosen->count + 1, shown / elapsed);
             shown = 0; report = start;
         }
     }
@@ -310,6 +342,26 @@ static bool EnsureFg(VideoState &v, DXGI_FORMAT format)
         const auto result = init(0x1000000ULL, directory, h.dev, NVSDK_NGX_Version_API, g_fg.params);
         Log("[fg] Init_Ext -> 0x%08X", result);
         if (NVSDK_NGX_FAILED(result)) return false;
+        // Ask the runtime what it says its own multiplier ceiling is, and log
+        // it. DLSSG.MultiFrameCountMax is 3 for 4x and 1 for a card that stops
+        // at 2x. This is REPORT ONLY: the request is not clamped by it, since
+        // an unverified capability answer must not silently cost a working
+        // step. What adapts is FgStepDown, driven by a refusal this run really
+        // got. A log from a 2x card then names the reason on the first attempt
+        // instead of leaving the two refused steps unexplained.
+        NVSDK_NGX_Parameter *caps = nullptr;
+        if (!NVSDK_NGX_FAILED(NVSDK_NGX_D3D12_GetCapabilityParameters(&caps)) && caps != nullptr)
+        {
+            unsigned reported = 0;
+            if (!NVSDK_NGX_FAILED(caps->Get(NVSDK_NGX_DLSSG_Parameter_MultiFrameCountMax, &reported)) &&
+                reported >= 1u)
+            {
+                g_fg_cap_reported = std::min(3u, reported);
+                Log("[fg] the runtime reports a %ux multiplier ceiling",
+                    g_fg_cap_reported + 1);
+            }
+            NVSDK_NGX_D3D12_DestroyParameters(caps);
+        }
     }
     auto p = g_fg.params;
     p->Reset();
@@ -322,7 +374,14 @@ static bool EnsureFg(VideoState &v, DXGI_FORMAT format)
     if (!BeginCommands()) return false;
     const auto result = g_fg.create(h.list, NVSDK_NGX_Feature_FrameGeneration, p, &g_fg.feature);
     if (!WaitFenceValue(h.fence, EndCommands(), 30000) || NVSDK_NGX_FAILED(result) || !g_fg.feature)
-    { Log("[fg] CreateFeature failed 0x%08X", result); return false; }
+    {
+        Log("[fg] CreateFeature failed 0x%08X", result);
+        // The frame that met the refusal is a retry, not a dead feature: mark
+        // it so the caller lets the next header rebuild at the lower step
+        // instead of turning Frame Generation off for this GPU.
+        g_fg_retry = FgStepDown(result);
+        return false;
+    }
     if (!CreateVideoTex(g_fg.depth, v.w, v.hgt, DXGI_FORMAT_R32_FLOAT, v.w * 4)) return false;
     std::vector<float> depth(static_cast<size_t>(v.w) * v.hgt, 0.5f);
     if (!FillUpload(g_fg.depth, reinterpret_cast<BYTE *>(depth.data()), v.w * 4, v.hgt) || !BeginCommands()) return false;
@@ -441,7 +500,13 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
 {
     if (!FgRequested()) { StopFgPresentation(); return false; }
     if (!EnsureFg(v, color->GetDesc().Format))
-    { g_fg.failed = true; CloseFgResources(); return false; }
+    {
+        // A refused multiplier stepped the ceiling down: this frame is a
+        // retry, not a dead feature. Release what the failed attempt built and
+        // let the next header rebuild at the lower step.
+        if (g_fg_retry) { g_fg_retry = false; CloseFgResources(); return false; }
+        g_fg.failed = true; CloseFgResources(); return false;
+    }
     const auto now = std::chrono::steady_clock::now();
     const double interval = g_fg.history ? std::chrono::duration<double>(now - g_fg.last).count() : 0.016;
     const bool interpolate = g_fg.history && !g_fg_reset && interval < 0.1;
@@ -491,6 +556,14 @@ static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATE
             if (!WaitFenceValue(h.fence, EndCommands(), 30000,
                                 "fg-evaluate"))
             { g_fg.failed = true; return false; }
+            // A refused multiplier is not a broken feature, and it used to be
+            // treated as one: FG died at every count, including on a card that
+            // runs 2x perfectly well. Step down; 2x is the floor, so a refusal
+            // there does mean Frame Generation cannot run on this GPU. No
+            // retry flag here: the create already succeeded, so the next frame
+            // is an ordinary fresh build at the lower step and its own failure
+            // must read as one.
+            if (FgStepDown(result)) { CloseFgResources(); return false; }
             Log("[fg] Evaluate failed 0x%08X; falling back", result);
             g_fg.failed = true; CloseFgResources(); return false;
         }
@@ -572,12 +645,24 @@ static void ConfigureFgFrame(uint32_t flags)
 {
     if (!(flags & 0x800)) return; // older clients may still use NS_FRAMEGEN
     const int enabled = (flags & 0x100) != 0;
-    const unsigned count = std::min(3u, ((flags >> 9) & 3u) + 1u);
+    const unsigned requested = std::min(3u, ((flags >> 9) & 3u) + 1u);
+    // A step the runtime already refused is not offered again in this FG
+    // session: the request is clamped to the last one that worked. Switching
+    // FG off and on arms the user's choice again, so a newer stock provider
+    // (BYO folder) or a driver update can lift the ceiling without a restart.
+    const unsigned count = std::min(requested, g_fg_count_limit);
     if (g_fg_ui_enabled == enabled && g_fg_count == count) return;
     CloseFgResources();
+    // A fresh switch-on is a fresh attempt: the ceiling goes back to the DLSS 4
+    // maximum and the user's own choice is asked for again. A step this card
+    // refused earlier is worth exactly one retry after a provider or driver
+    // update, and those do not restart the program.
+    if (enabled && g_fg_ui_enabled == 0) g_fg_count_limit = 3;
+    g_fg_retry = false;
     g_fg_ui_enabled = enabled;
     g_fg_count = count;
     g_fg.failed = false;
     g_force_next_frame = true;
-    Log("[fg] UI: %s, %ux", enabled ? "on" : "off", count + 1);
+    Log("[fg] UI: %s, %ux%s", enabled ? "on" : "off", count + 1,
+        count < requested ? " (capped by the runtime ceiling)" : "");
 }

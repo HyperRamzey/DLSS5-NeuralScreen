@@ -882,6 +882,14 @@ def fg_verdict(lines):
     from an earlier, already-handled attempt must not flip the switch
     again. Success is the presenter's own "[fg] Nx enabled at ..." line.
     None means the runtime has not answered yet.
+
+    A REFUSED MULTIPLIER is not a refusal of the feature. The worker steps
+    the multiplier down and rebuilds at the lower step (2x is the floor), so
+    the "Nx refused ... stepping down" and "CreateFeature failed" lines that
+    precede a working build must not turn the switch off - the switch would
+    go dark on a card that runs Frame Generation perfectly well. The worker
+    logs "stepping down" exactly for that case, and the step it lands on
+    still prints its own "enabled at" line, which wins because it is newer.
     """
     for line in lines:
         if "[fg] UI: on" in line:
@@ -890,6 +898,8 @@ def fg_verdict(lines):
             return None            # disabled - nothing to judge
         if "enabled at" in line and "[fg]" in line:
             return True            # "[fg] 2x enabled at 3840x2160"
+        if "stepping down to" in line:
+            return None            # a retry is in flight, not a verdict
         if "[fg] Init_Ext -> 0x" in line and "0x00000001" not in line:
             return False           # the FG runtime itself refused
         if any(token in line for token in FG_VERDICT_FAIL):

@@ -127,6 +127,21 @@ def _drain(commands: queue.Queue) -> list:
     return got
 
 
+#: The window procedure dedupes commands: one click can deliver both
+#: WA_CLICKACTIVE and WA_ACTIVE, so a repeat within this window is dropped.
+#: A test that sends a synthetic activation right after a REAL one (which
+#: `_force_foreground` causes) is deduped away and reads as a lost click -
+#: measured in the suite, where the timing differs from a solo run. Wait it
+#: out and drain, so each assertion sees only its own message.
+EMIT_DEDUP_S = 0.55
+
+
+def _arm(commands: queue.Queue) -> None:
+    """Wait past the command dedup and drop what earlier steps emitted."""
+    time.sleep(EMIT_DEDUP_S)
+    _drain(commands)
+
+
 def main() -> int:
     failures: list[str] = []
     commands: queue.Queue = queue.Queue()
@@ -176,7 +191,7 @@ def main() -> int:
     # window in lParam. That is the same false open by another message, and it
     # is what the lParam half of the guard exists for.
     print("\n[1b] the fallback arriving as WM_ACTIVATE with a minimised window")
-    _drain(commands)
+    _arm(commands)
     user32.ShowWindow(foreign, SW_RESTORE)
     time.sleep(0.3)
     user32.SetForegroundWindow(foreign)
@@ -212,6 +227,10 @@ def main() -> int:
             failures.append("could not take the foreground for the click-path "
                             "check (Windows refused)")
         time.sleep(0.3)
+        # Taking the foreground may itself have emitted (the real activation
+        # sequence); wait out the dedup and drop it, so the assertion below
+        # can only be satisfied by the message this step sends.
+        _arm(commands)
         print(f"    ours foreground={user32.GetForegroundWindow() == hwnd}, "
               f"previous alive={bool(user32.IsWindow(foreign))} "
               f"minimised={bool(user32.IsIconic(foreign))}")
@@ -228,12 +247,12 @@ def main() -> int:
     # it, while our window is ALREADY the active one (step 2 left it so). The
     # guard's new "were we already active?" test must not kill this path.
     print("\n[3] second click on our already-active button")
-    time.sleep(0.7)                           # past the emit dedup window
-    _drain(commands)
     if not _force_foreground(hwnd):
         failures.append("could not take the foreground for the second-click "
                         "check (Windows refused)")
     else:
+        time.sleep(0.3)
+        _arm(commands)          # drop anything taking the foreground emitted
         print(f"    we are foreground={user32.GetForegroundWindow() == hwnd}")
         user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
         time.sleep(0.5)
@@ -245,8 +264,7 @@ def main() -> int:
 
     # --- 4. the taskbar button's own minimize/restore ----------------------
     print("\n[4] SC_MINIMIZE from the taskbar button")
-    time.sleep(0.6)                           # past the dedup window
-    _drain(commands)
+    _arm(commands)
     user32.SendMessageW(hwnd, taskbar.WM_SYSCOMMAND, taskbar.SC_MINIMIZE, 0)
     time.sleep(0.4)
     got = _drain(commands)

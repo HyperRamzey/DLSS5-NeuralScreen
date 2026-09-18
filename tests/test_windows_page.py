@@ -122,7 +122,17 @@ def main() -> int:
                         f"{colon[0].payload!r}")
 
     # 3. Hovering a row reports the hwnd (the integer).
-    row = next(r for r in rows if r.payload == 0x4D5E6F)
+    row = next((r for r in rows if r.payload == 0x4D5E6F), None)
+    if row is None:
+        failures.append("no row carries the hwnd 0x4D5E6F - identity is not "
+                        "the integer, so hover and click would act on the "
+                        "label")
+        row = rows[-1] if rows else None
+    if row is None:
+        print("=" * 60)
+        for f in failures:
+            print("FAIL:", f)
+        return 1
     hover(menu, row)
     print(f"hover -> hover_window 0x{menu.hover_window:X}")
     if menu.hover_window != 0x4D5E6F:

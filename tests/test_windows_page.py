@@ -30,8 +30,15 @@ STATE = {
     "split": 0.0, "open_on_start": True,
     "gpu_text": "RTX 5070 Ti · Blackwell", "gpu_ok": True,
     "window_mode": True,
-    "windows": ["1A2B3C: Notepad", "4D5E6F: Chrome - YouTube"],
-    "window_current": "1A2B3C: Notepad",
+    # The payload the product really sends (settings_io._window_menu_state):
+    # hwnd is an integer and the title is display text only. The old
+    # "HEX: title" string is accepted by a compatibility shim, and feeding
+    # only that left this test pinning the shim rather than the contract
+    # (audit: WEAK). One title contains a colon here, which the old combined
+    # form could not represent without breaking identity.
+    "windows": [{"hwnd": 0x1A2B3C, "title": "Notepad"},
+                {"hwnd": 0x4D5E6F, "title": "Chrome - YouTube: watch"}],
+    "window_current": {"hwnd": 0x1A2B3C, "title": "Notepad"},
 }
 
 
@@ -90,18 +97,32 @@ def main() -> int:
         if menu.page != "windows":
             failures.append("the one-window cell should open the windows page")
 
-    # 2. The windows page lists every window as an option row.
+    # 2. The windows page lists every window as an option row, carrying the
+    #    INTEGER hwnd as its payload - never the label.
     menu.layout(3840, 2160)
     rows = [i for i in menu.items if i.kind == "option"]
     print(f"window rows: {[(r.payload, r.extra.get('selected')) for r in rows]}")
     if len(rows) != 2:
         failures.append(f"expected 2 window rows, got {len(rows)}")
-    if not any(r.payload == "1A2B3C: Notepad" and r.extra.get("selected")
+    if not any(r.payload == 0x1A2B3C and r.extra.get("selected")
                for r in rows):
-        failures.append("the current window should be marked selected")
+        failures.append("the current window should be marked selected by hwnd")
+    for r in rows:
+        if not isinstance(r.payload, int):
+            failures.append(f"a row payload is {r.payload!r} - identity must "
+                            f"stay the integer hwnd, not the visible label")
+    # The colon in one title must not become identity: the row that shows it
+    # still carries its own hwnd.
+    colon = [r for r in rows if ":" in str(r.extra.get("label", ""))]
+    if not colon:
+        failures.append("the colon title is not on screen - the case this "
+                        "payload shape exists for is not covered")
+    elif colon[0].payload != 0x4D5E6F:
+        failures.append(f"the title with a colon lost its identity: payload "
+                        f"{colon[0].payload!r}")
 
-    # 3. Hovering a row reports the hwnd (the hex prefix).
-    row = next(r for r in rows if r.payload == "4D5E6F: Chrome - YouTube")
+    # 3. Hovering a row reports the hwnd (the integer).
+    row = next(r for r in rows if r.payload == 0x4D5E6F)
     hover(menu, row)
     print(f"hover -> hover_window 0x{menu.hover_window:X}")
     if menu.hover_window != 0x4D5E6F:
@@ -114,11 +135,11 @@ def main() -> int:
     if menu.hover_window is not None:
         failures.append("hover_window should clear when the cursor leaves the rows")
 
-    # 5. Clicking a row emits the window command with the hwnd.
+    # 5. Clicking a row emits the window command with the integer hwnd.
     out = click(menu, row)
     print(f"row click -> {out}")
-    if ("window", "4D5E6F: Chrome - YouTube") not in out:
-        failures.append(f"the row click should emit (window, ...), got {out}")
+    if ("window", 0x4D5E6F) not in out:
+        failures.append(f"the row click should emit (window, 0x4D5E6F), got {out}")
 
     # 6. Back returns to the main page and clears the highlight.
     back = next((i for i in menu.items if i.kind == "action" and i.key == "back"),

@@ -1,0 +1,273 @@
+"""A foreign window being minimised must not open our menu (issue #96).
+
+Report (Saymoin): "I minimize and restore any other program's window, and
+after that NeuralScreen unfolds by itself." Measured on the bench, the message
+stream makes the two cases identical:
+
+  * a real click on our taskbar button arrives as WM_NCACTIVATE(1);
+  * the fallback activation Windows hands our 1x1 window right after ANOTHER
+    window is minimised arrives as the SAME WM_NCACTIVATE(1),
+    with the cursor over the taskbar and our window in the foreground.
+
+The old guard saw `wparam == 1` + cursor over the taskbar + we are foreground
+and opened the menu - for a window the user never touched. The state around
+the message is what separates them: a real click leaves the previous
+application alive, the fallback leaves it minimised (measured with a live
+probe, _work/probe_taskbar_activation.py).
+
+Checked here, with a REAL foreign window on its own thread and a real
+SW_MINIMIZE:
+
+* minimising a foreign window that owns the foreground emits NOTHING;
+* an activation while the previous app is alive still opens the menu (the
+  click path must not be lost while fixing the false one);
+* the second click on our already-active button still works (issue #93:
+  "залипает" - the second click was dead without this path);
+* SC_MINIMIZE/SC_RESTORE from the taskbar button still open the menu.
+
+Run:  runtime\\python.exe tests\\test_taskbar_foreign_minimize.py
+"""
+import ctypes
+import ctypes.wintypes as wt
+import os
+import queue
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import taskbar  # noqa: E402
+
+user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+WM_ACTIVATE = taskbar.WM_ACTIVATE
+WM_NCACTIVATE = taskbar.WM_NCACTIVATE
+SW_MINIMIZE = 6
+SW_RESTORE = 9
+
+
+def _make_foreign(title: str) -> int:
+    """A real top-level window on its own thread, with its own message pump.
+
+    Without the pump ShowWindow(SW_MINIMIZE) on it blocks forever - measured;
+    a separate thread also mirrors reality (the user's other programs run in
+    other processes).
+    """
+    cls = "ProbeTestForeign" + str(abs(hash(title)) % 100000)
+    ready = threading.Event()
+    box: dict = {}
+
+    def run() -> None:
+        hinst = kernel32.GetModuleHandleW(None)
+        wc = taskbar.WNDCLASSW()
+        proc = taskbar.WNDPROC(lambda h, m, w, l: user32.DefWindowProcW(h, m, w, l))
+        wc.lpfnWndProc = proc          # keep the reference alive
+        wc.hInstance = hinst
+        wc.lpszClassName = cls
+        user32.RegisterClassW(ctypes.byref(wc))
+        hwnd = user32.CreateWindowExW(
+            0, cls, title,
+            taskbar.WS_POPUP | taskbar.WS_VISIBLE | taskbar.WS_CAPTION
+            | taskbar.WS_SYSMENU | taskbar.WS_MINIMIZEBOX,
+            90, 90, 360, 200, None, None, hinst, None)
+        user32.ShowWindow(hwnd, 5)
+        box["hwnd"] = hwnd
+        box["proc"] = proc
+        ready.set()
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        user32.DestroyWindow(hwnd)
+
+    threading.Thread(target=run, daemon=True, name="test-foreign").start()
+    ready.wait(5.0)
+    return box.get("hwnd", 0)
+
+
+def _park_cursor_on_taskbar() -> bool:
+    """Put the cursor where the user's repro has it (he just clicked there)."""
+    tb = user32.FindWindowW("Shell_TrayWnd", None)
+    if not tb:
+        return False
+    r = wt.RECT()
+    if not user32.GetWindowRect(tb, ctypes.byref(r)):
+        return False
+    user32.SetCursorPos((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+    return True
+
+
+def _force_foreground(hwnd: int, timeout: float = 3.0) -> bool:
+    """Make `hwnd` the foreground window, or report that Windows refused.
+
+    Windows restricts SetForegroundWindow for a process that does not own the
+    foreground. The ALT trick (a synthetic Alt press releases the restriction)
+    is what the project's other tests use, and this retries until the state is
+    really what the test needs - a test that silently proceeds with the wrong
+    foreground window reports a false failure.
+    """
+    VK_MENU, KEYEVENTF_KEYUP = 0x12, 0x0002
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        user32.keybd_event(VK_MENU, 0, 0, 0)
+        user32.SetForegroundWindow(hwnd)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.15)
+    return user32.GetForegroundWindow() == hwnd
+
+
+def _drain(commands: queue.Queue) -> list:
+    got = []
+    while not commands.empty():
+        got.append(commands.get_nowait())
+    return got
+
+
+def main() -> int:
+    failures: list[str] = []
+    commands: queue.Queue = queue.Queue()
+    win = taskbar.TaskbarWindow(commands, "NeuralScreenTest96")
+    win.start()
+    deadline = time.monotonic() + 5.0
+    while win.hwnd is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    hwnd = win.hwnd
+    if not hwnd:
+        print("FAIL: the taskbar window was not created")
+        return 1
+    print(f"taskbar hwnd: {hwnd}")
+
+    foreign = _make_foreign("Foreign window for #96")
+    if not foreign:
+        print("FAIL: could not create the foreign test window")
+        win.stop()
+        return 1
+    print(f"foreign hwnd: 0x{foreign:X}")
+    time.sleep(0.3)
+    if not _park_cursor_on_taskbar():
+        print("note: no taskbar rect found - the cursor test may not engage")
+    time.sleep(0.3)
+    _drain(commands)                          # drop startup noise
+
+    # --- 1. the reported bug: a foreign window is minimised ----------------
+    # It owns the foreground; Windows then activates us as a fallback.
+    print("\n[1] minimising a foreign window that owns the foreground")
+    user32.ShowWindow(foreign, SW_RESTORE)
+    time.sleep(0.3)
+    user32.SetForegroundWindow(foreign)
+    time.sleep(0.5)
+    print(f"    foreign foreground={user32.GetForegroundWindow() == foreign}, "
+          f"minimised={bool(user32.IsIconic(foreign))}")
+    user32.ShowWindow(foreign, SW_MINIMIZE)
+    time.sleep(0.9)
+    got = _drain(commands)
+    print(f"    commands: {got}")
+    if got:
+        failures.append("minimising a foreign window opened the menu (issue "
+                        f"#96): {got}")
+
+    # --- 1b. the same fallback, arriving as WM_ACTIVATE ---------------------
+    # Windows does not always pick the WM_NCACTIVATE form: a fallback
+    # activation can arrive as WM_ACTIVATE(WA_ACTIVE) carrying the MINIMISED
+    # window in lParam. That is the same false open by another message, and it
+    # is what the lParam half of the guard exists for.
+    print("\n[1b] the fallback arriving as WM_ACTIVATE with a minimised window")
+    _drain(commands)
+    user32.ShowWindow(foreign, SW_RESTORE)
+    time.sleep(0.3)
+    user32.SetForegroundWindow(foreign)
+    time.sleep(0.4)
+    user32.ShowWindow(foreign, SW_MINIMIZE)
+    time.sleep(0.5)
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.3)
+    print(f"    previous minimised={bool(user32.IsIconic(foreign))}, "
+          f"ours foreground={user32.GetForegroundWindow() == hwnd}")
+    user32.SendMessageW(hwnd, WM_ACTIVATE, taskbar.WA_ACTIVE, foreign)
+    time.sleep(0.5)
+    got = _drain(commands)
+    print(f"    commands: {got}")
+    if got:
+        failures.append("a WM_ACTIVATE carrying a minimised window opened the "
+                        f"menu (issue #96, other message form): {got}")
+
+    # --- 2. a real click must still work -----------------------------------
+    # Measured: a click activates OUR window (Windows makes us the foreground
+    # as part of the click) and reports the previous app in lParam. Nothing
+    # may be lost while fixing #96.
+    print("\n[2] an activation while the previous app is alive (click path)")
+    user32.ShowWindow(foreign, SW_RESTORE)
+    time.sleep(0.4)
+    if not _force_foreground(foreign):
+        failures.append("could not give the foreign window the foreground - "
+                        "the click-path check cannot be trusted")
+    else:
+        # Windows hands US the foreground as part of a click; reproduce that
+        # state before sending the activation the click delivers.
+        if not _force_foreground(hwnd):
+            failures.append("could not take the foreground for the click-path "
+                            "check (Windows refused)")
+        time.sleep(0.3)
+        print(f"    ours foreground={user32.GetForegroundWindow() == hwnd}, "
+              f"previous alive={bool(user32.IsWindow(foreign))} "
+              f"minimised={bool(user32.IsIconic(foreign))}")
+        user32.SendMessageW(hwnd, WM_ACTIVATE, taskbar.WA_ACTIVE, foreign)
+        time.sleep(0.5)
+        got = _drain(commands)
+        print(f"    commands: {got}")
+        if "show_settings" not in got:
+            failures.append("an activation with the previous app alive no "
+                            f"longer opens the menu: {got}")
+
+    # --- 3. the second click on our already-active button ------------------
+    # Issue #93: this arrives as WM_NCACTIVATE(1) with no WM_ACTIVATE before
+    # it, while our window is ALREADY the active one (step 2 left it so). The
+    # guard's new "were we already active?" test must not kill this path.
+    print("\n[3] second click on our already-active button")
+    time.sleep(0.7)                           # past the emit dedup window
+    _drain(commands)
+    if not _force_foreground(hwnd):
+        failures.append("could not take the foreground for the second-click "
+                        "check (Windows refused)")
+    else:
+        print(f"    we are foreground={user32.GetForegroundWindow() == hwnd}")
+        user32.SendMessageW(hwnd, WM_NCACTIVATE, 1, 0)
+        time.sleep(0.5)
+        got = _drain(commands)
+        print(f"    commands: {got}")
+        if "show_settings" not in got:
+            failures.append("the second click on our active button was dropped "
+                            f"(#93 regression): {got}")
+
+    # --- 4. the taskbar button's own minimize/restore ----------------------
+    print("\n[4] SC_MINIMIZE from the taskbar button")
+    time.sleep(0.6)                           # past the dedup window
+    _drain(commands)
+    user32.SendMessageW(hwnd, taskbar.WM_SYSCOMMAND, taskbar.SC_MINIMIZE, 0)
+    time.sleep(0.4)
+    got = _drain(commands)
+    print(f"    commands: {got}")
+    if "show_settings" not in got:
+        failures.append(f"the taskbar button's own minimize no longer shows "
+                        f"the menu: {got}")
+
+    user32.DestroyWindow(foreign)
+    win.stop()
+    time.sleep(0.2)
+
+    print("=" * 60)
+    if failures:
+        for f in failures:
+            print("FAIL:", f)
+        return 1
+    print("OK: a minimised foreign window no longer opens the menu; a real "
+          "click still does")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

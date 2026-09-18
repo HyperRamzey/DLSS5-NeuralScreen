@@ -446,8 +446,18 @@ def main() -> int:
         else:
             line = [l for l in text.splitlines() if "pipeline rebuilt" in l][-1]
             print("out:", line.strip())
-            if "3840x2160" not in line and f"{W}x{H}" in line:
-                failures.append("switching back kept the window size")
+            # The rebuild line must report the SCREEN's size, read from
+            # Windows - not a literal. 3840x2160 was hardcoded, so on any
+            # other machine the first half of the old conjunction was already
+            # True and the check silently passed (audit: WEAK); and if the
+            # screen happened to be 3840x2160 the second half saved it.
+            screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+            screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+            if f"{screen_w}x{screen_h}" not in line:
+                failures.append(
+                    f"switching back did not return to the whole screen: the "
+                    f"rebuild says {line.strip()!r}, expected {screen_w}x"
+                    f"{screen_h} (the window is {W}x{H})")
         mark = autocheck.log_offset()
         pump(4.0)
         if autocheck.NR_FRAME_MARKER not in autocheck.log_since(mark):

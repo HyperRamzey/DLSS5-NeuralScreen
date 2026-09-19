@@ -11,7 +11,8 @@ rem
 rem No vcvars needed: clang-cl and lld-link locate the MSVC headers/libs
 rem and the Windows SDK on their own. CLANG_DIR is empty by default - the
 rem toolchain is found automatically (see the detection order below); set it
-rem to a specific LLVM bin folder to override that.
+rem to a specific LLVM install to override that, either its root or its bin,
+rem so the folder an archive extracts to works as it stands.
 rem
 rem Flag notes:
 rem   /clang:-O3   - clang-cl maps its own /O spells to /O2; /clang:
@@ -30,22 +31,30 @@ rem ---------------------------------------------------------------------------
 rem Where clang comes from. CLANG_DIR is empty (or 0) by default = auto-detect:
 rem   1. the clang of a Visual Studio install - the "C++ Clang compiler for
 rem      Windows" component puts it in <install>\VC\Tools\Llvm\x64\bin, found
-rem      through vswhere, the same locator vcvars.bat uses;
+rem      through vswhere (native\vswhere.bat, which searches every drive);
 rem   2. a clang-cl that is already on PATH.
-rem Setting CLANG_DIR wins over both and is used as-is:
+rem Setting CLANG_DIR wins over both, and it takes the archive root or its
+rem bin, whichever is given:
+rem   set "CLANG_DIR=G:\Downloads\clang+llvm-22.1.8-x86_64-pc-windows-msvc"
 rem   set "CLANG_DIR=G:\Downloads\clang+llvm-22.1.8-x86_64-pc-windows-msvc\bin"
+rem Both are the same toolchain: an LLVM archive unpacks to
+rem <name>\bin, <name>\include, <name>\lib, and the tools live in bin.
 rem Any of the three needs lld-link.exe and llvm-rc.exe next to clang-cl -
 rem both the standalone LLVM archive and the VS component ship them.
 rem ---------------------------------------------------------------------------
 if "%CLANG_DIR%"=="0" set "CLANG_DIR="
 if not defined CLANG_DIR goto :find_clang
 if exist "%CLANG_DIR%\clang-cl.exe" goto :clang_ready
+rem A downloaded archive keeps the tools one level down in bin; accept either
+rem level of the path so pasting the folder you extracted works as pasted.
+if exist "%CLANG_DIR%\bin\clang-cl.exe" set "CLANG_DIR=%CLANG_DIR%\bin"
+if exist "%CLANG_DIR%\clang-cl.exe" goto :clang_ready
 echo CLANG_DIR="%CLANG_DIR%" has no clang-cl.exe - auto-detecting instead.
 set "CLANG_DIR="
 
 :find_clang
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-if not exist "%VSWHERE%" goto :path_clang
+call "%~dp0vswhere.bat"
+if not defined VSWHERE goto :path_clang
 rem Newest VS install first; x64 toolset, then any other folder of the same
 rem toolset (VS also ships Llvm\bin and Llvm\Arm64\bin).
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do (

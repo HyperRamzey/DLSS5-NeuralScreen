@@ -1,6 +1,7 @@
 @echo off
 rem Max-optimization build of every native target with the LLVM toolchain:
-rem clang-cl + lld-link, -O3, ThinLTO, -march=znver3 (AMD Zen 3 codegen).
+rem clang-cl + lld-link, -O3, ThinLTO, -march=x86-64-v2 (see the arch block
+rem below for what that means and how to ask for a different level).
 rem Same sources, same include dirs, same link inputs and the same output
 rem names as build-host.bat / build-launcher.bat / build-spout-*.bat - only
 rem the compiler and the optimization level change. The output names are
@@ -15,7 +16,9 @@ rem
 rem Flag notes:
 rem   /clang:-O3   - clang-cl maps its own /O spells to /O2; /clang:
 rem                   forwards the GCC-style -O3 straight to the driver.
-rem   -march=znver3 - Zen 3 scheduling + AVX2 codegen (implies the tune).
+rem   -march=<level> - the x86-64 microarchitecture level, see the block
+rem                   below. A level, not a chip: the code runs on any CPU
+rem                   that implements that level, no vendor scheduling model.
 rem   -flto=thin   - ThinLTO bitcode; lld-link combines at link time.
 rem   -fuse-ld=lld - link with lld-link from the same LLVM bin folder.
 rem NDEBUG is deliberately NOT defined: the release build (build-host.bat)
@@ -78,7 +81,44 @@ for /f "usebackq delims=" %%i in (`where rc.exe 2^>nul`) do set "RC=%%~fi"
 echo clang toolchain: %CLANG_DIR%
 "%CC%" --version
 
-set "OPT=/clang:-O3 -march=znver3 -flto=thin -fuse-ld=lld -mprefer-vector-width=256 -fno-trapping-math -fomit-frame-pointer -fstrict-aliasing -fslp-vectorize -ffp-model=fast -fvectorize -funroll-loops"
+rem ---------------------------------------------------------------------------
+rem Which x86-64 microarchitecture to target. The default is x86-64-v2, the
+rem second level of the x86-64 psABI: baseline plus SSE3, SSSE3, SSE4.1,
+rem SSE4.2, POPCNT, CMPXCHG16B and LAHF/SAHF. That is a level, not a chip, so
+rem the binary still runs on anything meeting the level (Intel Nehalem 2008+,
+rem AMD Bulldozer 2011+) instead of being tuned for one vendor's core. clang
+rem takes these names directly; clang-cl lists them all with -march= :
+rem   x86-64, x86-64-v2, x86-64-v3, x86-64-v4   plus every chip name
+rem                                                   (znver1..5, skylake, ...)
+rem Override it:
+rem   set "CLANG_ARCH=x86-64"      the most portable build
+rem   set "CLANG_ARCH=x86-64-v3"   AVX2 + FMA, Haswell 2013+ / Zen 3+
+rem   set "CLANG_ARCH=znver3"      Zen 3 scheduling model, AVX2 codegen
+rem CLANG_ARCH=0 means the same as x86-64.
+rem ---------------------------------------------------------------------------
+if not defined CLANG_ARCH set "CLANG_ARCH=x86-64-v2"
+if "%CLANG_ARCH%"=="0" set "CLANG_ARCH=x86-64"
+
+rem An old clang that has never heard of the level must not kill the build.
+rem Probe it on a trivial file, then fall back to the level every clang has
+rem always had, with a warning so nobody mistakes the fallback for the request.
+set "PROBE_DIR=%~dp0..\_work"
+if not exist "%PROBE_DIR%" mkdir "%PROBE_DIR%"
+>"%PROBE_DIR%\arch_probe.c" echo int main(void){return 0;}
+"%CC%" /nologo -march=%CLANG_ARCH% /c "%PROBE_DIR%\arch_probe.c" -o "%PROBE_DIR%\arch_probe.obj"
+if not errorlevel 1 goto :arch_ok
+echo -march=%CLANG_ARCH% is not accepted by the clang in %CLANG_DIR%.
+echo Building -march=x86-64 instead. A newer clang, or one of the chip names
+echo above, gets the level you asked for.
+set "CLANG_ARCH=x86-64"
+"%CC%" /nologo -march=x86-64 /c "%PROBE_DIR%\arch_probe.c" -o "%PROBE_DIR%\arch_probe.obj"
+if errorlevel 1 exit /b 1
+:arch_ok
+del "%PROBE_DIR%\arch_probe.*" >nul 2>&1
+set "ARCH=-march=%CLANG_ARCH%"
+echo target: %CLANG_ARCH%
+
+set "OPT=/clang:-O3 %ARCH% -flto=thin -fuse-ld=lld -fno-trapping-math -fomit-frame-pointer -fstrict-aliasing -fslp-vectorize -ffp-model=fast -fvectorize -funroll-loops"
 rem Common compile baseline - every target uses it, only the language
 rem standard may differ per target (see the c++20 note on the worker).
 set "CXXBASE=/nologo %OPT% /EHsc /W3 /MD"
@@ -137,5 +177,5 @@ del spout_compile_check.obj spout_adapter_check.obj spout_roundtrip.obj >nul 2>&
 
 echo === [6/6] done ===
 endlocal
-echo all targets built: clang-cl -O3 -march=znver3 -flto=thin -fuse-ld=lld.
+echo all targets built: clang-cl -O3 -march=%CLANG_ARCH% -flto=thin -fuse-ld=lld.
 exit /b 0

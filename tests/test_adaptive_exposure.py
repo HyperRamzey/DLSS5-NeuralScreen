@@ -100,8 +100,36 @@ def main() -> int:
     if "NR ON" not in out:
         failures.append("NR did not come up with NS_PW=0")
 
-    # 3. The mapping math: defaults dark=0.10 lit=0.40 min=1.00 max=1.10.
-    dark, lit, mn, mx = 0.10, 0.40, 1.00, 1.10
+    # 3. The mapping math. The constants are READ FROM THE PRODUCT, not typed
+    #    in here: the earlier version hardcoded 0.10/0.40/1.00/1.10, so
+    #    changing the C++ default left the test validating its own copy
+    #    (audit: WEAK). PwEnvFloat is called with a default, so the literal
+    #    after NS_PW_<NAME> in the worker source IS the default.
+    cpp = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
+        encoding="utf-8", errors="replace")
+
+    def _default(name: str) -> float:
+        m = re.search(rf'PwEnvFloat\(\s*"{name}"\s*,\s*([0-9.]+)f\s*\)', cpp)
+        if not m:
+            raise AssertionError(f"{name} default not found in the worker")
+        return float(m.group(1))
+
+    dark, lit, mn, mx = (_default("NS_PW_DARK"), _default("NS_PW_LIT"),
+                         _default("NS_PW_MIN"), _default("NS_PW_MAX"))
+    tau = _default("NS_PW_TAU")
+    print(f"    defaults from the worker: dark={dark} lit={lit} "
+          f"min={mn} max={mx} tau={tau}")
+    # And the shape of the mapping the worker actually applies.
+    for needle, what in (("smoothstep", "the smoothstep"),
+                         ("g_pw_exposure", "the smoothed exposure value")):
+        if needle not in cpp:
+            failures.append(f"{what} is gone from the worker - this test's "
+                            f"model of the mapping no longer describes it")
+    if not (0.0 <= dark < lit <= 1.0):
+        failures.append(f"the thresholds are not a usable window: "
+                        f"dark={dark} lit={lit}")
+    if not (mn <= mx):
+        failures.append(f"the exposure range is inverted: min={mn} max={mx}")
     # A dark scene (avg below dark) gets the max exposure.
     if not math.isclose(_target(0.0, dark, lit, mn, mx), mx, rel_tol=1e-6):
         failures.append("dark scene does not get the max exposure")
@@ -121,11 +149,11 @@ def main() -> int:
         if not (mn - 1e-9 <= v <= mx + 1e-9):
             failures.append(f"exposure {v} out of range at avg={avg}")
 
-    # 4. The EMA converges to the target (tau=0.5, 60 fps).
+    # 4. The EMA converges to the target (the worker's own tau, 60 fps).
     target = _target(0.05, dark, lit, mn, mx)  # a dark-ish scene
     value = 1.0
     for _ in range(600):  # 10 s at 60 fps
-        a = 1.0 - math.exp(-(1.0 / 60.0) / 0.5)
+        a = 1.0 - math.exp(-(1.0 / 60.0) / max(tau, 1e-6))
         value += (target - value) * a
     if abs(value - target) > 1e-3:
         failures.append(f"EMA did not converge: {value} vs {target}")

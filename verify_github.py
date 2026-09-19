@@ -461,6 +461,30 @@ def validate_manifest_git_binding(
     return failures
 
 
+def asset_set_failures(
+    required: set[str], assets: Mapping[str, dict], tag: str = "",
+) -> list[str]:
+    """Every required release asset is present, and nothing else is.
+
+    A "required are present" check alone lets anything else ride along
+    unnoticed. Documentation images were uploaded that way: they are not part
+    of a release set (the verifier reads them from the tagged Git blobs, so
+    nothing needs them as assets) and a downloader has no use for them next to
+    the archive. An extra asset is either a mistake or a stray, so it is
+    reported rather than ignored.
+    """
+    label = f"release {tag}" if tag else "release"
+    failures = [f"{label} is missing asset {name}" for name in sorted(required)
+                if name not in assets]
+    extra = sorted(set(assets) - required)
+    if extra:
+        failures.append(
+            f"{label} carries {len(extra)} asset(s) beyond the release set: "
+            f"{', '.join(extra)}"
+        )
+    return failures
+
+
 def validate_release_set(
     directory: Path,
     *,
@@ -812,9 +836,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         assets: Mapping[str, dict] = {
             asset["name"]: asset for asset in release.get("assets", [])
         }
-        for name in sorted(required_assets):
-            if name not in assets:
-                failures.append(f"release {tag} is missing asset {name}")
+        failures.extend(asset_set_failures(required_assets, assets, tag))
         for name in (archive_name, CHECKSUMS, RUNTIME_MANIFEST, THIRD_PARTY_NOTICES):
             asset = assets.get(name)
             if asset and not _fetch_asset(asset["id"], temp / name):

@@ -73,6 +73,33 @@ class CURSORINFO(ctypes.Structure):
 CURSOR_SHOWING = 0x00000001
 
 
+def window_can_cover(rect, virtual: tuple[int, int, int, int],
+                     min_px: int = 16) -> bool:
+    """Whether a window's rect could be covering our layer on the desktop.
+
+    The z-order guard (`Display._top_real_window`) walks the stack and needs
+    to skip helper windows: invisible 0x0 IME/MSCTFIME entries, a 1x1 dwm
+    thumbnail helper, an off-screen Narrator helper at -40000,-40000. A
+    window counts only when it is big enough in both dimensions AND its rect
+    intersects the VIRTUAL desktop - every monitor, not the primary one.
+
+    The virtual bounds matter on more than one monitor: on a second screen
+    to the LEFT of the primary a full-screen window is (-2560, 0, 0, 1440),
+    and a primary-only test (`rect.right > 0`) rejected it, so the guard
+    found no real window and the HUD was never re-asserted above the picture
+    - the panel stayed hidden while still being baked into screenshots
+    (issue #89).
+
+    Extracted from the walk so the rule can be tested without a second
+    monitor: `virtual` is a plain (x, y, w, h) tuple.
+    """
+    left, top, right, bottom = (rect.left, rect.top, rect.right, rect.bottom)
+    if right - left < min_px or bottom - top < min_px:
+        return False
+    vx, vy, vw, vh = virtual
+    return right > vx and left < vx + vw and bottom > vy and top < vy + vh
+
+
 def system_cursor_visible() -> bool:
     """Is there a mouse pointer on screen right now? (Nothing uses this yet.)
 
@@ -134,6 +161,16 @@ SWITCH_ALPHA = 170                 # mode-switch overlay: the live desktop shows
 # animated by the loop. Seconds.
 SWITCH_FADE_IN = 0.21
 SWITCH_FADE_OUT = 0.26
+# A veil that has been up this long is no longer a transition: the frame
+# that normally takes it down never came. That is the NR-OFF rebuild path -
+# the loop takes the low-cost branch, no frame is ever received, and while
+# the veil is up draw_overlay refuses to paint the menu, so a stuck veil
+# hides the whole interface (issues #89/#96: "the window becomes
+# invisible"). This is a BACKSTOP, not the main way down: main's idle
+# branch takes the veil down itself. It must stay behind the worker
+# watchdog (a 5 s silent-recv timeout plus a restart) so a slow-but-alive
+# worker still gets its veil. Seconds.
+SWITCH_HOLD_MAX = 8.0
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 
 # Chroma key for HUD mode: pixels of exactly this colour are not drawn at all
@@ -389,6 +426,10 @@ class Display:
         self._switch_alpha = 0.0     # current veil alpha, 0..SWITCH_ALPHA
         self._switch_alpha0 = 0.0    # the alpha the fade-out started from
         self._switch_ramp_t0 = 0.0   # when the fade-out started
+        # The veil must never outlive an honest transition: past this
+        # monotonic deadline it is dropped outright, whatever phase it is
+        # in. Armed by enter_switch_mode, cleared by the teardown.
+        self._switch_deadline = 0.0
         self._switch_ret = (0, 0)  # layer size to restore on exit
         self._switch_pending = None  # deferred resize (w, h) while active
 
@@ -1041,33 +1082,60 @@ class Display:
 
         A window counts only if it can actually be covering our layer:
         visible, at least HELPER_MIN_PX in both dimensions, and its rect
-        intersecting the virtual screen (the Narrator helper lives at
-        -40000,-40000).
+        intersecting the VIRTUAL desktop - not the primary screen. On a
+        second monitor to the left of the primary every window has a
+        negative x (a full-screen window on it is (-2560, 0, 0, 1440)), and
+        the old test `rect.right > 0 and rect.left < screen_w` rejected it:
+        the walk found no real window, the HUD was never re-asserted above
+        the picture, and the panel stayed hidden while still being drawn
+        (#89 - visible in a screenshot, invisible on screen). The Narrator
+        helper lives at -40000,-40000, so it still fails the intersection
+        with the virtual bounds.
         """
         HELPER_MIN_PX = 16
         try:
-            screen_w = user32.GetSystemMetrics(0)    # SM_CXSCREEN
-            screen_h = user32.GetSystemMetrics(1)    # SM_CYSCREEN
-            if screen_w <= 0:
-                screen_w = 3840
-            if screen_h <= 0:
-                screen_h = 2160
             hwnd = user32.GetTopWindow(None)
             for _ in range(16):        # bounded walk - the stack is shallow
                 if not hwnd:
                     return None
+                ok = False
                 if user32.IsWindowVisible(hwnd):
                     rect = wintypes.RECT()
-                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)) and \
-                            (rect.right - rect.left) >= HELPER_MIN_PX and \
-                            (rect.bottom - rect.top) >= HELPER_MIN_PX and \
-                            rect.right > 0 and rect.bottom > 0 and \
-                            rect.left < screen_w and rect.top < screen_h:
-                        return hwnd
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        ok = window_can_cover(rect, self._virtual_screen(),
+                                              HELPER_MIN_PX)
+                if ok:
+                    return hwnd
                 hwnd = user32.GetWindow(hwnd, 2)   # GW_HWNDNEXT
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _virtual_screen() -> tuple[int, int, int, int]:
+        """The whole desktop as (x, y, w, h) - negative origins included.
+
+        SM_XVIRTUALSCREEN..SM_CYVIRTUALSCREEN cover every monitor; the plain
+        screen metrics answer for the PRIMARY one only, which is why a window
+        on a left-hand monitor (negative x) used to be invisible to the
+        z-order guard (#89).
+        """
+        try:
+            vx = user32.GetSystemMetrics(76)      # SM_XVIRTUALSCREEN
+            vy = user32.GetSystemMetrics(77)      # SM_YVIRTUALSCREEN
+            vw = user32.GetSystemMetrics(78)      # SM_CXVIRTUALSCREEN
+            vh = user32.GetSystemMetrics(79)      # SM_CYVIRTUALSCREEN
+            if vw > 0 and vh > 0:
+                return vx, vy, vw, vh
+            if vw <= 0:
+                vx, vw = 0, 1
+            if vh <= 0:
+                vy, vh = 0, 1
+            return vx, vy, vw, vh
+        except Exception:
+            # A headless or odd session: an empty desktop is the safe answer
+            # (the guard then skips nothing, which is what it did before).
+            return 0, 0, 0, 0
 
     def enter_switch_mode(self, last_frame: "np.ndarray | None" = None,
                           full_w: int = 0, full_h: int = 0) -> None:
@@ -1091,6 +1159,7 @@ class Display:
             # full instead of letting it dissolve under the rebuild.
             self._switch_phase = "on"
             self._switch_alpha = float(SWITCH_ALPHA)
+            self._switch_deadline = time.monotonic() + SWITCH_HOLD_MAX
             if last_frame is not None:
                 self._freeze_switch_frame(last_frame, *self.screen.get_size())
             self._apply_switch_window_alpha()
@@ -1102,6 +1171,7 @@ class Display:
         self._switch_active = True
         self._switch_phase = "on"
         self._switch_mark_t0 = time.monotonic()
+        self._switch_deadline = self._switch_mark_t0 + SWITCH_HOLD_MAX
         self._switch_ret = (cw, ch)
         self._switch_alpha = 0.0
         print(f"[main] switch overlay ON (layer {cw}x{ch} -> {fw}x{fh}, "
@@ -1254,6 +1324,18 @@ class Display:
         fading out. The layer belongs to the veil until this is False."""
         return self._switch_active
 
+    def drop_switch_mode(self) -> None:
+        """Take the veil down without waiting for a fade or a frame.
+
+        The fade is advanced by draw_overlay, so a caller that is not
+        drawing (the idle branch with the menu closed, where no frame will
+        ever arrive to end the transition honestly) has to end it here.
+        No-op when no veil is up.
+        """
+        if self._switch_active:
+            print("[main] switch overlay dropped (no frame to end it)")
+            self._drop_switch_now()
+
     def _finish_switch_if_due(self, now: float) -> None:
         """Complete a fade ramp and, for the out phase, tear the veil down.
 
@@ -1262,21 +1344,41 @@ class Display:
         still comes down. The teardown is the old instant path - restore
         the pipeline size, the layered attributes, the cursor - now run
         once the fade is over.
+
+        The hold cap is checked first: a veil past SWITCH_HOLD_MAX is
+        dropped even with no frame and no draw on the way (the NR-OFF
+        rebuild path), because nothing else would ever take it down.
         """
         if not self._switch_active:
+            return
+        if self._switch_deadline and now >= self._switch_deadline:
+            self._drop_switch_now()
             return
         if self._switch_phase == "out":
             frac = (now - self._switch_ramp_t0) / SWITCH_FADE_OUT
             self._switch_alpha = max(0.0, self._switch_alpha0 * (1.0 - frac))
             self._apply_switch_window_alpha()
             if self._switch_alpha <= 0.0:
-                self._switch_active = False
-                self._switch_phase = "off"
-                self._switch_alpha = 0.0
-                self._switch_dim_soft = None
-                self._switch_base = None
-                self._switch_fill = None
-                self._teardown_switch_overlay()
+                self._drop_switch_now()
+
+    def _drop_switch_now(self) -> None:
+        """Take the veil down at once, whatever phase it is in.
+
+        The honest way down is exit_switch_mode() plus a drawn frame, but
+        the NR-OFF rebuild path has neither: the loop sits in the idle
+        branch, no frame is received, and draw_overlay refuses to paint
+        anything while the veil is up - so the menu stays covered by the
+        frozen picture and is unreachable (issues #89/#96). Called from
+        the fade completion and from the hold cap.
+        """
+        self._switch_active = False
+        self._switch_phase = "off"
+        self._switch_alpha = 0.0
+        self._switch_deadline = 0.0
+        self._switch_dim_soft = None
+        self._switch_base = None
+        self._switch_fill = None
+        self._teardown_switch_overlay()
 
     def _freeze_switch_frame(self, last_frame, fw: int, fh: int) -> None:
         """Build the veil's two layers from the last picture.

@@ -10,7 +10,9 @@ above the floor); a sub-floor shift (0.2 px) is zeroed; a static frame
 produces no motion at all.
 """
 import os
+import re
 import sys
+from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
@@ -60,17 +62,74 @@ def main() -> int:
     if mag.max() < 1.0:
         failures.append(f"a 4 px shift was zeroed: max {mag.max():.3f}")
 
-    # 3. A sub-floor shift in WORK pixels, independent of the flow grid.
-    g3 = TemporalGuideGenerator(W, H, flow_width=FW, emit_small=True)
-    g3.process(_frame(0))
+    # 3. The noise floor itself. The old version injected a 1 px shift and
+    #    could not fail: a 1 px move of that bar is below the scene gate
+    #    (guides.py:308), so DIS was never called, and even when it was, the
+    #    static-hypothesis test dropped the vector before the floor could be
+    #    reached (audit: WEAK). The floor is tested here in isolation:
+    #      - a gray pair that passes the scene gate, so the flow path runs;
+    #      - dis.calc stubbed to return ONE known vector;
+    #      - _moved stubbed to say "yes, it explains the pixel", so the
+    #        static hypothesis cannot be what drops it.
+    #    Only the floor is left, and it has to be what decides.
     from types import SimpleNamespace
-    noise = np.zeros((FH, FW, 2), np.float32)
-    noise[..., 0] = .1 * FW / W
-    g3.dis = SimpleNamespace(calc=lambda *_: noise)
-    out3 = g3.process(_frame(1))  # 1 px at 1280 wide = 0.25 px in flow space
-    mag3 = np.hypot(out3.motion[..., 0], out3.motion[..., 1])
-    if mag3.max() > 0.5:
-        failures.append(f"a sub-floor shift survived: max {mag3.max():.3f}")
+
+    # The product's OWN floor, read from the source: if it is turned off
+    # (0.0) the feature is gone, and the case below would otherwise still
+    # pass because it sets its own value (audit: WEAK - the old version could
+    # not fail on any mutation of the rule it names).
+    src = (Path(BASE) / "guides.py").read_text(encoding="utf-8")
+    mfloor = re.search(r"self\._flow_noise_floor\s*=\s*([0-9.]+)", src)
+    if not mfloor:
+        failures.append("guides.py no longer sets _flow_noise_floor - the "
+                        "noise floor is not configured at all")
+        product_floor = 0.5
+    else:
+        product_floor = float(mfloor.group(1))
+        print(f"    the product's noise floor: {product_floor}")
+        if product_floor <= 0.0:
+            failures.append(
+                f"the product's noise floor is {product_floor} - DIS noise "
+                f"vectors are no longer zeroed and NGX smears text/UI")
+
+    # The threshold has to be READ from the attribute, not hardcoded: use the
+    # product's own value, not one this test hands it.
+    def _floor_case(vec, floor):
+        g = TemporalGuideGenerator(W, H, flow_width=FW, emit_small=True)
+        if floor is not None:
+            g._flow_noise_floor = floor
+        # Two gray frames a little apart: above the 0.001 gate, well below
+        # the 0.24 reset. Gray is flow-sized, so it is used as-is.
+        a = np.full((FH, FW), 40, np.uint8)
+        b = np.full((FH, FW), 60, np.uint8)
+        g.process(gray=a)
+        flow = np.zeros((FH, FW, 2), np.float32)
+        flow[..., 0] = vec[0]
+        flow[..., 1] = vec[1]
+        g.dis = SimpleNamespace(calc=lambda *_: flow.copy())
+        g._moved = lambda *a, **k: np.ones((FH, FW), bool)
+        out = g.process(gray=b)
+        return float(np.hypot(out.motion[..., 0], out.motion[..., 1]).max())
+
+    # A vector under the PRODUCT's floor is zeroed (floor=None keeps its value)...
+    half = max(product_floor / 2.0, 1e-6)
+    sub = _floor_case((half, 0.0), None)
+    print(f"    |v|={half:.3f} with the product floor -> max motion {sub:.3f}")
+    if sub > 1e-6:
+        failures.append(f"a sub-floor vector survived: {sub:.3f}")
+    # ...and the SAME vector survives when the floor is switched off, so the
+    # case above cannot be passing for some other reason.
+    sub_open = _floor_case((half, 0.0), 0.0)
+    if sub_open <= 1e-6:
+        failures.append("with the floor off the same vector is still zeroed - "
+                        "something else is dropping it, so the floor is not "
+                        "what this case measures")
+    # And a vector clearly above the floor is kept.
+    over = _floor_case((product_floor + 3.0, 0.0), None)
+    print(f"    |v|={product_floor + 3.0:.3f} with the product floor "
+          f"-> max motion {over:.3f}")
+    if over <= 1e-6:
+        failures.append(f"an above-floor vector was zeroed: {over:.3f}")
 
     print("=" * 60)
     if failures:

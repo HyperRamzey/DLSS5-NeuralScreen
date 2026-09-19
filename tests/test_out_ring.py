@@ -64,18 +64,45 @@ def main() -> int:
         failures.append(f"read_out returned shape {frame.shape}, want {(H, W, 4)}")
 
     # 2. Nothing held: the buffers are reused and the ring stays bounded.
-    seen = set()
-    for i in range(40):
-        publish(shm, i % 251)
-        got = shm.read_out()
-        seen.add(id(got))
-        del got
+    #
+    # Counting allocations, not addresses. The old check collected id() of
+    # buffers it had already released, and CPython hands the same address back
+    # for a freed object of the same size - so "few distinct ids" was true even
+    # when every call allocated a fresh 33 MB array. Proven: replacing
+    # _next_out_slot() with np.empty_like() (the exact regression this test
+    # names in its docstring) left that version green.
+    #
+    # np.empty_like is the allocation the ring exists to remove, so it is
+    # counted directly. The FIRST read allocates one slot - the ring starts
+    # empty and a destination has to exist before anything can be reused - so
+    # the count is taken from the second read on. `del got` drops the
+    # reference before the next read, which is what makes every slot free
+    # again.
+    allocations = 0
+    warmed = False
+    real_empty_like = np.empty_like
+
+    def counting_empty_like(*args, **kwargs):
+        nonlocal allocations
+        if warmed:
+            allocations += 1
+        return real_empty_like(*args, **kwargs)
+
+    np.empty_like = counting_empty_like
+    try:
+        for i in range(40):
+            publish(shm, i % 251)
+            got = shm.read_out()
+            del got
+            warmed = True
+    finally:
+        np.empty_like = real_empty_like
     if len(shm._out_ring) > OUT_RING_SLOTS:
         failures.append(f"the ring grew to {len(shm._out_ring)} slots, "
                         f"cap is {OUT_RING_SLOTS}")
-    if len(seen) > OUT_RING_SLOTS + 1:
-        failures.append(f"{len(seen)} distinct buffers over 40 reads - "
-                        f"they are not being reused")
+    if allocations:
+        failures.append(f"{allocations} fresh buffers allocated over 39 reads "
+                        f"with nothing held - the ring is not being reused")
 
     # 3. THE guarantee: everything held keeps its own content.
     shm2 = make_shm()

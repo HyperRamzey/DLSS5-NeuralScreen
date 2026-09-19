@@ -24,6 +24,7 @@ Checked:
 """
 import os
 import re
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -42,17 +43,91 @@ def source(name: str) -> str:
         return fh.read()
 
 
-def restart_sites_forget(src: str, window: int = 14) -> list:
-    """Line numbers of restart_worker() calls with no forget_verdict after."""
-    lines = src.splitlines()
-    missing = []
-    for i, line in enumerate(lines):
-        if "restart_worker(" not in line or "def restart_worker" in line:
+def scan_targets() -> list:
+    """Every tracked .py file that could call restart_worker().
+
+    This used to be a hand-written pair (main.py, pipeline.py), and a fifth
+    call site in commands.py - the manual revive - went unnoticed because it
+    was in neither. A list of files to check is itself a thing to maintain, so
+    the check derives it from git: any tracked source can hold a call, and a
+    new one is covered the moment it is committed.
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=BASE, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    ).stdout
+    names = []
+    for line in out.splitlines():
+        name = line.strip()
+        if not name or "/" in name or name.startswith("test"):
             continue
-        after = "\n".join(lines[i:i + window])
-        if "forget_verdict" not in after:
-            missing.append(i + 1)
-    return missing
+        if name in ("build_release_zip.py", "verify_github.py"):
+            continue  # build tooling, never starts a worker
+        names.append(name)
+    return sorted(names)
+
+
+def restart_sites_forget(src: str) -> list:
+    """Line numbers of restart_worker() calls whose block never forgets.
+
+    Parsed, not pattern-matched. Three text-based shapes failed on real code:
+    a fixed 14-line window let a comment inside the block push the call out of
+    range, a naive indent walk stopped on the call's own continuation lines,
+    and a whole-file search would pass on an unrelated call far below.
+
+    The rule, in AST terms: find every call to restart_worker, take the
+    innermost block that contains it (a `try:` body, a branch, a function
+    body), and require a forget_verdict call in that same block at or after
+    the restart call. That is exactly the contract channels.py states, and it
+    survives reindentation, comments and multi-line calls.
+    """
+    import ast
+
+    tree = ast.parse(src)
+    missing = []
+
+    def block_of(node, parents):
+        """The statement list directly containing the statement that holds
+        `node`, plus that statement."""
+        statement = node
+        for parent in reversed(parents):
+            if isinstance(parent, ast.stmt):
+                statement = parent
+                break
+        for parent in reversed(parents):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(parent, field, None)
+                if isinstance(block, list) and statement in block:
+                    return block, statement
+        return None, None
+
+    def has_forget_after(block, statement):
+        seen = False
+        for stmt in block:
+            if stmt is statement:
+                seen = True
+                continue
+            if not seen:
+                continue
+            for inner in ast.walk(stmt):
+                if isinstance(inner, ast.Call):
+                    name = ast.unparse(inner.func)
+                    if name.endswith("forget_verdict"):
+                        return True
+        return False
+
+    def visit(node, parents):
+        if isinstance(node, ast.Call):
+            name = ast.unparse(node.func)
+            if name.endswith("restart_worker"):
+                block, statement = block_of(node, parents)
+                if block is None or not has_forget_after(block, statement):
+                    missing.append(node.lineno)
+        for child in ast.iter_child_nodes(node):
+            visit(child, parents + [node])
+
+    visit(tree, [])
+    return sorted(missing)
 
 
 def main() -> int:
@@ -67,7 +142,7 @@ def main() -> int:
         failures.append(f"gpu_alerted is {st.gpu_alerted!r}, want False")
 
     # 2. Every restart path forgets the verdict.
-    for name in ("main.py", "pipeline.py"):
+    for name in scan_targets():
         missing = restart_sites_forget(source(name))
         if missing:
             failures.append(f"{name}: restart_worker at line(s) {missing} "

@@ -8,7 +8,7 @@ The current backend is DLSS Frame Generation. v1.13 does not contain an FSR FG
 fallback for RTX 20/30; that is a separate research candidate rather than a
 compatibility promise.
 
-Generated frames follow neural rendering and optional SR. A separate presenter
+Generated frames follow neural rendering. A separate presenter
 paces bounded frame slots and drops outdated generated frames. It still shares
 the GPU command queue with neural rendering; this does not guarantee lower latency
 or higher displayed FPS under GPU saturation.
@@ -24,7 +24,7 @@ Bypass and FG failures return to ordinary presentation.
 Validation:
 - `runtime/python.exe tests/test_framegen_controls.py`
 - `runtime/python.exe tests/test_frame_generation.py --run`
-- `runtime/python.exe tests/test_frame_generation.py --hdr --dynamic --sr --check-pixels`
+- `runtime/python.exe tests/test_frame_generation.py --hdr --dynamic --check-pixels`
 - `native/test-hdr.bat`
 
 Native tests require an NVIDIA GPU; HDR tests require an HDR-enabled display.

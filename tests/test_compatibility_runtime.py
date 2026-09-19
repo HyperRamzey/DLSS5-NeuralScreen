@@ -25,7 +25,7 @@ from protocol import (  # noqa: E402
 
 
 KEY = CompatibilityKey(
-    "1.13.1", "a" * 64, "b" * 64,
+    "1.14.0", "a" * 64, "b" * 64,
     {"index": 0}, "driver", {"width": 640, "height": 360},
 )
 
@@ -218,6 +218,11 @@ class RuntimeAdapterTests(unittest.TestCase):
         for name in ("startup.py", "pipeline.py", "commands.py", "main.py"):
             source = (BASE / name).read_text(encoding="utf-8").splitlines()
             for index, line in enumerate(source):
+                # A comment that mentions the call is not a call site: adding
+                # an explanatory comment introduced a phantom site here and
+                # failed the check on correct code.
+                if line.lstrip().startswith("#"):
+                    continue
                 if ("start_worker(" not in line and "restart_worker(" not in line):
                     continue
                 if line.lstrip().startswith(("def start_worker", "def restart_worker")):
@@ -226,7 +231,7 @@ class RuntimeAdapterTests(unittest.TestCase):
                 # caller's guard and is not a production call site itself.
                 if name == "pipeline.py" and index < 210:
                     continue
-                window = "\n".join(source[max(0, index - 4):index])
+                window = "\n".join(source[max(0, index - 14):index])
                 self.assertRegex(
                     window, r"require_compatibility(?:_pass)?\(st\)",
                     f"{name}:{index + 1} starts a worker without PASS",

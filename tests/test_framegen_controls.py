@@ -174,9 +174,76 @@ def _fg_verdict_checks() -> None:
                           display=SimpleNamespace(alert=lambda *a, **k: None))
     settings_io.refresh_fg_ok(st3)
     assert st3.cfg["frame_generation"] is True, "a stale refusal must not flip it"
-    print("    fg_verdict: refusal flips + alerts once; success and stale do not")
+    # A refused multiplier that STEPPED DOWN and then built (issue #100) must
+    # not flip the switch: the card runs Frame Generation, just at 2x.
+    logs_step = ["[fg] UI: on, 4x",
+                 "[fg] CreateFeature failed 0xBAD00005",
+                 "[fg] 4x refused 0xBAD00005; stepping down to 2x",
+                 "[fg] UI: on, 2x (capped by the runtime ceiling)",
+                 "[fg] 2x enabled at 3840x2160, format=28"]
+    st4 = SimpleNamespace(cfg={"frame_generation": True}, worker_logs=logs_step,
+                          fg_alerted=False, lang="en",
+                          display=SimpleNamespace(alert=lambda *a, **k: alerts.append(a)))
+    settings_io.refresh_fg_ok(st4)
+    assert st4.cfg["frame_generation"] is True, \
+        "a step-down that landed on a working 2x must not flip the switch"
+    assert st4.fg_alerted is False, "no alert: Frame Generation is running"
+    # A step-down still in flight (no verdict yet) must not flip it either.
+    st5 = SimpleNamespace(cfg={"frame_generation": True},
+                          worker_logs=["[fg] UI: on, 4x",
+                                       "[fg] CreateFeature failed 0xBAD00005",
+                                       "[fg] 4x refused 0xBAD00005; stepping down to 2x"],
+                          fg_alerted=False, lang="en",
+                          display=SimpleNamespace(alert=lambda *a, **k: alerts.append(a)))
+    settings_io.refresh_fg_ok(st5)
+    assert st5.cfg["frame_generation"] is True, \
+        "a retry in flight is not a verdict"
+    print("    fg_verdict: refusal flips + alerts once; success, stale and "
+          "a step-down do not")
+
+
+def _fg_active_multiplier_checks() -> None:
+    """Issue #100: the panel must be able to say which step really runs.
+
+    A card whose runtime stops at 2x answers 3x/4x with a refusal; the worker
+    steps down instead of failing, so the pick and the live step differ. The
+    presenter names the step it ran in the FPS line, and this parser is what
+    the panel reads - it must report what HAPPENED, never the request.
+    """
+    from types import SimpleNamespace
+
+    def mult(lines):
+        return settings_io._fg_active_multiplier(
+            SimpleNamespace(worker_logs=list(lines)))
+
+    cases = [
+        (["[fg] displayed 149.7 FPS (real + generated, 4x); experimental"], 4),
+        (["[fg] displayed 118.5 FPS (real + generated, 2x); experimental"], 2),
+        (["[fg] displayed 90.0 FPS (real + generated, 3x); experimental"], 3),
+        # FG off: no live step to report.
+        (["[fg] UI: off, 2x"], None),
+        # The newest line wins: the step-down story, as the worker logs it.
+        (["[fg] UI: on, 4x",
+          "[fg] 4x refused 0xBAD00005; stepping down to 2x",
+          "[fg] UI: on, 2x (capped by the runtime ceiling)",
+          "[fg] displayed 118.5 FPS (real + generated, 2x); experimental"], 2),
+        # An older format (before the step was in the line) reads as unknown,
+        # not as a wrong number.
+        (["[fg] displayed 87.1 FPS (real + generated); experimental"], None),
+    ]
+    for lines, want in cases:
+        got = mult(lines)
+        assert got == want, (lines[-1], got, want)
+
+    # The FPS parser must keep working beside it (same line, same contract).
+    st = SimpleNamespace(worker_logs=[
+        "[fg] displayed 149.7 FPS (real + generated, 4x); experimental"])
+    assert settings_io._fg_displayed_fps(st) == 149.7, "the rate parser broke"
+    print("    fg_multiplier: the live step is read from the presenter's own "
+          "line, never from the request")
 
 
 if __name__ == "__main__":
     main()
     _fg_verdict_checks()
+    _fg_active_multiplier_checks()

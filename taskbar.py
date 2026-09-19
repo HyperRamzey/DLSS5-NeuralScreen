@@ -87,6 +87,12 @@ class TaskbarWindow:
         self._thread: threading.Thread | None = None
         self._proc = WNDPROC(self._wnd_proc)
         self._last_cmd = 0.0
+        # Did WE hold the foreground just before this message? A click on our
+        # already-active button and the fallback activation that follows a
+        # foreign window being minimised arrive as the same WM_NCACTIVATE(1) -
+        # measured on the bench - so the state around the message is what tells
+        # them apart (#96).
+        self._was_active = False
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam) -> int:
         if msg == WM_ACTIVATE:
@@ -97,8 +103,9 @@ class TaskbarWindow:
             # can the cursor position alone, because switching to another
             # app also happens with the cursor over the taskbar (#93). The
             # full test lives in _is_user_click.
-            if self._is_user_click(wparam):
+            if self._is_user_click(wparam, lparam or 0):
                 self._emit("show_settings")
+            self._was_active = wparam in (WA_ACTIVE, WA_CLICKACTIVE)
             return 0
         if msg == WM_NCACTIVATE:
             # The click on an ALREADY-active taskbar button arrives as
@@ -112,9 +119,16 @@ class TaskbarWindow:
             # clicks another app's icon, this message arrives for that
             # activation too, and showing our menu then is the reported
             # bug (#93).
-            if wparam == 1 and self._cursor_over_taskbar() and \
-                    self._is_foreground_ours():
+            #
+            # AND we must have been the foreground one ALREADY: when the
+            # previous foreground window is minimised, Windows activates us
+            # as a fallback and this same message arrives - the menu opening
+            # by itself while the user only touched another program (#96).
+            # Only the already-active case is a click on our own button.
+            if wparam == 1 and self._was_active and \
+                    self._cursor_over_taskbar() and self._is_foreground_ours():
                 self._emit("show_settings")
+            self._was_active = bool(wparam)
             return 0
         if msg == WM_SYSCOMMAND and (wparam & 0xFFF0) in (SC_MINIMIZE, SC_RESTORE):
             # The taskbar button sends these when the window is already
@@ -176,7 +190,7 @@ class TaskbarWindow:
         except Exception:
             return False
 
-    def _is_user_click(self, wparam: int) -> bool:
+    def _is_user_click(self, wparam: int, deactivated: int = 0) -> bool:
         """Whether this activation is a click on OUR taskbar button.
 
         wparam alone cannot say it: Windows reports a click on our button and
@@ -194,11 +208,19 @@ class TaskbarWindow:
         counts only when our window is still the foreground one AND the
         cursor is over the taskbar. WA_CLICKACTIVE stays an unconditional
         click (Windows sends it only for a real click on this window).
+
+        The window that LOST the activation arrives in lParam, and a
+        MINIMISED one means this is the fallback activation Windows hands us
+        after another window is minimised - not a click (#96, measured: the
+        real fallback carries a minimised window, a real click does not).
         """
         if wparam == WA_CLICKACTIVE:
             return True
         if wparam != WA_ACTIVE or not self._cursor_over_taskbar():
             return False
+        if deactivated and user32.IsWindow(deactivated) and \
+                user32.IsIconic(deactivated):
+            return False                       # the previous window went away
         # A different application took the foreground: this was a click on
         # ITS icon, not on ours.
         return self._is_foreground_ours()

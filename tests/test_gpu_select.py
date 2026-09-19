@@ -98,19 +98,32 @@ def main() -> int:
         else:
             os.environ["NS_GPU"] = before
 
-    # 5. The payload the menu renders: every card labelled by its DXGI index,
-    #    the current one selected. The index is the identity - it is what
-    #    NS_GPU takes and what the worker prints in its adapter lines.
-    real_list = capture.list_adapters
+    # 5. The label the menu renders comes from the PRODUCT (`_gpu_label`),
+    #    not from a list this test rebuilds. The old version formatted
+    #    "i: name" itself, so mutating the product's label left it green
+    #    (audit: WEAK). `_gpu_label` is what the picker shows and what issue
+    #    #34 was about: the configured index may name a card that is not
+    #    present, in which case the first usable one is shown.
+    real_list = settings_io.list_adapters
     settings_io.list_adapters = lambda: FAKE
     try:
-        st = types.SimpleNamespace(cfg={"gpu": 1})
-        gpus = [f"{i}: {n}" for i, n in settings_io.list_adapters()]
-        current = next((g for g in gpus if g.startswith("1:")), "")
-        if gpus != ["0: NVIDIA GeForce RTX 5070 Ti", "1: NVIDIA GeForce RTX 4060"]:
-            failures.append(f"the list is {gpus}")
-        if current != "1: NVIDIA GeForce RTX 4060":
-            failures.append(f"the current card is {current!r}")
+        # The configured index names a real card: show exactly it.
+        got = settings_io._gpu_label(1)
+        if got != "1: NVIDIA GeForce RTX 4060":
+            failures.append(f"_gpu_label(1) is {got!r}")
+        # The shipped default is 0, which on a hybrid laptop is the iGPU and
+        # may not be in the list at all - the picker must fall back to the
+        # first usable card rather than showing nothing (issue #34).
+        got_missing = settings_io._gpu_label(9)
+        if got_missing != "0: NVIDIA GeForce RTX 5070 Ti":
+            failures.append(
+                f"_gpu_label(9) is {got_missing!r} - an index that names no "
+                f"card must fall back to the first usable one, not to an "
+                f"empty picker (issue #34)")
+        got_junk = settings_io._gpu_label("not an index")
+        if got_junk != "0: NVIDIA GeForce RTX 5070 Ti":
+            failures.append(f"_gpu_label('not an index') is {got_junk!r}")
+        print(f"    _gpu_label: 1 -> {got!r}; 9 -> {got_missing!r}")
     finally:
         settings_io.list_adapters = real_list
 

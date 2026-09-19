@@ -26,7 +26,7 @@ DEFAULT_LANG = "en"
 # --- Localization: EVERY UI + HUD/alert string ---------------------------
 STRINGS = {
     "en": {
-        "theme": "Theme",
+        "theme": "Тема",
         "monitor": "Monitor",
         "gpu": "GPU",
         "gpu_switched": "GPU switched - the worker restarted",
@@ -176,7 +176,7 @@ STRINGS = {
         "lang_ko": "한국어",
     },
     "ru": {
-        "theme": "Тема",
+        "theme": "Theme",
         "monitor": "Монитор",
         "gpu": "Видеокарта",
         "gpu_switched": "Видеокарта переключена - воркер перезапущен",
@@ -395,7 +395,7 @@ STRINGS = {
         "style_2": "Cinéma",
         "theme_light": "Clair",
         "theme_dark": "Sombre",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering marche/arrêt",
         "hk_menu": "Menu",
         "hk_shot": "Capture d'écran",
         "hk_record": "Enregistrement",
@@ -695,7 +695,7 @@ STRINGS = {
         "style_2": "Cine",
         "theme_light": "Claro",
         "theme_dark": "Oscuro",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering activar/desactivar",
         "hk_menu": "Menú",
         "hk_shot": "Captura de pantalla",
         "hk_record": "Grabación",
@@ -845,7 +845,7 @@ STRINGS = {
         "style_2": "Cinema",
         "theme_light": "Chiaro",
         "theme_dark": "Scuro",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering attiva/disattiva",
         "hk_menu": "Menu",
         "hk_shot": "Screenshot",
         "hk_record": "Registrazione",
@@ -995,7 +995,7 @@ STRINGS = {
         "style_2": "Cinema",
         "theme_light": "Claro",
         "theme_dark": "Escuro",
-        "hk_nr": "Neural Rendering on/off",
+        "hk_nr": "Neural Rendering ligar/desligar",
         "hk_menu": "Menu",
         "hk_shot": "Captura de tela",
         "hk_record": "Gravação",
@@ -1885,7 +1885,7 @@ STRINGS["ru"].update({
 
 })
 
-STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['en'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicateur de trames de sortie', 'fg_capped': 'this card caps at x{live}; x{want} is retried next time'})
 
 for _strings in STRINGS.values():
     _strings.update({
@@ -1901,27 +1901,27 @@ STRINGS["ru"].update({
     "hk_framegen": "Генерация кадров вкл/выкл",
 })
 
-STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множитель кадров'})
+STRINGS['ru'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множитель кадров', 'fg_capped': 'карта ограничена до x{live}; x{want} - в следующий раз'})
 
-STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['fr'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier', 'fg_capped': 'cette carte plafonne a x{live}; x{want} sera retente'})
 
-STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['de'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplikator der Ausgabebilder', 'fg_capped': 'diese Karte kann nur x{live}; x{want} wird erneut versucht'})
 
-STRINGS['es'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['es'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de fotogramas de salida', 'fg_capped': 'esta tarjeta llega a x{live}; x{want} se reintenta luego'})
 
-STRINGS['it'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['it'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Moltiplicatore di fotogrammi in uscita', 'fg_capped': 'questa scheda arriva a x{live}; x{want} verra ritentato'})
 
-STRINGS['pt'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['pt'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Multiplicador de quadros de saída', 'fg_capped': 'esta placa chega a x{live}; x{want} sera retentado'})
 
-STRINGS['pl'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['pl'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Mnożnik klatek wyjściowych', 'fg_capped': 'ta karta to maks. x{live}; x{want} zostanie powtorzone'})
 
-STRINGS['uk'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Output frame multiplier'})
+STRINGS['uk'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'Множник кадрів виходу', 'fg_capped': 'карта обмежена до x{live}; x{want} - наступного разу'})
 
-STRINGS['zh'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '帧倍率'})
+STRINGS['zh'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '帧倍率', 'fg_capped': '此显卡上限为 x{live}；x{want} 下次重试'})
 
-STRINGS['ja'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'フレーム倍率'})
+STRINGS['ja'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': 'フレーム倍率', 'fg_capped': 'このカードは x{live} まで；x{want} は次回再試行'})
 
-STRINGS['ko'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '프레임 배수'})
+STRINGS['ko'].update({'frame_generation': 'DLSS Frame Generation', 'frame_multiplier': '프레임 배수', 'fg_capped': '이 카드는 x{live}까지; x{want}는 다음에 재시도'})
 
 for _strings in STRINGS.values():
     _strings.update({
@@ -1984,3 +1984,355 @@ STRINGS["ru"].update({
     "record_status_published": "Сохранено",
     "record_status_failed": "Ошибка",
 })
+
+# --- M3: strings that were verbatim English in ten languages ---
+STRINGS["fr"].update({
+    'fg_fail': "La génération de trames n'a pas pu démarrer sur ce GPU - l'interrupteur est revenu sur arrêt",
+    'frame_limit': 'Limite de trames',
+    'frame_limit_custom': 'Personnalisé',
+    'frame_limit_custom_value': 'Limite personnalisée',
+    'frame_limit_unlimited': 'Illimité',
+    'hk_framegen': 'Génération de trames on/off',
+    'motion_backend': 'Estimation de mouvement',
+    'motion_fallback': 'NVOFA indisponible - repli sur CPU DIS',
+    'motion_hint': 'Redémarre le worker ; repli CPU si indisponible',
+    'motion_restarted': 'Backend de mouvement modifié - worker redémarré',
+    'record_dir_btn': "Dossier d'enregistrement...",
+    'record_failed_stage': "Échec de l'enregistrement ({stage}) ; partie : {path}",
+    'record_finalizing': 'Finalisation...',
+    'record_folder_set': "Dossier d'enregistrement : {path}",
+    'record_format': 'Format',
+    'record_path': 'Chemin',
+    'record_saved': 'Enregistrement sauvegardé : {path}',
+    'record_started': 'Enregistrement : {details}',
+    'record_state': 'État',
+    'record_status_failed': 'Échec',
+    'record_status_finalizing': 'Finalisation',
+    'record_status_published': 'Enregistré',
+    'record_status_recording': 'Enregistrement',
+    'screenshot_ask': 'Enregistrer sous',
+    'screenshot_auto': 'Enregistrer automatiquement',
+    'screenshot_format': 'Format des captures',
+    'screenshot_mode': 'Enregistrement des captures',
+    'select_record_dir': "Choisir le dossier d'enregistrement",
+    'select_shot_dir': 'Choisir le dossier des captures',
+    'shot_folder_set': 'Dossier des captures : {path}',
+    'shot_saved': 'Capture enregistrée : {path}',
+    'skipped_short': 'IGNORÉ',
+})
+
+STRINGS["de"].update({
+    'fg_fail': 'Frame Generation konnte auf dieser GPU nicht starten - der Schalter ist wieder aus',
+    'frame_limit': 'Bildratenlimit',
+    'frame_limit_custom': 'Eigene',
+    'frame_limit_custom_value': 'Eigenes Limit',
+    'frame_limit_unlimited': 'Unbegrenzt',
+    'hk_framegen': 'Frame Generation ein/aus',
+    'motion_backend': 'Bewegungsschätzung',
+    'motion_fallback': 'NVOFA nicht verfügbar - CPU DIS wird verwendet',
+    'motion_hint': 'Startet den Worker neu; CPU-Fallback wenn nicht verfügbar',
+    'motion_restarted': 'Bewegungs-Backend geändert - Worker neu gestartet',
+    'record_dir_btn': 'Aufnahmeordner...',
+    'record_failed_stage': 'Aufnahme fehlgeschlagen ({stage}); Teil: {path}',
+    'record_finalizing': 'Abschluss...',
+    'record_folder_set': 'Aufnahmeordner: {path}',
+    'record_format': 'Format',
+    'record_path': 'Pfad',
+    'record_saved': 'Aufnahme gespeichert: {path}',
+    'record_started': 'Aufnahme: {details}',
+    'record_state': 'Status',
+    'record_status_failed': 'Fehlgeschlagen',
+    'record_status_finalizing': 'Abschluss',
+    'record_status_published': 'Gespeichert',
+    'record_status_recording': 'Aufnahme',
+    'screenshot_ask': 'Speichern unter',
+    'screenshot_auto': 'Automatisch speichern',
+    'screenshot_format': 'Screenshot-Format',
+    'screenshot_mode': 'Screenshot-Speicherung',
+    'select_record_dir': 'Aufnahmeordner wählen',
+    'select_shot_dir': 'Screenshot-Ordner wählen',
+    'shot_folder_set': 'Screenshot-Ordner: {path}',
+    'shot_saved': 'Screenshot gespeichert: {path}',
+    'skipped_short': 'ÜBERSPR.',
+})
+
+STRINGS["es"].update({
+    'fg_fail': 'La generación de fotogramas no pudo iniciarse en esta GPU - el interruptor volvió a apagarse',
+    'frame_limit': 'Límite de fotogramas',
+    'frame_limit_custom': 'Personalizado',
+    'frame_limit_custom_value': 'Límite personalizado',
+    'frame_limit_unlimited': 'Sin límite',
+    'hk_framegen': 'Generación de fotogramas on/off',
+    'motion_backend': 'Estimación de movimiento',
+    'motion_fallback': 'NVOFA no disponible - usando CPU DIS',
+    'motion_hint': 'Reinicia el worker; respaldo CPU si no está disponible',
+    'motion_restarted': 'Backend de movimiento cambiado - worker reiniciado',
+    'record_dir_btn': 'Carpeta de grabación...',
+    'record_failed_stage': 'Falló la grabación ({stage}); parcial: {path}',
+    'record_finalizing': 'Finalizando...',
+    'record_folder_set': 'Carpeta de grabación: {path}',
+    'record_format': 'Formato',
+    'record_path': 'Ruta',
+    'record_saved': 'Grabación guardada: {path}',
+    'record_started': 'Grabando: {details}',
+    'record_state': 'Estado',
+    'record_status_failed': 'Falló',
+    'record_status_finalizing': 'Finalizando',
+    'record_status_published': 'Guardado',
+    'record_status_recording': 'Grabando',
+    'screenshot_ask': 'Guardar como',
+    'screenshot_auto': 'Guardar automáticamente',
+    'screenshot_format': 'Formato de captura',
+    'screenshot_mode': 'Guardado de capturas',
+    'select_record_dir': 'Elegir la carpeta de grabación',
+    'select_shot_dir': 'Elegir la carpeta de capturas',
+    'shot_folder_set': 'Carpeta de capturas: {path}',
+    'shot_saved': 'Captura guardada: {path}',
+    'skipped_short': 'OMIT.',
+})
+
+STRINGS["it"].update({
+    'fg_fail': "La generazione di frame non è partita su questa GPU - l'interruttore è tornato su off",
+    'frame_limit': 'Limite di frame',
+    'frame_limit_custom': 'Personalizzato',
+    'frame_limit_custom_value': 'Limite personalizzato',
+    'frame_limit_unlimited': 'Illimitato',
+    'hk_framegen': 'Generazione di frame on/off',
+    'motion_backend': 'Stima del movimento',
+    'motion_fallback': 'NVOFA non disponibile - uso CPU DIS',
+    'motion_hint': 'Riavvia il worker; fallback CPU se non disponibile',
+    'motion_restarted': 'Backend del movimento cambiato - worker riavviato',
+    'record_dir_btn': 'Cartella registrazioni...',
+    'record_failed_stage': 'Registrazione non riuscita ({stage}); parziale: {path}',
+    'record_finalizing': 'Finalizzazione...',
+    'record_folder_set': 'Cartella registrazioni: {path}',
+    'record_format': 'Formato',
+    'record_path': 'Percorso',
+    'record_saved': 'Registrazione salvata: {path}',
+    'record_started': 'Registrazione: {details}',
+    'record_state': 'Stato',
+    'record_status_failed': 'Non riuscito',
+    'record_status_finalizing': 'Finalizzazione',
+    'record_status_published': 'Salvato',
+    'record_status_recording': 'Registrazione',
+    'screenshot_ask': 'Salva con nome',
+    'screenshot_auto': 'Salva automaticamente',
+    'screenshot_format': 'Formato screenshot',
+    'screenshot_mode': 'Salvataggio screenshot',
+    'select_record_dir': 'Scegli la cartella delle registrazioni',
+    'select_shot_dir': 'Scegli la cartella degli screenshot',
+    'shot_folder_set': 'Cartella screenshot: {path}',
+    'shot_saved': 'Screenshot salvato: {path}',
+    'skipped_short': 'SALT.',
+})
+
+STRINGS["pt"].update({
+    'fg_fail': 'A geração de quadros não iniciou nesta GPU - o interruptor voltou a desligado',
+    'frame_limit': 'Limite de quadros',
+    'frame_limit_custom': 'Personalizado',
+    'frame_limit_custom_value': 'Limite personalizado',
+    'frame_limit_unlimited': 'Ilimitado',
+    'hk_framegen': 'Geração de quadros on/off',
+    'motion_backend': 'Estimativa de movimento',
+    'motion_fallback': 'NVOFA indisponível - usando CPU DIS',
+    'motion_hint': 'Reinicia o worker; CPU como fallback se indisponível',
+    'motion_restarted': 'Backend de movimento alterado - worker reiniciado',
+    'record_dir_btn': 'Pasta de gravações...',
+    'record_failed_stage': 'Falha na gravação ({stage}); parcial: {path}',
+    'record_finalizing': 'Finalizando...',
+    'record_folder_set': 'Pasta de gravações: {path}',
+    'record_format': 'Formato',
+    'record_path': 'Caminho',
+    'record_saved': 'Gravação salva: {path}',
+    'record_started': 'Gravando: {details}',
+    'record_state': 'Estado',
+    'record_status_failed': 'Falhou',
+    'record_status_finalizing': 'Finalizando',
+    'record_status_published': 'Salvo',
+    'record_status_recording': 'Gravando',
+    'screenshot_ask': 'Guardar como',
+    'screenshot_auto': 'Guardar automaticamente',
+    'screenshot_format': 'Formato da captura',
+    'screenshot_mode': 'Salvamento de capturas',
+    'select_record_dir': 'Escolher a pasta de gravações',
+    'select_shot_dir': 'Escolher a pasta de capturas',
+    'shot_folder_set': 'Pasta de capturas: {path}',
+    'shot_saved': 'Captura salva: {path}',
+    'skipped_short': 'IGNOR.',
+})
+
+STRINGS["pl"].update({
+    'fg_fail': 'Generowanie klatek nie wystartowało na tej karcie - przełącznik wrócił na wyłączony',
+    'frame_limit': 'Limit klatek',
+    'frame_limit_custom': 'Własny',
+    'frame_limit_custom_value': 'Własny limit',
+    'frame_limit_unlimited': 'Bez limitu',
+    'hk_framegen': 'Generowanie klatek wł/wył',
+    'motion_backend': 'Estymacja ruchu',
+    'motion_fallback': 'NVOFA niedostępne - używam CPU DIS',
+    'motion_hint': 'Restartuje worker; zapasowo CPU gdy niedostępne',
+    'motion_restarted': 'Zmieniono backend ruchu - worker zrestartowany',
+    'record_dir_btn': 'Folder nagrań...',
+    'record_failed_stage': 'Nagrywanie nie powiodło się ({stage}); część: {path}',
+    'record_finalizing': 'Finalizowanie...',
+    'record_folder_set': 'Folder nagrań: {path}',
+    'record_format': 'Format',
+    'record_path': 'Ścieżka',
+    'record_saved': 'Nagranie zapisane: {path}',
+    'record_started': 'Nagrywanie: {details}',
+    'record_state': 'Stan',
+    'record_status_failed': 'Niepowodzenie',
+    'record_status_finalizing': 'Finalizowanie',
+    'record_status_published': 'Zapisano',
+    'record_status_recording': 'Nagrywanie',
+    'screenshot_ask': 'Zapisz jako',
+    'screenshot_auto': 'Zapisuj automatycznie',
+    'screenshot_format': 'Format zrzutu',
+    'screenshot_mode': 'Zapisywanie zrzutów',
+    'select_record_dir': 'Wybierz folder nagrań',
+    'select_shot_dir': 'Wybierz folder zrzutów',
+    'shot_folder_set': 'Folder zrzutów: {path}',
+    'shot_saved': 'Zrzut zapisany: {path}',
+    'skipped_short': 'POMIN.',
+})
+
+STRINGS["uk"].update({
+    'fg_fail': 'Генерація кадрів не запустилася на цій відеокарті - перемикач повернувся у вимкнено',
+    'frame_limit': 'Обмеження кадрів',
+    'frame_limit_custom': 'Своє',
+    'frame_limit_custom_value': 'Свій ліміт',
+    'frame_limit_unlimited': 'Без обмежень',
+    'hk_framegen': 'Генерація кадрів увімк/вимк',
+    'motion_backend': 'Оцінка руху',
+    'motion_fallback': 'NVOFA недоступний - використовую CPU DIS',
+    'motion_hint': 'Перезапускає воркер; запасний CPU, якщо недоступно',
+    'motion_restarted': 'Бекенд руху змінено - воркер перезапущено',
+    'record_dir_btn': 'Папка записів...',
+    'record_failed_stage': 'Запис не вдався ({stage}); частково: {path}',
+    'record_finalizing': 'Завершення...',
+    'record_folder_set': 'Папка записів: {path}',
+    'record_format': 'Формат',
+    'record_path': 'Шлях',
+    'record_saved': 'Запис збережено: {path}',
+    'record_started': 'Запис: {details}',
+    'record_state': 'Стан',
+    'record_status_failed': 'Збій',
+    'record_status_finalizing': 'Завершення',
+    'record_status_published': 'Збережено',
+    'record_status_recording': 'Запис',
+    'screenshot_ask': 'Зберегти як',
+    'screenshot_auto': 'Зберегти автоматично',
+    'screenshot_format': 'Формат скриншота',
+    'screenshot_mode': 'Збереження скриншотів',
+    'select_record_dir': 'Виберіть папку записів',
+    'select_shot_dir': 'Виберіть папку скриншотів',
+    'shot_folder_set': 'Папка скриншотів: {path}',
+    'shot_saved': 'Скриншот збережено: {path}',
+    'skipped_short': 'ПРОП.',
+})
+
+STRINGS["zh"].update({
+    'fg_fail': '此 GPU 无法启动帧生成 - 开关已回到关闭状态',
+    'frame_limit': '帧率限制',
+    'frame_limit_custom': '自定义',
+    'frame_limit_custom_value': '自定义上限',
+    'frame_limit_unlimited': '不限制',
+    'hk_framegen': '帧生成 开/关',
+    'motion_backend': '运动估计',
+    'motion_fallback': 'NVOFA 不可用 - 改用 CPU DIS',
+    'motion_hint': '重启工作进程；不可用时回退到 CPU',
+    'motion_restarted': '运动后端已更改 - 工作进程已重启',
+    'record_dir_btn': '录制文件夹...',
+    'record_failed_stage': '录制失败（{stage}）；部分文件：{path}',
+    'record_finalizing': '正在完成...',
+    'record_folder_set': '录制文件夹：{path}',
+    'record_format': '格式',
+    'record_path': '路径',
+    'record_saved': '录制已保存：{path}',
+    'record_started': '录制中：{details}',
+    'record_state': '状态',
+    'record_status_failed': '失败',
+    'record_status_finalizing': '正在完成',
+    'record_status_published': '已保存',
+    'record_status_recording': '录制中',
+    'screenshot_ask': '另存为',
+    'screenshot_auto': '自动保存',
+    'screenshot_format': '截图格式',
+    'screenshot_mode': '截图保存方式',
+    'select_record_dir': '选择录制文件夹',
+    'select_shot_dir': '选择截图文件夹',
+    'shot_folder_set': '截图文件夹：{path}',
+    'shot_saved': '截图已保存：{path}',
+    'skipped_short': '跳过',
+})
+
+STRINGS["ja"].update({
+    'fg_fail': 'この GPU ではフレーム生成を開始できません - スイッチはオフに戻りました',
+    'frame_limit': 'フレーム制限',
+    'frame_limit_custom': 'カスタム',
+    'frame_limit_custom_value': 'カスタム上限',
+    'frame_limit_unlimited': '無制限',
+    'hk_framegen': 'フレーム生成 オン/オフ',
+    'motion_backend': 'モーション推定',
+    'motion_fallback': 'NVOFA が利用不可 - CPU DIS を使用',
+    'motion_hint': 'ワーカーを再起動。利用不可なら CPU にフォールバック',
+    'motion_restarted': 'モーション バックエンド変更 - ワーカーを再起動',
+    'record_dir_btn': '録画フォルダー...',
+    'record_failed_stage': '録画に失敗しました（{stage}）。部分: {path}',
+    'record_finalizing': '完了処理中...',
+    'record_folder_set': '録画フォルダー: {path}',
+    'record_format': '形式',
+    'record_path': 'パス',
+    'record_saved': '録画を保存しました: {path}',
+    'record_started': '録画中: {details}',
+    'record_state': '状態',
+    'record_status_failed': '失敗',
+    'record_status_finalizing': '完了処理中',
+    'record_status_published': '保存済み',
+    'record_status_recording': '録画中',
+    'screenshot_ask': '名前を付けて保存',
+    'screenshot_auto': '自動保存',
+    'screenshot_format': 'スクリーンショット形式',
+    'screenshot_mode': 'スクリーンショットの保存',
+    'select_record_dir': '録画フォルダーを選択',
+    'select_shot_dir': 'スクリーンショット フォルダーを選択',
+    'shot_folder_set': 'スクリーンショット フォルダー: {path}',
+    'shot_saved': 'スクリーンショットを保存しました: {path}',
+    'skipped_short': 'スキップ',
+})
+
+STRINGS["ko"].update({
+    'fg_fail': '이 GPU에서 프레임 생성을 시작할 수 없습니다 - 스위치가 꺼짐으로 돌아갔습니다',
+    'frame_limit': '프레임 제한',
+    'frame_limit_custom': '사용자 지정',
+    'frame_limit_custom_value': '사용자 지정 한도',
+    'frame_limit_unlimited': '무제한',
+    'hk_framegen': '프레임 생성 켜기/끄기',
+    'motion_backend': '모션 추정',
+    'motion_fallback': 'NVOFA를 사용할 수 없음 - CPU DIS 사용',
+    'motion_hint': '워커를 다시 시작합니다. 사용할 수 없으면 CPU로 대체',
+    'motion_restarted': '모션 백엔드 변경 - 워커 재시작됨',
+    'record_dir_btn': '녹화 폴더...',
+    'record_failed_stage': '녹화 실패({stage}); 부분 파일: {path}',
+    'record_finalizing': '마무리 중...',
+    'record_folder_set': '녹화 폴더: {path}',
+    'record_format': '형식',
+    'record_path': '경로',
+    'record_saved': '녹화 저장됨: {path}',
+    'record_started': '녹화 중: {details}',
+    'record_state': '상태',
+    'record_status_failed': '실패',
+    'record_status_finalizing': '마무리 중',
+    'record_status_published': '저장됨',
+    'record_status_recording': '녹화 중',
+    'screenshot_ask': '다른 이름으로 저장',
+    'screenshot_auto': '자동 저장',
+    'screenshot_format': '스크린샷 형식',
+    'screenshot_mode': '스크린샷 저장',
+    'select_record_dir': '녹화 폴더 선택',
+    'select_shot_dir': '스크린샷 폴더 선택',
+    'shot_folder_set': '스크린샷 폴더: {path}',
+    'shot_saved': '스크린샷 저장됨: {path}',
+    'skipped_short': '건너뜀',
+})
+

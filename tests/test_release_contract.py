@@ -565,6 +565,41 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("latest NVIDIA driver", verifier.RELEASE_DRIVER_WARNING)
         self.assertIn("unsupported/non-standard", verifier.RELEASE_DRIVER_WARNING)
 
+    def test_verifier_rejects_asset_outside_the_release_set(self) -> None:
+        # The release set is exactly what a downloader needs. Documentation
+        # images were uploaded as assets once and the "required are present"
+        # check did not notice, because it never looked at what else was there.
+        required = {
+            "neuralscreen-v9.9.9-full.zip", verifier.CHECKSUMS,
+            verifier.RUNTIME_MANIFEST, verifier.THIRD_PARTY_NOTICES,
+            "README.md", "README.ru.md", "TECHNICAL.md", "TECHNICAL.ru.md",
+        }
+        assets = {name: {"name": name} for name in required}
+        self.assertEqual(
+            verifier.asset_set_failures(required, assets, "v9.9.9"), [],
+        )
+        for extra in ("screenshot-main-dark.png", "screenshot-settings.png"):
+            assets[extra] = {"name": extra}
+        failures = verifier.asset_set_failures(required, assets, "v9.9.9")
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("beyond the release set", failures[0])
+        self.assertIn("screenshot-main-dark.png", failures[0])
+        self.assertIn("screenshot-settings.png", failures[0])
+
+    def test_verifier_still_reports_a_missing_asset(self) -> None:
+        required = {
+            "neuralscreen-v9.9.9-full.zip", verifier.CHECKSUMS,
+            verifier.RUNTIME_MANIFEST, verifier.THIRD_PARTY_NOTICES,
+            "README.md", "README.ru.md", "TECHNICAL.md", "TECHNICAL.ru.md",
+        }
+        assets = {
+            name: {"name": name} for name in required if name != "TECHNICAL.md"
+        }
+        failures = verifier.asset_set_failures(required, assets, "v9.9.9")
+        self.assertEqual(
+            failures, ["release v9.9.9 is missing asset TECHNICAL.md"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

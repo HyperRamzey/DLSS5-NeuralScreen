@@ -148,6 +148,7 @@ static const char *NgxResultName(NVSDK_NGX_Result r)
     switch (static_cast<unsigned>(r))
     {
     case 0x1:        return "Success";
+    case 0xBAD00000: return "Fail";
     case 0xBAD00001: return "FeatureNotSupported";
     // What the feature library answers when the call did not leave a module
     // whose path contains "nvngx.dll" - the commonest way for a broken
@@ -156,12 +157,23 @@ static const char *NgxResultName(NVSDK_NGX_Result r)
     case 0xBAD00003: return "FeatureAlreadyExists";
     case 0xBAD00004: return "FeatureNotFound";
     case 0xBAD00005: return "InvalidParameter";
+    case 0xBAD00006: return "ScratchBufferTooSmall";
     case 0xBAD00007: return "NotInitialized";
     case 0xBAD00008: return "UnsupportedInputFormat";
+    case 0xBAD00009: return "RWFlagMissing";
     case 0xBAD0000A: return "MissingInput";
     case 0xBAD0000B: return "UnableToInitializeFeature";
+    // The values in nvsdk_ngx_defs.h are DECIMAL, so `Fail | 12` is 0x0C,
+    // not 0x12 - the two were conflated once and the log named both as "?".
+    // 0x0C is the one a user with an older driver hits on the feature
+    // requirements query (raycornea's log), 0x12 is NotImplemented.
+    case 0xBAD0000C: return "OutOfDate";
     case 0xBAD0000D: return "OutOfGPUMemory";
     case 0xBAD0000E: return "UnsupportedFormat";
+    case 0xBAD0000F: return "UnableToWriteToAppDataPath";
+    case 0xBAD00010: return "UnsupportedParameter";
+    case 0xBAD00011: return "Denied";
+    case 0xBAD00012: return "NotImplemented";
     default:         return "?";
     }
 }
@@ -1516,10 +1528,11 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
     // for this query; the bitmask meanings come from the NGX header
     // (1 check absent, 2 driver, 4 adapter, 8 OS, 16 not implemented).
     // Measured on the bundled 310.8.0 runtime: the query itself returns
-    // FAIL_OutOfDate (0xBAD00012) - discovery for feature 18 is newer than
-    // this build. The query is diagnostic only: the create's own result
-    // stays the truth, and a NEWER BYO runtime (310.9+) answers it - which
-    // is exactly the BYO UX case this is for.
+    // FAIL_NotImplemented (0xBAD00012 - the header's literals are decimal,
+    // so `Fail | 18` is 0x12; `Fail | 12`, OutOfDate, is 0x0C and is the
+    // code an older driver answers). The query is diagnostic only: the
+    // create's own result stays the truth, and a NEWER BYO runtime
+    // (310.9+) answers it - which is exactly the BYO UX case this is for.
     {
         wchar_t data_path[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, data_path, MAX_PATH);
@@ -1561,7 +1574,8 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
             }
         }
         else
-            Log("[host] feature requirements query failed 0x%08X - continuing with the create", qrr);
+            Log("[host] feature requirements query failed 0x%08X (%s) - continuing with the create",
+                qrr, NgxResultName(qrr));
     }
 
     if (TestFailureOnce("create"))
@@ -3583,6 +3597,11 @@ static ID3D11Fence            *g_dda_signal11 = nullptr;
 static HANDLE                  g_dda_fence_ev = nullptr;  // event wait for the D3D11 copy
 static UINT64                  g_dda_fence_value = 1;
 static bool                    g_dda_ready = false;      // current frame is in v.color
+// Bits per colour of the captured display's scan-out, read from IDXGIOutput6
+// when the capture opens. Above 8 the duplicated desktop alternates
+// FP16/BGRA8 through the legacy DuplicateOutput, so the capture is pinned to
+// FP16 through DuplicateOutput1 instead (#89).
+static UINT                    g_capture_deep_bits = 8;
 // The WGCW command, filled by the dispatcher and read by its handler.
 static VideoWgcCmd             g_wgc_cmd = {};
 // Gray downsample (GRAY): write luminance (flow size) into a client mapping.
@@ -3662,7 +3681,7 @@ static bool EnsureDdaSwizzle()
     prm[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     D3D12_ROOT_SIGNATURE_DESC rsd = {};
     prm[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    prm[2].Constants.Num32BitValues = 3;   // isFloat, white, rotate180
+    prm[2].Constants.Num32BitValues = 4;   // isFloat, white, rotate180, hdr
     prm[2].Constants.ShaderRegister = 0;
     rsd.NumParameters = 3; rsd.pParameters = prm;
     ID3DBlob *sig = nullptr;
@@ -4225,6 +4244,11 @@ static bool OpenDda(UINT w, UINT hgt)
                 Log("[dda] output colour space %d, %u bits per colour%s",
                     (int)d1.ColorSpace, d1.BitsPerColor,
                     hdr ? " - HDR IS ON for the captured display" : "");
+                // The bit depth decides the duplication path below: a scan-out
+                // deeper than 8 bits alternates FP16/BGRA8 through the legacy
+                // DuplicateOutput, so that case is pinned to FP16 through
+                // DuplicateOutput1 instead (#89).
+                g_capture_deep_bits = d1.BitsPerColor;
             }
             out6->Release();
         }
@@ -4239,7 +4263,51 @@ static bool OpenDda(UINT w, UINT hgt)
     g_dda_hdr_mode = HdrEnabled() && g_capture_display.enabled;
     IDXGIOutput5 *output5 = nullptr;
     hr = E_FAIL;
-    if (!g_dda_hdr_mode)
+    const bool has_output5 = SUCCEEDED(output->QueryInterface(
+        __uuidof(IDXGIOutput5), (void **)&output5));
+    // The display can produce a high-colour surface - HDR-capable, or a
+    // scan-out deeper than 8 bits per colour. That combination is what makes
+    // the legacy DuplicateOutput below alternate FP16 and BGRA8: a real v1.13.1
+    // log (#89, an HDR-capable display with HDR compatibility OFF) shows
+    // `[dda] SDR capture fixed to BGRA8 through legacy duplication` followed by
+    // 1955 FP16<->BGRA8 flips in 133 s, each one tearing the whole capture
+    // bridge down, and `grab 43.0ms` against `NR 18.3 fps`. The same log shows
+    // the storm stops completely - 0 flips for the rest of the session, and
+    // `grab 3.0ms` against `NR 48.6 fps` - once the IDXGIOutput5 path is taken,
+    // because DuplicateOutput1 accepts the high-colour format instead of
+    // letting the compositor choose per frame.
+    //
+    // Note the reporter's log line: `output colour space 12, 8 bits per
+    // colour`. The bit depth alone is NOT the trigger - an HDR-capable display
+    // can report 8 - so the test is the display's own advanced-colour
+    // capability, which is the same fact that made FP16 available at all.
+    const bool high_colour_display = g_capture_display.enabled
+                                     || g_capture_deep_bits > 8;
+    if (!g_dda_hdr_mode && has_output5 && high_colour_display)
+    {
+        // High-colour display with HDR compatibility off: ask for FP16 FIRST
+        // through DuplicateOutput1. The capture shader already converts FP16 to
+        // SDR (isFloat), so the picture stays what the user asked for - HDR
+        // compatibility still governs the PRESENTATION, not the capture format,
+        // and the log says so: `capture=FP16 (10-bit output) - presented as
+        // SDR`. Accepting BGRA8 as the second format keeps a driver that
+        // refuses FP16 working.
+        const DXGI_FORMAT deep_formats[] = {
+            DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
+        hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(deep_formats),
+                                       deep_formats, &g_dda_dup);
+        if (SUCCEEDED(hr))
+            Log("[dda] 10-bit scan-out: FP16 duplication pinned through "
+                "IDXGIOutput5 (no format flips)");
+        else
+            Log("[dda] FP16 duplication refused 0x%08X on a %u-bit output - "
+                "falling back to legacy SDR", hr, g_capture_deep_bits);
+    }
+    if (SUCCEEDED(hr))
+    {
+        // Already opened above: the 10-bit path pinned the format itself.
+    }
+    else if (!g_dda_hdr_mode)
     {
         // DuplicateOutput1 was meant to pin SDR to the one advertised BGRA8
         // format. Real v1.12 logs from two drivers (#86 and #89) proved that
@@ -4253,8 +4321,7 @@ static bool OpenDda(UINT w, UINT hgt)
         if (SUCCEEDED(hr))
             Log("[dda] SDR capture fixed to BGRA8 through legacy duplication");
     }
-    else if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5),
-                                               (void **)&output5)))
+    else if (has_output5)
     {
         // HDR compatibility is the only mode that needs a high-colour surface.
         // Keep BGRA8 as the fallback format accepted by DuplicateOutput1.
@@ -4262,12 +4329,20 @@ static bool OpenDda(UINT w, UINT hgt)
             DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
         hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(hdr_formats),
                                        hdr_formats, &g_dda_dup);
-        output5->Release();
         if (FAILED(hr))
             Log("[hdr] FP16 duplication refused 0x%08X - capturing in SDR instead", hr);
     }
     else
         Log("[hdr] this Windows has no IDXGIOutput5 - capturing in SDR instead");
+    // The QueryInterface above is what creates the reference, and it runs on
+    // whichever path is taken - so this release has to as well. Keeping the
+    // release inside a branch (which is how this read before the high-colour
+    // path existed) leaks one reference on every path that branch does not
+    // cover: an 8-bit display never enters the HDR branch, and an HDR-capable
+    // display reporting 8 bits per colour (#89) is not covered by a "deeper
+    // than 8 bits" test either.
+    if (has_output5)
+        output5->Release();
     if (g_dda_hdr_mode && FAILED(hr))
     {
         // HDR was requested but Output5 could not provide it. Fall back to the
@@ -4438,12 +4513,19 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
             return StageResult::SizeChanged;
         if (sd.Format != fd.Format)
         {
-            // Same surface, different format: only the bridge is wrong. Tear
-            // down exactly what fail_capture tears down - the source (dup,
-            // ctx, d11) stays up - and the next frame rebuilds the channel
-            // for the new format. The HDR resources go with it because they
-            // are chosen from the capture format; CloseDda used to take them
-            // on this path and they must not survive it.
+            // The incoming frame's format differs from the shared texture's.
+            // Through the pinned DuplicateOutput1 path above this cannot
+            // happen; it is the legacy path on a driver that alternates
+            // FP16/BGRA8 regardless (#86/#89).
+            //
+            // This teardown is what turned that into a storm: 1955 rebuilds in
+            // 133 s in one real log, each one allocating a 3840x2160
+            // cross-device texture plus its fences and losing the frame -
+            // measured there as `grab 43.0ms` against 18.3 fps. The rebuild
+            // itself is what makes the following frames valid, so it stays:
+            // the fix for the storm is upstream, in pinning the duplication to
+            // one format. A driver that flips anyway still gets correct
+            // frames, at the cost this always had.
             Log("[cap] capture format %u -> %u - rebuilding the bridge",
                 (unsigned)sd.Format, (unsigned)fd.Format);
             CloseCaptureBridge();
@@ -4524,10 +4606,13 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     h.list->SetComputeRootDescriptorTable(1, g1);
     // rotate180 only for duplication: a WGC window is already composed the
     // way the user sees it, so turning it over would be a second rotation.
-    struct { UINT is_float; float white; UINT rotate180; } hdr = {
+    // hdr is the second, independent fact about the same frame: FP16 arrival
+    // says nothing about the picture being scRGB (see kHdrCaptureHlsl).
+    struct { UINT is_float; float white; UINT rotate180; UINT hdr; } hdr = {
         g_capture_float ? 1u : 0u, g_hdr_frame_white,
-        (g_dda_active && g_capture_rotate180) ? 1u : 0u };
-    h.list->SetComputeRoot32BitConstants(2, 3, &hdr, 0);
+        (g_dda_active && g_capture_rotate180) ? 1u : 0u,
+        g_hdr_capture ? 1u : 0u };
+    h.list->SetComputeRoot32BitConstants(2, 4, &hdr, 0);
     h.list->Dispatch((g_dda_w + 7) / 8, (g_dda_h + 7) / 8, 1);
     // copy swizzled dst into v.color.tex
     D3D12_RESOURCE_BARRIER pre_color = Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -6014,9 +6099,28 @@ static int RunVideo()
             if (!CreateVideoResources(v, rc.width, rc.height, rup ? rc.full_w : 0,
                                       rup ? rc.full_h : 0, want_small))
             {
-                Log("[video] RNSZ: resource creation failed at %ux%u", rc.width, rc.height);
+                // The resize cannot be honoured. Say so and STOP this command
+                // (audit B2): the failure used to fall through into
+                // CreateFeature and then write a SUCCESS ack (ok = 1) four
+                // lines later, so the client believed the resize had been
+                // applied. CreateVideoResources can fail after assigning
+                // v.tex with v.upload still null, and FillUpload dereferences
+                // v.upload unconditionally - the next frame was an access
+                // violation with no [failure] line, which is why this crash
+                // was invisible in user logs.
+                Log("[video] RNSZ aborted: resource creation failed at %ux%u "
+                    "- keeping the previous size", rc.width, rc.height);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0x7FFFFFFFu, 0u, fh.pts };
                 if (!WriteExact(g_wire, &bad, sizeof(bad))) return 3;
+                // The half-built state must not survive into the next frame:
+                // release whatever the failed attempt left behind and stop
+                // using the feature whose textures no longer match.
+                ReleaseVideoTextures(v);
+                SafeReleaseFeature(h.feature);
+                h.feature = nullptr;
+                warmup_done = true;          // nothing to warm: no feature
+                g_force_next_frame = true;
+                continue;
             }
             NVSDK_NGX_Result rr = NVSDK_NGX_Result_Fail;
             if (!CreateFeature(rc.width, rc.height, flags, &rr,

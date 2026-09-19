@@ -83,9 +83,24 @@ class _Display:
 
 
 def _state(visible: bool, *, window_visible: bool = True):
+    # st.hotkeys is part of the state the real startup always builds
+    # (startup.py: "st.hotkeys = HotkeyController(...)") and commands.py
+    # touches it on several routes, among them closing the menu - which has to
+    # resume the controller (audit H2). The stub carries it like the rest.
+    class _Hotkeys:
+        def __init__(self):
+            self.log = []
+
+        def resume(self):
+            self.log.append("resume")
+
+        def suspend(self):
+            self.log.append("suspend")
+
     return SimpleNamespace(
         tray_commands=queue.Queue(),
         display=_Display(visible, window_visible),
+        hotkeys=_Hotkeys(),
         window_hwnd=None, running=True, frame_index=0,
     )
 

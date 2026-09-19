@@ -107,7 +107,16 @@ def main() -> int:
     series = run(False)
     print(f"    same size (a parameter slider): {len(series) - 1} rebuilds "
           f"over {CYCLES} parameter changes")
-    if len(series) > 1:
+    # A series with nothing in it must fail, not pass: `[]` gave "-1 rebuilds"
+    # and the > 1 check below was vacuously satisfied, so the "no rebuild"
+    # claim was never actually measured (audit: WEAK). One line is the
+    # legitimate case - the initial create, zero rebuilds - so the floor is
+    # an EMPTY series, not a short one.
+    if len(series) < 1:
+        failures.append(
+            f"the same-size run reported no feature-create lines at all - "
+            f"nothing was measured, so 'no rebuild' is unproven")
+    elif len(series) > 1:
         failures.append(
             f"a parameter change rebuilt the feature {len(series) - 1} times "
             f"over {CYCLES} changes - that is the release/create pair issue "

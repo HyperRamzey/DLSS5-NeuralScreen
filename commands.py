@@ -170,7 +170,18 @@ def open_save_dialog(st) -> None:
         else ".jpg"
     default_name = f"neuralscreen-{time.strftime('%Y%m%d-%H%M%S')}{suffix}"
     shot_dir = st.cfg.get("screenshot_dir")
-    initial_dir = str(shot_dir) if isinstance(shot_dir, str) and shot_dir.strip() else None
+    # The folder the dialog opens in has to exist, or the dialog silently falls
+    # back to the library's own default location and the user's choice looks
+    # lost (audit M2). A deleted folder, or one on a drive that is not
+    # connected right now, is not an error - it just cannot be the start point.
+    initial_dir = None
+    if isinstance(shot_dir, str) and shot_dir.strip():
+        candidate = Path(shot_dir)
+        if candidate.is_dir():
+            initial_dir = str(candidate)
+        else:
+            print(f"[main] the configured screenshot folder is not available "
+                  f"({shot_dir}) - opening the dialog at the default")
 
     def _run() -> None:
         try:
@@ -792,6 +803,18 @@ def drain_commands(st) -> bool:
                         if rect is not None:
                             st.display.set_window_layer(*rect)
                     settings_io.save_menu_layout(st)
+                    # Whatever route closed the menu, the keyboard comes back
+                    # (audit H2). Only the close button used to resume, so a
+                    # hotkey field that was waiting for a key left the global
+                    # hotkeys unregistered for the rest of the session when the
+                    # menu was closed from the tray or the taskbar: Num0-Num7
+                    # and Ctrl+Alt+Q all dead, with no way back but a restart.
+                    # The menu's own capturing flag goes with it - otherwise
+                    # the next open silently swallows the first keydown as a
+                    # remap. resume() on a controller that was never suspended
+                    # is harmless (it posts a message nobody acts on).
+                    st.hotkeys.resume()
+                    st.display.menu.capturing = None
                 print(f"[main] overlay menu {'opened' if opened else 'closed'}")
             elif cmd == "toggle":
                 st.paused = not st.paused
@@ -820,6 +843,15 @@ def drain_commands(st) -> bool:
                             channels.forget_present(st)
                             channels.forget_dda(st)
                             channels.forget_out(st)
+                            # The manual revive restarts the worker like any
+                            # other path, so the feature-18 verdict has to die
+                            # with the worker that gave it (channels.py's
+                            # contract). It was the one path that skipped this,
+                            # so a card that started working kept the red dot
+                            # and a pipeline that came back broken kept the
+                            # green one - while TECHNICAL.md tells the user
+                            # that dot is the thing to trust.
+                            channels.forget_verdict(st)
                             channels.sync_motion_size(st)
                             st.frame_index = 0
                             st.pts = 0

@@ -6,10 +6,16 @@ RACK. The pipeline must keep producing frames at the new size afterwards.
 
 Checks:
 * the ack comes back ok=1;
-* frames after the resize come back at the NEW size;
+* frames still come back at the FULL size - nr_small only changes the work
+  size, the output stays full-resolution;
 * the resize does not kill the worker (a second resize works too);
-* the work size in the log matches what was asked.
+* the work size in the log matches what was asked (`[nr] network runs at
+  WxH`), which is the check this file is named for.
+
+That last one was in the docstring but never implemented: stderr was read
+into `err` and then never referenced (audit: DISHONEST-DOC). It is here now.
 """
+import re
 import struct
 import subprocess
 import sys
@@ -156,11 +162,39 @@ def main() -> int:
             proc.kill()
         err = proc.stderr.read().decode("utf-8", "replace")
 
+    # 6. The work size the worker actually ran at, read from its own log line:
+    #    `[nr] network runs at 960x540, scaled back to 1280x720`. The docstring
+    #    promised this and the body never did it (`err` was dead), so the one
+    #    check that names the file's feature was missing.
+    work_sizes = re.findall(r"\[nr\] network runs at (\d+)x(\d+)", err)
+    print(f"    work sizes the worker reported: {work_sizes}")
+    if not work_sizes:
+        failures.append("the worker never reported running the network at a "
+                        "reduced size - nr_small did not take effect")
+    else:
+        reported = {(int(w), int(h)) for w, h in work_sizes}
+        for want in ((960, 540), (640, 360)):
+            if want not in reported:
+                failures.append(f"the worker never ran at {want[0]}x{want[1]}, "
+                                f"which was asked for; it reported {sorted(reported)}")
+        # And it must not claim a size nobody asked for.
+        for size in reported:
+            if size not in {(960, 540), (640, 360)}:
+                failures.append(f"the worker ran at {size[0]}x{size[1]}, which "
+                                f"was never requested")
+    # The scaled-back size in the same line must be the full frame, or the
+    # output would not be what the client's buffers expect.
+    scaled = re.findall(r"scaled back to (\d+)x(\d+)", err)
+    if scaled and any((int(w), int(h)) != (W, H) for w, h in scaled):
+        failures.append(f"the worker scaled back to {scaled}, expected "
+                        f"{W}x{H} - the client would get a wrongly sized frame")
+
     for f in failures:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: the on-the-fly resize reconfigures the feature and keeps the pipeline alive")
+    print("OK: the on-the-fly resize reconfigures the feature and keeps the "
+          "pipeline alive")
     return 0
 
 

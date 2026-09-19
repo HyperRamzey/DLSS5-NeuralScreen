@@ -77,12 +77,21 @@ def main() -> int:
 
         # The captured frame must NOT contain the indicator: the bake
         # path draws only the menu.
+        #
+        # The menu has to be OPEN for this to check anything. With it closed
+        # draw_capture_overlay returns at its first line and paints nothing,
+        # so the old version of this check passed even with the indicator
+        # deliberately leaked into the bake path: it measured a code path
+        # that never ran. With the menu open the bake really draws, and a red
+        # pixel in the corner is then a real leak.
         disp.set_hud({"recording": True, "rec_seconds": 65.0,
                       "rec_indicator": True})
+        disp.menu.visible = True
         disp.draw_overlay(min_interval=0.0)
         cap = pygame.Surface((640, 360))
         cap.fill((10, 20, 30))
         disp.draw_capture_overlay(cap)
+        disp.menu.visible = False
         found = False
         for y in range(0, 60):
             for x in range(disp.width - 200, disp.width):

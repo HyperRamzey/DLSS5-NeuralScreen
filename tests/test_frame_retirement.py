@@ -29,8 +29,29 @@ def check_hdr_transition_guard():
     # WANT_PIXELS dry-spell retry was added, and what this check is about is
     # the ORDER - the frame's format has to be known before the deferral is
     # chosen - not how the variable is spelled.
-    acquire = source.index('got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);')
-    decide = source.index('defer_tail = !g_hdr_capture', acquire)
+    #
+    # The acquire must be the one IN THE FRAME LOOP. A plain
+    # `source.index('got = ...')` matched `prepared_got = ...` in the CAPTURE
+    # command handler - a different code path, 55 lines above the real sites -
+    # so deleting both real acquires left the check green (audit:
+    # CANNOT-FAIL). The search is anchored to the deferral: only the acquire
+    # that actually precedes it counts, and `prepared_` is excluded.
+    decide = source.index('defer_tail = !g_hdr_capture')
+    before = source[:decide]
+    needle = 'got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);'
+    acquire = -1
+    at = 0
+    while True:
+        at = before.find(needle, at)
+        if at < 0:
+            break
+        # `prepared_got = ...` is the other path, not this acquire.
+        if not before[:at].endswith('prepared_'):
+            acquire = at
+        at += len(needle)
+    assert acquire >= 0, (
+        'no frame acquire precedes the tail deferral - the deferral would '
+        'read a format from a frame that was never acquired in this loop')
     upload = source.index('UploadMotionOnly(v, mv_ptr', decide)
     assert acquire < decide < upload, 'tail deferral must use the acquired frame format'
     print('OK: HDR capture format is known before tail deferral is selected')

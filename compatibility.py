@@ -111,9 +111,57 @@ class LocalFileSystem:
 def sha256_file(
     path: str | os.PathLike[str], *, filesystem: FileSystem | None = None,
 ) -> str:
-    """Hash a runtime artifact without exposing its path in the result."""
-    fs = filesystem or LocalFileSystem()
-    return hashlib.sha256(fs.read_bytes(path)).hexdigest()
+    """Hash a runtime artifact without exposing its path in the result.
+
+    The production path caches the digest per (path, size, mtime): the runtime
+    is 165 MB and the compatibility guard hashes it before EVERY worker start -
+    every monitor switch, window switch, Spout/HDR toggle, motion-backend
+    change, GPU switch, auto-revive and NR revive - on a single-threaded main
+    loop, where it read as a 0.2-0.4 s hitch (audit H2). The stat is what makes
+    the cache safe: a file that changed cannot keep its old digest, which is
+    the one thing this function has to get right.
+
+    A caller-supplied filesystem is a test seam and is never cached: a test
+    has to be able to simulate a changed file.
+    """
+    if filesystem is not None:
+        return hashlib.sha256(filesystem.read_bytes(path)).hexdigest()
+    key = _cache_key(path)
+    if key is not None:
+        with _HASH_CACHE_LOCK:
+            cached = _HASH_CACHE.get(key)
+        if cached is not None:
+            return cached
+    digest = hashlib.sha256(LocalFileSystem().read_bytes(path)).hexdigest()
+    if key is not None:
+        _remember(key, digest)
+    return digest
+
+
+#: path -> digest, keyed by (path, size, mtime_ns). Bounded: the program hashes
+#: a handful of artifacts, and a bound keeps a long test run from growing it.
+_HASH_CACHE: dict = {}
+_HASH_CACHE_LOCK = threading.Lock()
+_HASH_CACHE_MAX = 64
+
+
+def _cache_key(path):
+    """(realpath, size, mtime_ns) for a real file, or None when it is not one."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    try:
+        return (os.path.realpath(path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _remember(key, digest: str) -> None:
+    with _HASH_CACHE_LOCK:
+        if len(_HASH_CACHE) >= _HASH_CACHE_MAX:
+            _HASH_CACHE.clear()
+        _HASH_CACHE[key] = digest
 
 
 @dataclass(frozen=True)
@@ -139,11 +187,15 @@ class CompatibilityKey:
         display_mode: Any,
         filesystem: FileSystem | None = None,
     ) -> "CompatibilityKey":
-        fs = filesystem or LocalFileSystem()
+        # Pass the seam through as-is: `filesystem or LocalFileSystem()` would
+        # hand a filesystem to sha256_file even when the caller passed none,
+        # which routes around its digest cache and re-reads the 165 MB runtime
+        # on every call (audit H2). None means "the real filesystem", and that
+        # is the path that caches.
         return cls(
             app_version=str(app_version),
-            runtime_sha256=sha256_file(runtime_path, filesystem=fs),
-            worker_sha256=sha256_file(worker_path, filesystem=fs),
+            runtime_sha256=sha256_file(runtime_path, filesystem=filesystem),
+            worker_sha256=sha256_file(worker_path, filesystem=filesystem),
             selected_gpu=_stable_value(selected_gpu),
             driver_version=str(driver_version),
             display_mode=_stable_value(display_mode),
